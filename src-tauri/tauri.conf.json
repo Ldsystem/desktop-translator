@@ -30,7 +30,8 @@
     "longDescription": "Desktop Translator watches for a completed text selection in any application, offers a small translate button beside it, and returns a translation from the Google Cloud Translation API without taking focus away from what you are reading.",
     "copyright": "Copyright © 2026 刘升龙 (Ldsystem)",
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     }
   }
 }

@@ -47,6 +47,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # An unsigned bundle is installable but can never hold an Accessibility
+      # grant: macOS lists it, accepts the toggle, and still reports the process
+      # as untrusted. Build and check the signature before anything is published;
+      # the release step below reuses this cached build.
+      - name: Build and verify the signed bundle
+        run: |
+          pnpm tauri build --target universal-apple-darwin --bundles app
+          app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Desktop Translator.app"
+          codesign --verify --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -q '^Signature=' \
+            || { echo "bundle is unsigned"; exit 1; }
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,6 +84,11 @@ jobs:
 
             On first run, grant Accessibility permission when prompted, then
             add your own Google Cloud Translation API key in Settings.
+
+            The app is ad-hoc signed, so its code identity changes with every
+            release. After installing an update, macOS drops the old grant:
+            remove the stale entry in Privacy & Security → Accessibility and
+            add the new one.
 
             ## Platform support
 

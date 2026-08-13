@@ -84,6 +84,13 @@ on-screen position through the macOS Accessibility API. On first launch it will
 point you at *System Settings → Privacy & Security → Accessibility*; enable
 Desktop Translator there.
 
+> [!IMPORTANT]
+> Releases are ad-hoc signed, so the code identity changes with every version.
+> macOS ties an Accessibility grant to that identity, which means an update
+> silently invalidates the old grant even though the switch still looks enabled.
+> After updating, remove the stale Desktop Translator entry from the
+> Accessibility list and add the new app again.
+
 > [!NOTE]
 > No screen capture is involved and no Screen Recording permission is requested.
 > The app reads only the text you selected, only after you finish selecting it.
