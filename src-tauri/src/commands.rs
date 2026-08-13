@@ -13,8 +13,8 @@ use zeroize::Zeroize;
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, TranslationRequest, TranslationResult, UserSettings,
-        ValidateContract,
+        AppError, AppErrorCode, SelectionSnapshot, TranslationRequest, TranslationResult,
+        UserSettings, ValidateContract,
     },
     coordinator::{CoordinatorEvent, OverlayState},
     platform::{
@@ -37,6 +37,10 @@ use crate::platform::macos::{
 use crate::platform::windows::{WindowsSelectionAdapter, WindowsSpeechAdapter};
 
 const SELECTION_SETTLE_DELAY: Duration = Duration::from_millis(25);
+/// A surface woken at pointer-down may still be publishing its accessibility
+/// tree when the gesture ends, so one late retry follows an empty first read.
+const SELECTION_RETRY_DELAY: Duration = Duration::from_millis(150);
+const SELECTION_ATTEMPTS: usize = 2;
 const APPLICATION_ID: &str = "com.desktoptranslator.desktop";
 
 /// Separates persisted user intent from permission-gated runtime monitoring.
@@ -125,7 +129,30 @@ impl ApplicationCoordinator {
             return Ok(());
         }
         self.reduce(CoordinatorEvent::PointerDown);
+        self.selection.prepare_source().await;
         self.overlay.hide().await
+    }
+
+    /// Reads the selection, retrying once so a surface that was still waking at
+    /// pointer-up is not reported as having no selection.
+    async fn resolve_selection(
+        &self,
+        policy: &SelectionPolicy,
+        request_id: u64,
+    ) -> Option<SelectionSnapshot> {
+        for attempt in 1..=SELECTION_ATTEMPTS {
+            if !self.request_is_current(request_id) {
+                return None;
+            }
+            match self.selection.resolve_selection(policy).await {
+                Ok(selection) => return Some(selection),
+                Err(_) if attempt < SELECTION_ATTEMPTS => {
+                    tokio::time::sleep(SELECTION_RETRY_DELAY).await;
+                }
+                Err(_) => return None,
+            }
+        }
+        None
     }
 
     /// Resolves the focused selection after a short settle delay without polling.
@@ -140,8 +167,8 @@ impl ApplicationCoordinator {
             return Ok(());
         }
         let policy = self.policy.lock().expect("selection policy").clone();
-        match self.selection.resolve_selection(&policy).await {
-            Ok(selection) => {
+        match self.resolve_selection(&policy, request_id).await {
+            Some(selection) => {
                 let should_show = {
                     let mut state = self.state.lock().expect("coordinator state");
                     let next = state.clone().reduce(CoordinatorEvent::SelectionResolved {
@@ -162,7 +189,7 @@ impl ApplicationCoordinator {
                     self.overlay.show_button(&selection).await?;
                 }
             }
-            Err(_) => {
+            None => {
                 self.reduce(CoordinatorEvent::SelectionRejected { request_id });
             }
         }

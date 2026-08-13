@@ -151,6 +151,14 @@ pub trait SelectionAdapter: Send + Sync {
         &self,
         policy: &SelectionPolicy,
     ) -> Result<SelectionSnapshot, AppError>;
+
+    /// Asks the surface under the pointer to expose selection data before it is
+    /// read. Web-backed surfaces build their accessibility tree only once a
+    /// client asks for it, so the first read after a selection would otherwise
+    /// come back empty. Called at pointer-down, this gives the surface the whole
+    /// duration of the drag to answer. Implementations are best-effort and must
+    /// never fail a gesture.
+    async fn prepare_source(&self) {}
 }
 
 /// Controls the reusable non-activating contextual surface.

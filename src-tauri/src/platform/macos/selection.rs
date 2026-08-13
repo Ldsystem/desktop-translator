@@ -103,6 +103,12 @@ unsafe extern "C" {
         element: *mut AXUIElementRef,
     ) -> AXError;
     fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut c_int) -> AXError;
+    fn AXUIElementCreateApplication(pid: c_int) -> AXUIElementRef;
+    fn AXUIElementSetAttributeValue(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        value: CFTypeRef,
+    ) -> AXError;
     fn AXValueGetType(value: AXValueRef) -> u32;
     fn AXValueGetValue(value: AXValueRef, value_type: u32, output: *mut c_void) -> Boolean;
     fn AXValueCreate(value_type: u32, value: *const c_void) -> AXValueRef;
@@ -258,6 +264,44 @@ impl MacSelectionAdapter {
                 .map_err(|_| internal_error())?,
         })
     }
+
+    /// Best-effort wake of the surface under the pointer. A surface that does
+    /// not implement these attributes is simply left as it was.
+    fn wake_source(&self) {
+        if Self::permission_status() != AccessibilityPermission::Granted {
+            return;
+        }
+        // SAFETY: create rule returns an owned AXUIElementRef.
+        let Some(system) = (unsafe { OwnedCf::from_create(AXUIElementCreateSystemWide()) }) else {
+            return;
+        };
+        let Ok(element) = element_at_pointer(system.as_raw()) else {
+            return;
+        };
+        let mut pid: c_int = 0;
+        // SAFETY: the element is live and the pid is written only on success.
+        if unsafe { AXUIElementGetPid(element.as_raw(), &mut pid) } == 0 {
+            enable_chromium_accessibility(pid);
+        }
+        // Reading a selection attribute is what makes a surface that builds its
+        // tree lazily start building it.
+        let _ = copy_attribute(element.as_raw(), "AXSelectedText");
+    }
+}
+
+fn enable_chromium_accessibility(pid: c_int) {
+    // SAFETY: create rule returns an owned AXUIElementRef for the process.
+    let Some(application) = (unsafe { OwnedCf::from_create(AXUIElementCreateApplication(pid)) })
+    else {
+        return;
+    };
+    let Some(attribute) = CfString::new(CHROMIUM_ACCESSIBILITY_ATTRIBUTE) else {
+        return;
+    };
+    // SAFETY: both references are live and the value is a constant CFBoolean.
+    let _ = unsafe {
+        AXUIElementSetAttributeValue(application.as_raw(), attribute.as_raw(), kCFBooleanTrue)
+    };
 }
 
 fn selection_from_lineage(
@@ -390,7 +434,17 @@ impl SelectionAdapter for MacSelectionAdapter {
             .await
             .map_err(|_| internal_error())?
     }
+
+    async fn prepare_source(&self) {
+        let adapter = self.clone();
+        let _ = tokio::task::spawn_blocking(move || adapter.wake_source()).await;
+    }
 }
+
+/// Chromium exposes web content to the accessibility tree only after a client
+/// sets this attribute on the application element. Other applications reject it
+/// harmlessly.
+const CHROMIUM_ACCESSIBILITY_ATTRIBUTE: &str = "AXManualAccessibility";
 
 pub fn normalize_rect(
     logical: PhysicalRect,
