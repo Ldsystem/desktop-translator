@@ -13,6 +13,15 @@ treated as release evidence.
 - **Windows host:** pending access to a Windows 10/11 x64 host with a normal
   unelevated session and UI Automation enabled.
 
+> The Windows target does not compile. The non-gating `windows-latest` job in
+> `.github/workflows/ci.yml` first ran on 2026-08-13 and reported drift against
+> `windows` crate 0.62: `apply_non_activating_tool_window` is not exported from
+> `platform::windows` (`overlay.rs:365`), `LOCALE_NAME_MAX_LENGTH` is no longer
+> under `Win32::Globalization` (`speech.rs:16`), argument types changed at
+> `selection.rs:304` and `speech.rs:183`, and `SPEAKFLAGS` no longer implements
+> `BitOr` (`speech.rs:219`). Windows qualification therefore starts from a
+> compile repair, not from host fixtures.
+
 ## Deterministic gates
 
 | Gate | macOS result | Windows result | Evidence |
