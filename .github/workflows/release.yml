@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and publish
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      # A failed architecture must not cancel one that already built.
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            label: Apple Silicon
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            label: Intel
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - run: pnpm install --frozen-lockfile
+
+      # Both matrix jobs point at the same tag, so the first to finish creates
+      # the release and the second attaches its artifacts to it.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: Desktop Translator ${{ github.event.inputs.tag || github.ref_name }}
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
+          args: --target ${{ matrix.target }}
+          releaseBody: |
+            ## Install
+
+            Download the `.dmg` for your Mac — `aarch64` for Apple Silicon,
+            `x64` for Intel — then drag the app to Applications.
+
+            These builds are **not signed with an Apple Developer ID**, so
+            macOS Gatekeeper will refuse the first launch. To allow it, run:
+
+            ```sh
+            xattr -dr com.apple.quarantine "/Applications/Desktop Translator.app"
+            ```
+
+            On first run, grant Accessibility permission when prompted, then
+            add your own Google Cloud Translation API key in Settings.
+
+            ## Platform support
+
+            macOS only. The Windows adapters are written but have not been
+            qualified on a Windows host and are not distributed yet.

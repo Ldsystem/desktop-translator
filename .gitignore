@@ -1,5 +1,6 @@
 .work-bundle/
 AGENTS.md
+roles/
 node_modules/
 dist/
 src-tauri/target/
