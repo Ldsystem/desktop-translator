@@ -1,0 +1,54 @@
+{
+  "selection": {
+    "id": 42,
+    "text": "hello",
+    "sourceApplicationId": "fixture.app",
+    "boundsPhysicalPx": [
+      { "x": 100.0, "y": 200.0, "width": 80.0, "height": 24.0 }
+    ],
+    "anchorPhysicalPx": { "x": 100.0, "y": 200.0, "width": 80.0, "height": 24.0 },
+    "capturedAtEpochMs": 1723464000000
+  },
+  "settings": {
+    "schemaVersion": 1,
+    "enabled": true,
+    "sourceLanguage": "auto",
+    "targetLanguage": "zh-CN",
+    "startAtLogin": false,
+    "theme": "system",
+    "maxSelectionCodePoints": 5000
+  },
+  "translationRequest": {
+    "selectionId": 42,
+    "text": "hello",
+    "sourceLanguage": "auto",
+    "targetLanguage": "zh-CN"
+  },
+  "translationResult": {
+    "selectionId": 42,
+    "translatedText": "你好",
+    "detectedSourceLanguage": "en",
+    "effectiveSourceLanguage": "en",
+    "targetLanguage": "zh-CN"
+  },
+  "error": {
+    "code": "offline",
+    "message": "Translation service is unreachable",
+    "retryable": true
+  },
+  "errors": [
+    { "code": "permission-denied", "message": "Accessibility permission is required", "retryable": false },
+    { "code": "unsupported-control", "message": "This control does not expose text selection", "retryable": false },
+    { "code": "no-selection", "message": "No eligible selection is available", "retryable": false },
+    { "code": "missing-credential", "message": "A Google API key is required", "retryable": false },
+    { "code": "invalid-credential", "message": "The Google API key is invalid", "retryable": false },
+    { "code": "api-restricted", "message": "The API key restrictions reject this API", "retryable": false },
+    { "code": "billing-required", "message": "Google Cloud billing is required", "retryable": false },
+    { "code": "quota-exceeded", "message": "The translation quota is exhausted", "retryable": true },
+    { "code": "offline", "message": "Translation service is unreachable", "retryable": true },
+    { "code": "timeout", "message": "Translation timed out", "retryable": true },
+    { "code": "service-unavailable", "message": "Translation service is unavailable", "retryable": true },
+    { "code": "invalid-language-pair", "message": "The language pair is invalid", "retryable": false },
+    { "code": "internal", "message": "An internal error occurred", "retryable": false }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "desktop-translator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "check": "pnpm run typecheck && pnpm test && pnpm run build",
+    "test:platform": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:perf": "vitest run tools/perf/measure.test.ts",
+    "perf:measure": "tsx tools/perf/measure.ts"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "iconv-lite": "^0.7.3",
+    "jsdom": "^26.1.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}
