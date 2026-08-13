@@ -21,6 +21,10 @@ use crate::{
 const OVERLAY_LABEL: &str = "overlay";
 const OVERLAY_WIDTH: f64 = 380.0;
 const OVERLAY_HEIGHT: f64 = 280.0;
+/// The trigger window is kept to the pointer target so the transparent surface
+/// does not cover — and suppress presses over — the document around it.
+const TRIGGER_WIDTH: f64 = 44.0;
+const TRIGGER_HEIGHT: f64 = 44.0;
 const OVERLAY_GAP: f64 = 8.0;
 const OVERLAY_IDLE_DESTROY_DELAY: Duration = Duration::from_secs(30);
 
@@ -122,6 +126,23 @@ impl TauriOverlayController {
         Ok(())
     }
 
+    /// Grows the trigger-sized window to the card footprint before content is
+    /// emitted. Missing windows are ignored so a dismissed overlay stays hidden.
+    fn expand_to_card(&self, selection: &SelectionSnapshot) -> Result<(), AppError> {
+        let _operation = self.operation.lock().expect("overlay operation");
+        let Some(window) = self.app.get_webview_window(OVERLAY_LABEL) else {
+            return Ok(());
+        };
+        position_overlay(
+            &window,
+            selection.anchor_physical_px,
+            OverlaySize {
+                width: OVERLAY_WIDTH,
+                height: OVERLAY_HEIGHT,
+            },
+        )
+    }
+
     fn cancel_idle_destruction(&self) {
         if let Some(cancel) = self
             .idle_cancel
@@ -166,7 +187,14 @@ impl OverlayController for TauriOverlayController {
         let _operation = self.operation.lock().expect("overlay operation");
         self.cancel_idle_destruction();
         let window = self.window()?;
-        position_overlay(&window, selection.anchor_physical_px)?;
+        position_overlay(
+            &window,
+            selection.anchor_physical_px,
+            OverlaySize {
+                width: TRIGGER_WIDTH,
+                height: TRIGGER_HEIGHT,
+            },
+        )?;
         let ready_selection = self
             .session
             .lock()
@@ -181,7 +209,8 @@ impl OverlayController for TauriOverlayController {
         Ok(())
     }
 
-    async fn show_loading(&self, _: &SelectionSnapshot) -> Result<(), AppError> {
+    async fn show_loading(&self, selection: &SelectionSnapshot) -> Result<(), AppError> {
+        self.expand_to_card(selection)?;
         self.app
             .emit_to(OVERLAY_LABEL, "translation-loading", ())
             .map_err(|_| overlay_error("Loading state could not be displayed"))
@@ -189,15 +218,21 @@ impl OverlayController for TauriOverlayController {
 
     async fn show_result(
         &self,
-        _: &SelectionSnapshot,
+        selection: &SelectionSnapshot,
         result: &TranslationResult,
     ) -> Result<(), AppError> {
+        self.expand_to_card(selection)?;
         self.app
             .emit_to(OVERLAY_LABEL, "translation-result", result)
             .map_err(|_| overlay_error("Translation could not be displayed"))
     }
 
-    async fn show_error(&self, _: &SelectionSnapshot, error: &AppError) -> Result<(), AppError> {
+    async fn show_error(
+        &self,
+        selection: &SelectionSnapshot,
+        error: &AppError,
+    ) -> Result<(), AppError> {
+        self.expand_to_card(selection)?;
         self.app
             .emit_to(OVERLAY_LABEL, "translation-error", error)
             .map_err(|_| overlay_error("Translation error could not be displayed"))
@@ -269,7 +304,7 @@ fn ensure_overlay(app: &AppHandle) -> Result<WebviewWindow, AppError> {
         WebviewUrl::App("index.html?mode=overlay".into()),
     )
     .title("Translate selection")
-    .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+    .inner_size(TRIGGER_WIDTH, TRIGGER_HEIGHT)
     .resizable(false)
     .decorations(false)
     .transparent(true)
@@ -286,7 +321,11 @@ fn ensure_overlay(app: &AppHandle) -> Result<WebviewWindow, AppError> {
     Ok(window)
 }
 
-fn position_overlay(window: &WebviewWindow, anchor: PhysicalRect) -> Result<(), AppError> {
+fn position_overlay(
+    window: &WebviewWindow,
+    anchor: PhysicalRect,
+    logical_size: OverlaySize,
+) -> Result<(), AppError> {
     let monitors = window
         .available_monitors()
         .map_err(|_| overlay_error("Monitor topology is unavailable"))?;
@@ -304,16 +343,8 @@ fn position_overlay(window: &WebviewWindow, anchor: PhysicalRect) -> Result<(), 
             scale_factor: monitor.scale_factor(),
         })
         .collect();
-    let placement = place_overlay_on_monitors(
-        anchor,
-        &work_areas,
-        OverlaySize {
-            width: OVERLAY_WIDTH,
-            height: OVERLAY_HEIGHT,
-        },
-        OVERLAY_GAP,
-    )
-    .ok_or_else(|| overlay_error("Overlay position could not be resolved"))?;
+    let placement = place_overlay_on_monitors(anchor, &work_areas, logical_size, OVERLAY_GAP)
+        .ok_or_else(|| overlay_error("Overlay position could not be resolved"))?;
 
     window
         .set_size(PhysicalSize::new(

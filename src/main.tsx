@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import App from "./app/App";
 import { getWindowMode } from "./app/windowMode";
+import type { QuickTranslateStatus } from "./components/quick/QuickTranslatePanel";
 import type {
   AppError,
   SelectionSnapshot,
@@ -69,6 +70,9 @@ export function Bootstrap() {
   const [speechAvailability, setSpeechAvailability] = useState<
     Record<string, boolean>
   >({});
+  const [quickStatus, setQuickStatus] = useState<QuickTranslateStatus>({
+    mode: "idle",
+  });
   const speaking = useRef(false);
 
   useEffect(() => {
@@ -159,6 +163,50 @@ export function Bootstrap() {
     };
   }, [mode, overlayState]);
 
+  useEffect(() => {
+    if (!runningInTauri() || mode !== "quick") {
+      return;
+    }
+
+    // Each reopen of the tray panel starts from a clean result area.
+    const subscription = listen("quick-translate-opened", () =>
+      setQuickStatus({ mode: "idle" }),
+    );
+
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, [mode]);
+
+  useEffect(() => {
+    if (!runningInTauri() || mode !== "quick" || quickStatus.mode !== "result") {
+      return;
+    }
+
+    let disposed = false;
+    const language = quickStatus.result.targetLanguage;
+    void invoke<boolean>("get_speech_availability", { language })
+      .catch(() => false)
+      .then((available) => {
+        if (!disposed) {
+          setSpeechAvailability((current) => ({ ...current, [language]: available }));
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [mode, quickStatus]);
+
+  const quickTranslate = (request: TranslationRequest) => {
+    setQuickStatus({ mode: "translating" });
+    void invoke<TranslationResult>("translate_input", { request })
+      .then((result) => setQuickStatus({ mode: "result", result }))
+      .catch((error: unknown) =>
+        setQuickStatus({ mode: "error", error: normalizeAppError(error) }),
+      );
+  };
+
   const translate = (request: TranslationRequest) => {
     setOverlayState((state) => reduceOverlayState(state, { type: "translate" }));
     void invoke<TranslationResult>("translate_selection", { request })
@@ -191,6 +239,8 @@ export function Bootstrap() {
       credentialStatus={credentialStatus}
       permissionStatus={permissionStatus}
       speechAvailability={speechAvailability}
+      quickStatus={quickStatus}
+      onQuickTranslate={quickTranslate}
       onTranslate={translate}
       onCorrectSource={translate}
       onSpeak={(text, language) => {

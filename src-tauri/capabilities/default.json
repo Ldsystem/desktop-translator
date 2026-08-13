@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Minimum WebView permissions for Desktop Translator surfaces.",
-  "windows": ["settings", "overlay"],
+  "windows": ["settings", "overlay", "quick"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten"

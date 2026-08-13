@@ -16,6 +16,7 @@ pub mod credential_prompt;
 pub mod overlay;
 pub mod placement;
 pub mod platform;
+pub mod quick_translate;
 pub mod services;
 pub mod tray;
 
@@ -27,7 +28,7 @@ fn builder() -> tauri::Builder<tauri::Wry> {
         dismiss_overlay, get_credential_status, get_permission_status, get_settings,
         get_speech_availability, open_accessibility_settings, overlay_ready,
         prompt_and_save_credential, quit_application, remove_credential, save_settings, speak_text,
-        stop_speech, test_credential, translate_selection, RuntimeState,
+        stop_speech, test_credential, translate_input, translate_selection, RuntimeState,
     };
     use tauri_plugin_autostart::MacosLauncher;
 
@@ -44,6 +45,7 @@ fn builder() -> tauri::Builder<tauri::Wry> {
             test_credential,
             remove_credential,
             translate_selection,
+            translate_input,
             get_speech_availability,
             speak_text,
             stop_speech,
@@ -72,6 +74,12 @@ fn builder() -> tauri::Builder<tauri::Wry> {
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
+                let _ = window.hide();
+            }
+            // The tray panel behaves like a popover: losing focus dismisses it.
+            tauri::WindowEvent::Focused(false)
+                if window.label() == crate::quick_translate::QUICK_LABEL =>
+            {
                 let _ = window.hide();
             }
             tauri::WindowEvent::ScaleFactorChanged { .. } if window.label() == "overlay" => {

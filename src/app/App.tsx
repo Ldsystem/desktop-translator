@@ -2,6 +2,10 @@ import { useState } from "react";
 
 import type { LanguageCode, TranslationRequest, UserSettings } from "../contracts/ipc";
 import { ContextualOverlay } from "../components/context/ContextualOverlay";
+import {
+  QuickTranslatePanel,
+  type QuickTranslateStatus,
+} from "../components/quick/QuickTranslatePanel";
 import { SettingsPanel } from "../components/settings/SettingsPanel";
 import {
   initialOverlayState,
@@ -30,6 +34,8 @@ export interface AppProps {
   credentialStatus?: "missing" | "ready" | "invalid" | "testing";
   permissionStatus?: "unknown" | "granted" | "denied";
   speechAvailability?: Readonly<Record<string, boolean>>;
+  quickStatus?: QuickTranslateStatus;
+  onQuickTranslate?: (request: TranslationRequest) => void;
   onTranslate?: (request: TranslationRequest) => void;
   onCorrectSource?: (request: TranslationRequest) => void;
   onSpeak?: (text: string, language: LanguageCode) => void;
@@ -49,6 +55,8 @@ export default function App({
   credentialStatus = "missing",
   permissionStatus = "unknown",
   speechAvailability = {},
+  quickStatus = { mode: "idle" },
+  onQuickTranslate = ignore,
   onTranslate = ignore,
   onCorrectSource = ignore,
   onSpeak = ignore,
@@ -63,8 +71,12 @@ export default function App({
   const [settings, setSettings] = useState(initialSettings);
 
   if (mode === "overlay") {
+    const surfaceClass =
+      overlayState.mode === "button-visible"
+        ? "app-surface app-surface--overlay app-surface--trigger"
+        : "app-surface app-surface--overlay";
     return (
-      <div className="app-surface app-surface--overlay" data-theme={settings.theme}>
+      <div className={surfaceClass} data-theme={settings.theme}>
         <ContextualOverlay
           state={overlayState}
           sourceLanguage={settings.sourceLanguage}
@@ -74,6 +86,21 @@ export default function App({
           onCorrectSource={onCorrectSource}
           onSpeak={onSpeak}
           onDismiss={onDismiss}
+        />
+      </div>
+    );
+  }
+
+  if (mode === "quick") {
+    return (
+      <div className="app-surface app-surface--quick" data-theme={settings.theme}>
+        <QuickTranslatePanel
+          status={quickStatus}
+          sourceLanguage={settings.sourceLanguage}
+          targetLanguage={settings.targetLanguage}
+          speechAvailability={speechAvailability}
+          onTranslate={onQuickTranslate}
+          onSpeak={onSpeak}
         />
       </div>
     );

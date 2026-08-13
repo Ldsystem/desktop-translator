@@ -241,6 +241,16 @@ impl ApplicationCoordinator {
         }
     }
 
+    /// Translates operator-typed text. The request owns no native selection, so
+    /// the contextual overlay state is deliberately left untouched.
+    pub async fn translate_input(
+        &self,
+        request: TranslationRequest,
+    ) -> Result<TranslationResult, AppError> {
+        request.validate()?;
+        self.translation.translate(&request).await
+    }
+
     /// Enables or disables monitoring state while retaining non-secret settings.
     pub async fn set_enabled(&self, enabled: bool) -> Result<(), AppError> {
         self.enabled.store(enabled, Ordering::Release);
@@ -488,6 +498,15 @@ pub async fn translate_selection(
     request: TranslationRequest,
 ) -> Result<TranslationResult, AppError> {
     state.coordinator.translate(request).await
+}
+
+/// Translates text typed into the tray panel, which owns no native selection.
+#[tauri::command]
+pub async fn translate_input(
+    state: State<'_, RuntimeState>,
+    request: TranslationRequest,
+) -> Result<TranslationResult, AppError> {
+    state.coordinator.translate_input(request).await
 }
 
 /// Speaks source or translated text using the local operating system.

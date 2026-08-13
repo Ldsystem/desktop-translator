@@ -35,7 +35,7 @@ treated as release evidence.
 | Dismiss, reselection, disable, and quit | Passed | Pending | Current-host smoke plus state-machine, observer, and shutdown regression tests |
 | Tray ownership while all windows are hidden | Passed | Pending | Current-host smoke plus retained `TrayIcon` and implicit-exit regression tests |
 | Wrapped multiline selection | Pending | Pending | Run the ignored real-host multiline fixture in a standard AX/UIA control |
-| Chromium/Electron document selection | Partial | Pending | Outlook's embedded HTML reading surface passed; standalone Chrome and Electron fixtures remain pending |
+| Chromium/Electron document selection | Passed | Pending | Chrome web-area drag selection reproduced `no-selection` even though `AXSelectedText`, `AXSelectedTextRange`, and `AXSelectedTextMarkerRange` were all populated; the range strategy resolved text but no geometry and aborted the element. Independent range/marker fallback repaired it and the button now appears. Electron fixtures remain pending |
 | Protected/secure field suppression | Pending | Pending | Run the ignored secure-field fixture and verify no overlay, log, or request |
 | Unsupported canvas/PDF control | Pending | Pending | Verify no overlay when AX/UIA exposes no selected range and geometry |
 | Permission denied or elevated target | Pending | Pending | Revoke macOS Accessibility and test guidance; test a Windows elevated target from an unelevated app |

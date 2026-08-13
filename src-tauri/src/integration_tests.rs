@@ -170,6 +170,58 @@ async fn coordinator_reports_native_speech_availability() {
 }
 
 #[tokio::test]
+async fn typed_input_translates_without_a_native_selection() {
+    let provider = Arc::new(CountingProvider {
+        calls: AtomicUsize::new(0),
+    });
+    let overlay = Arc::new(RecordingOverlay::default());
+    let coordinator = application_coordinator(
+        provider.clone(),
+        overlay.clone(),
+        Arc::new(RecordingSpeech::default()),
+    );
+
+    let result = coordinator
+        .translate_input(TranslationRequest {
+            selection_id: 0,
+            text: "hello".into(),
+            source_language: "auto".into(),
+            target_language: "es".into(),
+        })
+        .await
+        .expect("typed input must translate without an owning selection");
+
+    assert_eq!(result.translated_text, "hola");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    // The contextual overlay belongs to selection flow and must stay untouched.
+    assert!(overlay.actions.lock().expect("actions").is_empty());
+    assert!(matches!(coordinator.snapshot(), OverlayState::Idle { .. }));
+}
+
+#[tokio::test]
+async fn typed_input_rejects_an_empty_request() {
+    let coordinator = application_coordinator(
+        Arc::new(CountingProvider {
+            calls: AtomicUsize::new(0),
+        }),
+        Arc::new(RecordingOverlay::default()),
+        Arc::new(RecordingSpeech::default()),
+    );
+
+    let error = coordinator
+        .translate_input(TranslationRequest {
+            selection_id: 0,
+            text: "   ".into(),
+            source_language: "auto".into(),
+            target_language: "es".into(),
+        })
+        .await
+        .expect_err("blank input must be rejected before the provider is called");
+
+    assert_eq!(error.code, AppErrorCode::Internal);
+}
+
+#[tokio::test]
 async fn selection_does_not_call_provider_until_explicit_translate() {
     let provider = CountingProvider {
         calls: AtomicUsize::new(0),

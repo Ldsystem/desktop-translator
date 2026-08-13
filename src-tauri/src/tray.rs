@@ -1,6 +1,7 @@
 //! Tray/menu-bar indicator and lazy settings window.
 
 use tauri::{
+    image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     App, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
@@ -86,18 +87,25 @@ pub fn install(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if matches!(
-                event,
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                }
-            ) {
-                let _ = show_settings(tray.app_handle());
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                position,
+                ..
+            } = event
+            {
+                let _ = crate::quick_translate::toggle(tray.app_handle(), position);
             }
         });
-    if let Some(icon) = app.default_window_icon() {
+    if let Some(icon) = tray_icon() {
+        builder = builder.icon(icon);
+        // A template image is tinted by macOS for light, dark, and highlighted
+        // menu bars; the colored application icon is not.
+        #[cfg(target_os = "macos")]
+        {
+            builder = builder.icon_as_template(true);
+        }
+    } else if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
     let tray = builder.build(app)?;
@@ -159,6 +167,11 @@ fn toggle_start_at_login(app: &AppHandle) -> Result<(), AppError> {
         return Err(error);
     }
     Ok(())
+}
+
+/// Decodes the monochrome menu-bar glyph, or `None` when it is unusable.
+fn tray_icon() -> Option<Image<'static>> {
+    Image::from_bytes(include_bytes!("../icons/tray-template.png")).ok()
 }
 
 fn tray_error(message: &'static str) -> AppError {

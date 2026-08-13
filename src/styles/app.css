@@ -58,10 +58,15 @@ input:focus-visible {
   background: transparent;
 }
 
+/* The trigger window is only as large as the pointer target, so card padding
+   would clip the control. */
+.app-surface--trigger {
+  padding: 0;
+}
+
 .button,
 .text-button,
-.icon-button,
-.translate-trigger {
+.icon-button {
   min-width: var(--target);
   min-height: var(--target);
   border: 0;
@@ -145,46 +150,162 @@ input:focus-visible {
   stroke-width: 1.8;
 }
 
-/* The split-script badge makes the compact control recognizable without text. */
+/* The transparent target keeps the 44px pointer area while the visible control
+   stays small; the split-script badge makes it recognizable without text. */
 .contextual-trigger {
-  padding: 4px;
+  display: grid;
+  width: var(--target);
+  height: var(--target);
+  place-items: center;
 }
 
 .translate-trigger {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  align-items: center;
-  width: 58px;
-  padding: 0 8px;
+  grid-template: repeat(2, 1fr) / repeat(2, 1fr);
+  place-items: center;
+  width: var(--trigger-size);
+  height: var(--trigger-size);
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, white);
-  border-radius: 15px;
-  background: var(--accent);
-  color: #fff;
-  box-shadow: var(--shadow-card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-muted);
+  box-shadow: var(--shadow-trigger);
+  cursor: pointer;
   font-family: var(--font-utility);
-  font-size: 0.78rem;
-  font-weight: 750;
-  transition: transform 150ms ease, background-color 150ms ease;
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1;
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
 }
 
 .translate-trigger::after {
   position: absolute;
-  inset: 7px auto 7px 50%;
+  top: 50%;
+  left: 50%;
   width: 1px;
-  background: rgb(255 255 255 / 35%);
+  height: 150%;
+  background: var(--line);
   content: "";
-  transform: rotate(16deg);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.translate-trigger > span:first-child {
+  grid-area: 1 / 1;
 }
 
 .translate-trigger:hover {
-  background: var(--accent-strong);
-  transform: translateY(-2px);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
 }
 
 .translate-trigger__swap {
+  grid-area: 2 / 2;
   font-family: "PingFang SC", "Hiragino Sans GB", sans-serif;
+}
+
+.app-surface--quick {
+  display: grid;
+  align-items: start;
+  min-height: 0;
+  height: 100vh;
+  padding: 8px;
+  overflow: hidden;
+  background: transparent;
+}
+
+.quick-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+  animation: card-enter 140ms ease-out both;
+}
+
+.quick-panel__form {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 12px;
+  padding: 16px;
+}
+
+.quick-panel__languages {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: 8px;
+}
+
+/* The panel is narrower than the settings surface, so the language controls
+   need a tighter chevron gutter to keep long names readable. */
+.quick-panel__languages select {
+  padding-right: 24px;
+}
+
+.quick-panel__input {
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.quick-panel__input::placeholder {
+  color: var(--ink-muted);
+}
+
+.quick-panel__input:hover {
+  border-color: var(--accent);
+}
+
+.quick-panel__action {
+  width: 100%;
+}
+
+.quick-panel__result {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 14px 16px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-raised);
+}
+
+.quick-panel__result p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 1.05rem;
+  font-weight: 560;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.quick-panel__error {
+  display: grid;
+  gap: 3px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--line);
+  background: var(--danger-soft);
+}
+
+.quick-panel__error strong {
+  font-size: 0.86rem;
+}
+
+.quick-panel__error span {
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
 }
 
 .contextual-card {

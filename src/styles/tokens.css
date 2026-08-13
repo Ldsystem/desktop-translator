@@ -21,10 +21,13 @@
   --warning-soft: #fff2d2;
   --focus: #078cbd;
   --shadow-card: 0 20px 50px rgb(15 35 31 / 16%), 0 2px 10px rgb(15 35 31 / 10%);
+  --shadow-panel: 0 1px 2px rgb(15 35 31 / 5%), 0 8px 20px rgb(15 35 31 / 9%);
   --radius-sm: 9px;
   --radius-md: 14px;
   --radius-lg: 20px;
+  --shadow-trigger: 0 3px 10px rgb(15 35 31 / 18%), 0 1px 2px rgb(15 35 31 / 12%);
   --target: 44px;
+  --trigger-size: 28px;
 }
 
 [data-theme="light"] {
@@ -50,6 +53,8 @@
   --warning-soft: #40351f;
   --focus: #61c9ef;
   --shadow-card: 0 22px 55px rgb(0 0 0 / 38%), 0 2px 12px rgb(0 0 0 / 28%);
+  --shadow-trigger: 0 3px 10px rgb(0 0 0 / 45%), 0 1px 2px rgb(0 0 0 / 35%);
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 20px rgb(0 0 0 / 38%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -72,5 +77,7 @@
     --warning-soft: #40351f;
     --focus: #61c9ef;
     --shadow-card: 0 22px 55px rgb(0 0 0 / 38%), 0 2px 12px rgb(0 0 0 / 28%);
+  --shadow-trigger: 0 3px 10px rgb(0 0 0 / 45%), 0 1px 2px rgb(0 0 0 / 35%);
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 20px rgb(0 0 0 / 38%);
   }
 }

@@ -301,32 +301,77 @@ fn selection_on_element(
         .ok()
         .and_then(|value| cf_string_to_string(value.as_raw()));
 
-    if let (Some(text), Ok(range_value)) = (
-        selected_text.as_ref(),
-        copy_attribute(element, "AXSelectedTextRange"),
-    ) {
-        if eligible_text(text, max_code_points) {
-            let selected_range = ax_range(range_value.as_raw())?;
-            let rectangles = selected_line_rectangles(element, selected_range, displays)?;
-            return Some((text.clone(), rectangles));
-        }
-    }
+    first_available_selection(
+        || range_selection(element, selected_text.clone(), max_code_points, displays),
+        || marker_selection(element, selected_text.clone(), max_code_points, displays),
+    )
+}
 
-    let marker_range = copy_attribute(element, "AXSelectedTextMarkerRange").ok()?;
-    let text = selected_text.or_else(|| {
-        copy_parameterized_attribute(element, "AXStringForTextMarkerRange", marker_range.as_raw())
-            .ok()
-            .and_then(|value| cf_string_to_string(value.as_raw()))
-    })?;
-    if !eligible_text(&text, max_code_points) {
+/// Accepts a strategy only when it produced eligible text *and* geometry. A
+/// strategy that resolves text but no rectangles is incomplete, not a selection.
+fn accept_selection(
+    text: Option<String>,
+    rectangles: Vec<PhysicalRect>,
+    max_code_points: usize,
+) -> Option<(String, Vec<PhysicalRect>)> {
+    let text = text?;
+    if !eligible_text(&text, max_code_points) || rectangles.is_empty() {
         return None;
     }
-    let bounds =
+    Some((text, rectangles))
+}
+
+/// Tries geometry strategies in order. An incomplete strategy must fall through
+/// rather than abort resolution for the element.
+fn first_available_selection(
+    primary: impl FnOnce() -> Option<(String, Vec<PhysicalRect>)>,
+    fallback: impl FnOnce() -> Option<(String, Vec<PhysicalRect>)>,
+) -> Option<(String, Vec<PhysicalRect>)> {
+    primary().or_else(fallback)
+}
+
+/// Line-range geometry, used by native text controls.
+fn range_selection(
+    element: AXUIElementRef,
+    selected_text: Option<String>,
+    max_code_points: usize,
+    displays: &[DisplayTransform],
+) -> Option<(String, Vec<PhysicalRect>)> {
+    let selected_range = copy_attribute(element, "AXSelectedTextRange")
+        .ok()
+        .and_then(|value| ax_range(value.as_raw()))?;
+    let rectangles =
+        selected_line_rectangles(element, selected_range, displays).unwrap_or_default();
+    accept_selection(selected_text, rectangles, max_code_points)
+}
+
+/// Text-marker geometry, used by web and other rich document surfaces that
+/// implement no `AXBoundsForRange`.
+fn marker_selection(
+    element: AXUIElementRef,
+    selected_text: Option<String>,
+    max_code_points: usize,
+    displays: &[DisplayTransform],
+) -> Option<(String, Vec<PhysicalRect>)> {
+    let marker_range = copy_attribute(element, "AXSelectedTextMarkerRange").ok()?;
+    let text = selected_text
+        .filter(|text| eligible_text(text, max_code_points))
+        .or_else(|| {
+            copy_parameterized_attribute(
+                element,
+                "AXStringForTextMarkerRange",
+                marker_range.as_raw(),
+            )
+            .ok()
+            .and_then(|value| cf_string_to_string(value.as_raw()))
+        });
+    let rectangles =
         copy_parameterized_attribute(element, "AXBoundsForTextMarkerRange", marker_range.as_raw())
             .ok()
-            .and_then(|value| ax_rect(value.as_raw()))?;
-    let rectangles = normalize_rects(bounds, displays);
-    (!rectangles.is_empty()).then_some((text, rectangles))
+            .and_then(|value| ax_rect(value.as_raw()))
+            .map(|bounds| normalize_rects(bounds, displays))
+            .unwrap_or_default();
+    accept_selection(text, rectangles, max_code_points)
 }
 
 fn eligible_text(text: &str, max_code_points: usize) -> bool {
@@ -869,8 +914,9 @@ fn create_dictionary(keys: &[CFTypeRef], values: &[CFTypeRef]) -> Option<OwnedCf
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_rect, normalize_rects, prefer_primary_or_fallback, prefer_selection_candidate,
-        AccessibilityPermission, CandidateFailure, DisplayTransform, MacSelectionAdapter,
+        accept_selection, first_available_selection, normalize_rect, normalize_rects,
+        prefer_primary_or_fallback, prefer_selection_candidate, AccessibilityPermission,
+        CandidateFailure, DisplayTransform, MacSelectionAdapter,
     };
     use crate::{
         contracts::{AppErrorCode, PhysicalRect},
@@ -1039,6 +1085,71 @@ mod tests {
             ),),
             Err(CandidateFailure::Protected)
         );
+    }
+
+    #[test]
+    fn text_without_geometry_is_not_an_acceptable_selection() {
+        let rectangle = PhysicalRect {
+            x: 10.0,
+            y: 20.0,
+            width: 120.0,
+            height: 18.0,
+        };
+
+        assert_eq!(
+            accept_selection(Some("Bonjour tout le".into()), Vec::new(), 5_000),
+            None
+        );
+        assert_eq!(
+            accept_selection(Some("   ".into()), vec![rectangle], 5_000),
+            None
+        );
+        assert_eq!(accept_selection(None, vec![rectangle], 5_000), None);
+        assert_eq!(
+            accept_selection(Some("Bonjour".into()), vec![rectangle], 3),
+            None
+        );
+        assert_eq!(
+            accept_selection(Some("Bonjour".into()), vec![rectangle], 5_000),
+            Some(("Bonjour".into(), vec![rectangle]))
+        );
+    }
+
+    /// Chromium web areas expose `AXSelectedText` and `AXSelectedTextRange` but
+    /// implement no `AXBoundsForRange`, so the range strategy yields text with no
+    /// geometry. The marker-range strategy must still be consulted.
+    #[test]
+    fn a_geometry_less_range_strategy_does_not_suppress_the_marker_strategy() {
+        let rectangle = PhysicalRect {
+            x: 10.0,
+            y: 20.0,
+            width: 120.0,
+            height: 18.0,
+        };
+
+        let resolved = first_available_selection(
+            || accept_selection(Some("Bonjour tout le".into()), Vec::new(), 5_000),
+            || accept_selection(Some("Bonjour tout le".into()), vec![rectangle], 5_000),
+        );
+
+        assert_eq!(resolved, Some(("Bonjour tout le".into(), vec![rectangle])));
+    }
+
+    #[test]
+    fn a_complete_range_strategy_short_circuits_the_marker_strategy() {
+        let rectangle = PhysicalRect {
+            x: 4.0,
+            y: 8.0,
+            width: 60.0,
+            height: 16.0,
+        };
+
+        let resolved = first_available_selection(
+            || accept_selection(Some("selected".into()), vec![rectangle], 5_000),
+            || panic!("marker strategy must not run once the range strategy succeeds"),
+        );
+
+        assert_eq!(resolved, Some(("selected".into(), vec![rectangle])));
     }
 
     #[test]
