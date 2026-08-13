@@ -15,21 +15,13 @@ concurrency:
 
 jobs:
   macos:
-    name: macOS ${{ matrix.label }}
-    runs-on: ${{ matrix.runner }}
+    name: macOS universal
+    # One universal binary covers Apple Silicon and Intel from a single Apple
+    # Silicon runner. Hosted Intel runners are no longer reliably allocated, so
+    # a per-architecture matrix leaves the Intel job queued indefinitely.
+    runs-on: macos-latest
     permissions:
       contents: write
-    strategy:
-      # A failed architecture must not cancel one that already built.
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            target: aarch64-apple-darwin
-            label: Apple Silicon
-          - runner: macos-13
-            target: x86_64-apple-darwin
-            label: Intel
 
     steps:
       - uses: actions/checkout@v4
@@ -47,17 +39,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: ${{ matrix.target }}
 
       - run: pnpm install --frozen-lockfile
 
-      # Both matrix jobs point at the same tag, so the first to finish creates
-      # the release and the second attaches its artifacts to it.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,12 +56,12 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false
-          args: --target ${{ matrix.target }}
+          args: --target universal-apple-darwin
           releaseBody: |
             ## Install
 
-            Download the `.dmg` for your Mac — `aarch64` for Apple Silicon,
-            `x64` for Intel — then drag the app to Applications.
+            Download the `.dmg` and drag the app to Applications. The build is
+            universal: it runs natively on both Apple Silicon and Intel Macs.
 
             These builds are **not signed with an Apple Developer ID**, so
             macOS Gatekeeper will refuse the first launch. To allow it, run:

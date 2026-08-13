@@ -62,10 +62,10 @@ Spanish, in any direction, plus automatic detection of the source.
 
 ## Install
 
-Download the `.dmg` for your Mac from the
+Download the `.dmg` from the
 [latest release](https://github.com/Ldsystem/desktop-translator/releases/latest)
-— `aarch64` for Apple Silicon, `x64` for Intel — and drag the app into
-Applications.
+and drag the app into Applications. The build is universal, so one download
+runs natively on both Apple Silicon and Intel Macs.
 
 > [!IMPORTANT]
 > Releases are **not signed with an Apple Developer ID**, so Gatekeeper will
