@@ -1,0 +1,5 @@
+# `tauri dev` launches the app through `cargo run`, so this runner is the hook
+# that stamps every development build with one stable code identity. See
+# tools/macos/create-dev-signing-identity.sh for why that matters.
+[target.'cfg(target_os = "macos")']
+runner = "../tools/macos/sign-and-run.sh"
