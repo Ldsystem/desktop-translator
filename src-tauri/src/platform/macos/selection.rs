@@ -4,6 +4,7 @@
 //! is wrapped immediately so ownership cannot leak into the safe adapter.
 
 use std::{
+    borrow::Cow,
     ffi::{c_char, c_double, c_float, c_int, c_long, c_void, CStr, CString},
     mem,
     ptr::{self, NonNull},
@@ -114,11 +115,27 @@ unsafe extern "C" {
     fn AXValueCreate(value_type: u32, value: *const c_void) -> AXValueRef;
 }
 
+type CGDirectDisplayId = u32;
+type CGDisplayModeRef = *const c_void;
+
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventCreate(source: CFTypeRef) -> CFTypeRef;
     fn CGEventGetLocation(event: CFTypeRef) -> CGPoint;
+    fn CGGetActiveDisplayList(
+        max_displays: u32,
+        displays: *mut CGDirectDisplayId,
+        count: *mut u32,
+    ) -> i32;
+    fn CGDisplayBounds(display: CGDirectDisplayId) -> CGRect;
+    fn CGDisplayCopyDisplayMode(display: CGDirectDisplayId) -> CGDisplayModeRef;
+    fn CGDisplayModeGetPixelWidth(mode: CGDisplayModeRef) -> usize;
+    fn CGDisplayModeGetWidth(mode: CGDisplayModeRef) -> usize;
+    fn CGDisplayModeRelease(mode: CGDisplayModeRef);
 }
+
+/// Upper bound on displays queried in one call; far above any real desktop.
+const MAX_ACTIVE_DISPLAYS: u32 = 16;
 
 #[link(name = "AppKit", kind = "framework")]
 unsafe extern "C" {}
@@ -179,17 +196,44 @@ pub struct DisplayTransform {
 ///
 /// Calls are synchronous native AX queries. Invoke the async trait method from
 /// a blocking worker, never the UI thread.
+/// Where the adapter gets its display topology from.
+#[derive(Clone)]
+enum DisplaySource {
+    /// Read at every resolution, so an attached, detached or rescaled display
+    /// takes effect immediately.
+    Live,
+    /// A fixed topology, used by tests and manual fixtures.
+    Fixed(Arc<Vec<DisplayTransform>>),
+}
+
+impl DisplaySource {
+    fn transforms(&self) -> Cow<'_, [DisplayTransform]> {
+        match self {
+            Self::Live => Cow::Owned(active_display_transforms()),
+            Self::Fixed(fixed) => Cow::Borrowed(fixed.as_slice()),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct MacSelectionAdapter {
     next_id: Arc<AtomicU64>,
-    displays: Arc<Vec<DisplayTransform>>,
+    displays: DisplaySource,
 }
 
 impl MacSelectionAdapter {
+    /// Production adapter, which follows the live display topology.
+    pub fn with_live_displays() -> Self {
+        Self {
+            next_id: Arc::new(AtomicU64::new(1)),
+            displays: DisplaySource::Live,
+        }
+    }
+
     pub fn new(displays: Vec<DisplayTransform>) -> Self {
         Self {
             next_id: Arc::new(AtomicU64::new(1)),
-            displays: Arc::new(displays),
+            displays: DisplaySource::Fixed(Arc::new(displays)),
         }
     }
 
@@ -233,13 +277,14 @@ impl MacSelectionAdapter {
         // SAFETY: create rule returns an owned AXUIElementRef.
         let system = unsafe { OwnedCf::from_create(AXUIElementCreateSystemWide()) }
             .ok_or_else(internal_error)?;
+        let displays = self.displays.transforms();
         let focused_selection = focused_element(system.as_raw())
             .map_err(|_| CandidateFailure::NoSelection)
-            .and_then(|element| selection_from_lineage(element, policy, &self.displays));
+            .and_then(|element| selection_from_lineage(element, policy, &displays));
         let resolved = prefer_selection_candidate(focused_selection, || {
             let element =
                 element_at_pointer(system.as_raw()).map_err(|_| CandidateFailure::NoSelection)?;
-            selection_from_lineage(element, policy, &self.displays)
+            selection_from_lineage(element, policy, &displays)
         })
         .map_err(|failure| match failure {
             CandidateFailure::NoSelection => no_selection_error(),
@@ -472,6 +517,73 @@ pub fn normalize_rect(
         width: logical.width * display.scale_factor,
         height: logical.height * display.scale_factor,
     })
+}
+
+/// Reads the current display topology.
+///
+/// `CGDisplayBounds` is expressed in the same top-left logical space the
+/// accessibility API reports geometry in, and the window layer positions
+/// overlays at `logical * scale`, so both agree without conversion.
+///
+/// This is read per resolution rather than cached once: displays are attached,
+/// detached and rescaled while the application runs, and a topology that has
+/// gone stale silently discards every selection made on a display it does not
+/// know about.
+pub fn active_display_transforms() -> Vec<DisplayTransform> {
+    let mut ids = [0 as CGDirectDisplayId; MAX_ACTIVE_DISPLAYS as usize];
+    let mut count: u32 = 0;
+    // SAFETY: the buffer holds MAX_ACTIVE_DISPLAYS entries and CoreGraphics
+    // writes the number it filled into count.
+    let result =
+        unsafe { CGGetActiveDisplayList(MAX_ACTIVE_DISPLAYS, ids.as_mut_ptr(), &mut count) };
+    if result != 0 {
+        return Vec::new();
+    }
+    ids.iter()
+        .take(count as usize)
+        .filter_map(|id| display_transform(*id))
+        .collect()
+}
+
+fn display_transform(id: CGDirectDisplayId) -> Option<DisplayTransform> {
+    let scale_factor = display_scale_factor(id)?;
+    // SAFETY: CGDisplayBounds accepts any identifier and returns an empty
+    // rectangle for one that is no longer active.
+    let bounds = unsafe { CGDisplayBounds(id) };
+    let transform = DisplayTransform {
+        logical_bounds: PhysicalRect {
+            x: bounds.origin.x,
+            y: bounds.origin.y,
+            width: bounds.size.width,
+            height: bounds.size.height,
+        },
+        physical_origin_x: bounds.origin.x * scale_factor,
+        physical_origin_y: bounds.origin.y * scale_factor,
+        scale_factor,
+    };
+    valid_display(&transform).then_some(transform)
+}
+
+fn display_scale_factor(id: CGDirectDisplayId) -> Option<f64> {
+    // SAFETY: the copy rule returns an owned mode, released below.
+    let mode = unsafe { CGDisplayCopyDisplayMode(id) };
+    if mode.is_null() {
+        return None;
+    }
+    // SAFETY: the mode stays live until it is released.
+    let (pixel_width, width) = unsafe {
+        (
+            CGDisplayModeGetPixelWidth(mode),
+            CGDisplayModeGetWidth(mode),
+        )
+    };
+    // SAFETY: ownership returns to CoreGraphics here and the mode is not used again.
+    unsafe { CGDisplayModeRelease(mode) };
+    if width == 0 {
+        return None;
+    }
+    let scale = pixel_width as f64 / width as f64;
+    (scale.is_finite() && scale > 0.0).then_some(scale)
 }
 
 /// Splits a logical AX rectangle at display boundaries before scaling each
@@ -1276,6 +1388,59 @@ mod tests {
         assert!(snapshot.bounds_physical_px.iter().all(|rect| {
             rect.x.is_finite() && rect.y.is_finite() && rect.width > 0.0 && rect.height > 0.0
         }));
+    }
+
+    /// The live topology must describe every attached display, place the main
+    /// one at the origin, and agree with the window layer's `logical * scale`
+    /// convention. A selection made on a display missing from this list resolves
+    /// to no geometry at all, which is how an external screen stops working.
+    #[test]
+    fn live_topology_describes_every_attached_display() {
+        let displays = super::active_display_transforms();
+        if displays.is_empty() {
+            // A headless build machine has no display to describe.
+            return;
+        }
+
+        assert!(displays
+            .iter()
+            .any(|display| { display.logical_bounds.x == 0.0 && display.logical_bounds.y == 0.0 }));
+        for display in &displays {
+            assert!(display.scale_factor > 0.0);
+            assert_eq!(
+                display.physical_origin_x,
+                display.logical_bounds.x * display.scale_factor
+            );
+            assert_eq!(
+                display.physical_origin_y,
+                display.logical_bounds.y * display.scale_factor
+            );
+        }
+    }
+
+    /// Guards the defect directly: geometry on a display the adapter does not
+    /// know about produces nothing, so the topology may never be a stale cache.
+    #[test]
+    fn geometry_on_an_unknown_display_resolves_to_nothing() {
+        let only_builtin = [DisplayTransform {
+            logical_bounds: PhysicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1800.0,
+                height: 1169.0,
+            },
+            physical_origin_x: 0.0,
+            physical_origin_y: 0.0,
+            scale_factor: 2.0,
+        }];
+        let on_a_second_display = PhysicalRect {
+            x: -800.0,
+            y: 400.0,
+            width: 120.0,
+            height: 20.0,
+        };
+
+        assert!(normalize_rects(on_a_second_display, &only_builtin).is_empty());
     }
 
     fn manual_adapter() -> MacSelectionAdapter {

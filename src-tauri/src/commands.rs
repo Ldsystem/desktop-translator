@@ -30,9 +30,7 @@ use crate::{
 };
 
 #[cfg(target_os = "macos")]
-use crate::platform::macos::{
-    AccessibilityPermission, DisplayTransform, MacSelectionAdapter, MacSpeechAdapter,
-};
+use crate::platform::macos::{AccessibilityPermission, MacSelectionAdapter, MacSpeechAdapter};
 #[cfg(target_os = "windows")]
 use crate::platform::windows::{WindowsSelectionAdapter, WindowsSpeechAdapter};
 
@@ -370,7 +368,7 @@ impl RuntimeState {
 
         #[cfg(target_os = "macos")]
         let selection: Arc<dyn SelectionAdapter> =
-            Arc::new(MacSelectionAdapter::new(display_transforms(app)?));
+            Arc::new(MacSelectionAdapter::with_live_displays());
         #[cfg(target_os = "windows")]
         let selection: Arc<dyn SelectionAdapter> = Arc::new(WindowsSelectionAdapter::new()?);
         let loaded_settings = settings.load()?;
@@ -712,28 +710,4 @@ fn platform_permission_granted() -> bool {
     {
         true
     }
-}
-
-#[cfg(target_os = "macos")]
-fn display_transforms(app: &AppHandle) -> Result<Vec<DisplayTransform>, AppError> {
-    let monitors = app
-        .available_monitors()
-        .map_err(|_| internal_error("Monitor topology is unavailable"))?;
-    Ok(monitors
-        .into_iter()
-        .map(|monitor| {
-            let scale = monitor.scale_factor();
-            DisplayTransform {
-                logical_bounds: crate::contracts::PhysicalRect {
-                    x: monitor.position().x as f64 / scale,
-                    y: monitor.position().y as f64 / scale,
-                    width: monitor.size().width as f64 / scale,
-                    height: monitor.size().height as f64 / scale,
-                },
-                physical_origin_x: monitor.position().x as f64,
-                physical_origin_y: monitor.position().y as f64,
-                scale_factor: scale,
-            }
-        })
-        .collect())
 }
