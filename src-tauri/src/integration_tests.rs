@@ -507,6 +507,10 @@ fn denied_startup_preserves_preference_but_tray_retries_enable() {
 
     let granted = MonitoringDecision::new(denied.preferred_enabled(), true);
     assert!(granted.effective_enabled());
+    assert_eq!(denied.desired_monitor_change(false), None);
+    assert_eq!(denied.desired_monitor_change(true), Some(false));
+    assert_eq!(granted.desired_monitor_change(false), Some(true));
+    assert_eq!(granted.desired_monitor_change(true), None);
 }
 
 #[test]

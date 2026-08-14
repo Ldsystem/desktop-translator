@@ -28,7 +28,8 @@ fn builder() -> tauri::Builder<tauri::Wry> {
         dismiss_overlay, get_credential_status, get_permission_status, get_settings,
         get_speech_availability, open_accessibility_settings, overlay_ready,
         prompt_and_save_credential, quit_application, remove_credential, save_settings, speak_text,
-        stop_speech, test_credential, translate_input, translate_selection, RuntimeState,
+        stop_speech, sync_permission, test_credential, translate_input, translate_selection,
+        RuntimeState,
     };
     use tauri_plugin_autostart::MacosLauncher;
 
@@ -53,6 +54,7 @@ fn builder() -> tauri::Builder<tauri::Wry> {
             overlay_ready,
             open_accessibility_settings,
             get_permission_status,
+            sync_permission,
             quit_application
         ])
         .setup(|app| {

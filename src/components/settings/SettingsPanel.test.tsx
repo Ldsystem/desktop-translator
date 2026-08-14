@@ -90,7 +90,7 @@ describe("SettingsPanel", () => {
     );
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Allow access in System Settings",
+      "quit Desktop Translator from the menu bar",
     );
     expect(container.textContent).toContain("Monitoring Off");
     const enable = container.querySelector<HTMLInputElement>('input[name="enabled"]');

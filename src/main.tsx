@@ -107,7 +107,7 @@ export function Bootstrap() {
     Promise.all([
       invoke<UserSettings>("get_settings"),
       invoke<CredentialStatus>("get_credential_status"),
-      invoke<PermissionStatus>("get_permission_status"),
+      invoke<PermissionStatus>("sync_permission"),
     ])
       .then(([loadedSettings, loadedCredentialStatus, loadedPermissionStatus]) => {
         if (!disposed) {
@@ -122,8 +122,24 @@ export function Bootstrap() {
         }
       });
 
+    const permissionPoll =
+      mode === "settings"
+        ? window.setInterval(() => {
+            void invoke<PermissionStatus>("sync_permission")
+              .then((status) => {
+                if (!disposed) {
+                  setPermissionStatus(status);
+                }
+              })
+              .catch(() => undefined);
+          }, 2000)
+        : undefined;
+
     return () => {
       disposed = true;
+      if (permissionPoll !== undefined) {
+        window.clearInterval(permissionPoll);
+      }
       void subscription?.then((unlisten) => unlisten());
     };
   }, [mode]);

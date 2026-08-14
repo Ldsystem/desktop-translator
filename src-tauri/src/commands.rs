@@ -65,6 +65,13 @@ impl MonitoringDecision {
         self.preferred_enabled && self.permission_granted
     }
 
+    /// Whether monitoring should start or stop after a permission re-check.
+    /// `None` means the running state already matches.
+    pub(crate) fn desired_monitor_change(self, currently_enabled: bool) -> Option<bool> {
+        let desired = self.effective_enabled();
+        (desired != currently_enabled).then_some(desired)
+    }
+
     #[cfg(test)]
     pub(crate) fn tray_toggle_request(self) -> bool {
         !self.effective_enabled()
@@ -600,21 +607,47 @@ pub fn open_accessibility_settings() -> Result<(), AppError> {
         .map_err(|_| internal_error("System accessibility settings could not be opened"))
 }
 
+fn permission_status_label() -> &'static str {
+    if platform_permission_granted() {
+        "granted"
+    } else {
+        "denied"
+    }
+}
+
 /// Reports platform permission without triggering a prompt.
 #[tauri::command]
 pub fn get_permission_status() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        match MacSelectionAdapter::permission_status() {
-            crate::platform::macos::AccessibilityPermission::Granted => "granted",
-            crate::platform::macos::AccessibilityPermission::Denied => "denied",
+    permission_status_label()
+}
+
+/// Re-reads Accessibility permission and starts or stops monitoring to match.
+///
+/// macOS does not always apply a newly granted toggle to a process that is
+/// already running. Callers should still quit and relaunch after a first-time
+/// grant; this path covers the cases where the kernel does update in place,
+/// and recovers monitoring after Settings is reopened.
+#[tauri::command]
+pub async fn sync_permission(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<&'static str, AppError> {
+    let granted = platform_permission_granted();
+    let preferred = state.settings.load()?.enabled;
+    let decision = MonitoringDecision::new(preferred, granted);
+    match decision.desired_monitor_change(state.coordinator.is_enabled()) {
+        Some(true) => {
+            crate::start_global_monitor(&app)?;
+            state.coordinator.set_enabled(true).await?;
         }
+        Some(false) => {
+            let disabled = state.coordinator.set_enabled(false).await;
+            state.stop_monitor();
+            disabled?;
+        }
+        None => {}
     }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::any::TypeId::of::<WindowsSelectionAdapter>();
-        "granted"
-    }
+    Ok(permission_status_label())
 }
 
 /// Quits through Tauri so managed windows and state are dropped.
