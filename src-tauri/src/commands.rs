@@ -411,6 +411,11 @@ impl RuntimeState {
         self.coordinator.clone()
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn overlay_controller(&self) -> Arc<crate::overlay::TauriOverlayController> {
+        self.overlay.clone()
+    }
+
     /// Reports effective monitoring independently from persisted preference.
     pub fn monitoring_enabled(&self) -> bool {
         self.coordinator.is_enabled()

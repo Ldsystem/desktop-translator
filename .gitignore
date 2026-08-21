@@ -1,4 +1,5 @@
 .work-bundle/
+.codegraph/
 AGENTS.md
 roles/
 node_modules/

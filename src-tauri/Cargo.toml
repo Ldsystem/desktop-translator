@@ -1,6 +1,6 @@
 [package]
 name = "desktop-translator"
-version = "0.1.0"
+version = "0.1.1"
 description = "Lightweight cross-platform selection translator"
 authors = ["Desktop Translator Contributors"]
 edition = "2021"

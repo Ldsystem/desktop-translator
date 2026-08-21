@@ -9,10 +9,11 @@ pub mod window;
 
 pub use input::{PrimaryGestureState, PrimaryMouseEvent, PrimaryMouseObserver};
 pub use selection::{
-    normalize_rect, normalize_rects, AccessibilityPermission, DisplayTransform, MacSelectionAdapter,
+    active_display_transforms, normalize_rect, normalize_rects, AccessibilityPermission,
+    DisplayTransform, MacSelectionAdapter,
 };
 pub use speech::MacSpeechAdapter;
 pub use window::{
     configure_nonactivating_panel, hide_panel, order_front_without_activation, MacOverlayWindow,
-    NonActivatingPanelPolicy, OverlayCommand,
+    MacScreenGeometry, NonActivatingPanelPolicy, OverlayCommand,
 };

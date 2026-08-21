@@ -21,7 +21,7 @@ use windows::Win32::{
 
 use crate::{
     contracts::{AppError, AppErrorCode, PhysicalRect, SelectionSnapshot, TranslationResult},
-    placement::{place_overlay_on_monitors, MonitorWorkArea, PhysicalSize},
+    placement::{place_overlay_on_monitors, MonitorWorkArea, OverlayPlacement, PhysicalSize},
     platform::OverlayController,
 };
 
@@ -61,6 +61,39 @@ pub fn apply_non_activating_tool_window(hwnd: HWND) -> Result<(), AppError> {
             ),
         )
         .map_err(|_| internal("could not commit non-activating window styles"))?;
+    }
+    Ok(())
+}
+
+/// Moves and resizes the real overlay HWND in global physical screen pixels.
+///
+/// Tauri's generic window move path can retain the monitor association used when
+/// the WebView was created. Applying the resolved placement to the HWND keeps the
+/// visible surface and its native hit-test bounds together across Windows
+/// monitors with different origins or scale factors.
+pub(crate) fn position_non_activating_tool_window(
+    hwnd: HWND,
+    placement: &OverlayPlacement,
+) -> Result<(), AppError> {
+    let x = finite_i32(placement.position_physical_px.x)?;
+    let y = finite_i32(placement.position_physical_px.y)?;
+    let width = positive_i32(placement.size_physical_px.width)?;
+    let height = positive_i32(placement.size_physical_px.height)?;
+
+    // SAFETY: the caller owns a live HWND and the placement contains only
+    // validated scalar bounds. HWND_TOPMOST keeps the contextual surface above
+    // ordinary windows while SWP_NOACTIVATE preserves the source selection.
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(hwnd_topmost()),
+            x,
+            y,
+            width,
+            height,
+            SET_WINDOW_POS_FLAGS(SWP_NOACTIVATE.0 | SWP_NOOWNERZORDER.0),
+        )
+        .map_err(|_| internal("could not position Windows overlay"))?;
     }
     Ok(())
 }

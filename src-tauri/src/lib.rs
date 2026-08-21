@@ -84,6 +84,7 @@ fn builder() -> tauri::Builder<tauri::Wry> {
             {
                 let _ = window.hide();
             }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             tauri::WindowEvent::ScaleFactorChanged { .. } if window.label() == "overlay" => {
                 let coordinator = window.state::<RuntimeState>().coordinator();
                 tauri::async_runtime::spawn(async move {
@@ -107,6 +108,7 @@ pub(crate) fn start_global_monitor(app: &tauri::AppHandle) -> Result<(), AppErro
         use crate::platform::macos::{PrimaryMouseEvent, PrimaryMouseObserver};
 
         let app_handle = app.clone();
+        let overlay = state.overlay_controller();
         let observer = PrimaryMouseObserver::start().map_err(|_| {
             state.release_monitor_start();
             AppError::new(
@@ -122,18 +124,24 @@ pub(crate) fn start_global_monitor(app: &tauri::AppHandle) -> Result<(), AppErro
                 let mut routing = PrimaryGestureRouting::default();
                 while let Ok(event) = observer.recv() {
                     let should_forward = match event {
-                        PrimaryMouseEvent::Pressed => routing.should_forward_press(
-                            crate::overlay::cursor_is_over_overlay(&app_handle),
+                        PrimaryMouseEvent::Pressed { position } => routing.should_forward_press(
+                            crate::overlay::cursor_is_over_overlay(&app_handle, position),
                         ),
-                        PrimaryMouseEvent::Released => routing.should_forward_release(),
+                        PrimaryMouseEvent::Released { position } => {
+                            let should_forward = routing.should_forward_release();
+                            if should_forward {
+                                overlay.record_selection_release(position);
+                            }
+                            should_forward
+                        }
                     };
                     if !should_forward {
                         continue;
                     }
                     let result = tauri::async_runtime::block_on(async {
                         match event {
-                            PrimaryMouseEvent::Pressed => coordinator.pointer_down().await,
-                            PrimaryMouseEvent::Released => coordinator.pointer_up().await,
+                            PrimaryMouseEvent::Pressed { .. } => coordinator.pointer_down().await,
+                            PrimaryMouseEvent::Released { .. } => coordinator.pointer_up().await,
                         }
                     });
                     if result.is_err() {

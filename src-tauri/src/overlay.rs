@@ -6,15 +6,20 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+#[cfg(target_os = "macos")]
+use tauri::{LogicalPosition, LogicalSize};
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+use tauri::{PhysicalPosition, PhysicalSize};
 use tokio::sync::oneshot;
 
+#[cfg(not(target_os = "macos"))]
+use crate::placement::place_overlay_on_monitors;
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+use crate::placement::MonitorWorkArea;
 use crate::{
     contracts::{AppError, AppErrorCode, PhysicalRect, SelectionSnapshot, TranslationResult},
-    placement::{place_overlay_on_monitors, MonitorWorkArea, PhysicalSize as OverlaySize},
+    placement::PhysicalSize as OverlaySize,
     platform::OverlayController,
 };
 
@@ -95,6 +100,8 @@ pub struct TauriOverlayController {
     session: Arc<Mutex<OverlaySession>>,
     idle_cancel: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     operation: Arc<Mutex<()>>,
+    #[cfg(target_os = "macos")]
+    macos_anchor_logical: Arc<Mutex<Option<PhysicalRect>>>,
 }
 
 impl TauriOverlayController {
@@ -105,11 +112,28 @@ impl TauriOverlayController {
             session: Arc::new(Mutex::new(OverlaySession::default())),
             idle_cancel: Arc::new(Mutex::new(None)),
             operation: Arc::new(Mutex::new(())),
+            #[cfg(target_os = "macos")]
+            macos_anchor_logical: Arc::new(Mutex::new(None)),
         }
     }
 
     fn window(&self) -> Result<WebviewWindow, AppError> {
         ensure_overlay(&self.app)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn record_selection_release(&self, position: crate::placement::PhysicalPoint) {
+        if position.x.is_finite() && position.y.is_finite() {
+            *self
+                .macos_anchor_logical
+                .lock()
+                .expect("macOS overlay anchor") = Some(PhysicalRect {
+                x: position.x,
+                y: position.y,
+                width: 1.0,
+                height: 1.0,
+            });
+        }
     }
 
     /// Flushes the first buffered selection after the renderer listener exists.
@@ -128,14 +152,24 @@ impl TauriOverlayController {
 
     /// Grows the trigger-sized window to the card footprint before content is
     /// emitted. Missing windows are ignored so a dismissed overlay stays hidden.
-    fn expand_to_card(&self, selection: &SelectionSnapshot) -> Result<(), AppError> {
+    fn expand_to_card(&self, _selection: &SelectionSnapshot) -> Result<(), AppError> {
         let _operation = self.operation.lock().expect("overlay operation");
         let Some(window) = self.app.get_webview_window(OVERLAY_LABEL) else {
             return Ok(());
         };
+        #[cfg(target_os = "macos")]
+        let anchor = self
+            .macos_anchor_logical
+            .lock()
+            .expect("macOS overlay anchor")
+            .as_ref()
+            .copied()
+            .ok_or_else(|| overlay_error("Overlay anchor is unavailable"))?;
+        #[cfg(not(target_os = "macos"))]
+        let anchor = _selection.anchor_physical_px;
         position_overlay(
             &window,
-            selection.anchor_physical_px,
+            anchor,
             OverlaySize {
                 width: OVERLAY_WIDTH,
                 height: OVERLAY_HEIGHT,
@@ -187,9 +221,19 @@ impl OverlayController for TauriOverlayController {
         let _operation = self.operation.lock().expect("overlay operation");
         self.cancel_idle_destruction();
         let window = self.window()?;
+        #[cfg(target_os = "macos")]
+        let anchor = self
+            .macos_anchor_logical
+            .lock()
+            .expect("macOS overlay anchor")
+            .as_ref()
+            .copied()
+            .ok_or_else(|| overlay_error("Selection release position is unavailable"))?;
+        #[cfg(not(target_os = "macos"))]
+        let anchor = selection.anchor_physical_px;
         position_overlay(
             &window,
-            selection.anchor_physical_px,
+            anchor,
             OverlaySize {
                 width: TRIGGER_WIDTH,
                 height: TRIGGER_HEIGHT,
@@ -270,6 +314,43 @@ pub fn hide_overlay(app: &AppHandle) -> Result<(), AppError> {
 }
 
 /// Reports whether the current pointer is inside the visible contextual surface.
+#[cfg(target_os = "macos")]
+pub(crate) fn cursor_is_over_overlay(
+    app: &AppHandle,
+    cursor: crate::placement::PhysicalPoint,
+) -> bool {
+    let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
+        return false;
+    };
+    if window.is_visible().ok() != Some(true) {
+        return false;
+    }
+    let Ok(origin) = window.outer_position() else {
+        return false;
+    };
+    let Ok(size) = window.outer_size() else {
+        return false;
+    };
+    let Ok(scale_factor) = window.scale_factor() else {
+        return false;
+    };
+    let Some(bounds) = crate::platform::macos::window::logical_window_bounds(
+        crate::placement::PhysicalPoint {
+            x: origin.x as f64,
+            y: origin.y as f64,
+        },
+        OverlaySize {
+            width: size.width as f64,
+            height: size.height as f64,
+        },
+        scale_factor,
+    ) else {
+        return false;
+    };
+    crate::platform::macos::window::point_is_inside_overlay(cursor, bounds)
+}
+
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn cursor_is_over_overlay(app: &AppHandle) -> bool {
     let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
         return false;
@@ -286,7 +367,6 @@ pub(crate) fn cursor_is_over_overlay(app: &AppHandle) -> bool {
     let Ok(cursor) = app.cursor_position() else {
         return false;
     };
-
     cursor.x >= origin.x as f64
         && cursor.x < origin.x as f64 + size.width as f64
         && cursor.y >= origin.y as f64
@@ -321,6 +401,64 @@ fn ensure_overlay(app: &AppHandle) -> Result<WebviewWindow, AppError> {
     Ok(window)
 }
 
+#[cfg(target_os = "windows")]
+fn position_overlay(
+    window: &WebviewWindow,
+    anchor: PhysicalRect,
+    logical_size: OverlaySize,
+) -> Result<(), AppError> {
+    use crate::platform::windows::window::{
+        monitor_work_area_for, position_non_activating_tool_window,
+    };
+
+    let work_area = monitor_work_area_for(anchor)?;
+    let placement = place_overlay_on_monitors(anchor, &[work_area], logical_size, OVERLAY_GAP)
+        .ok_or_else(|| overlay_error("Overlay position could not be resolved"))?;
+    let hwnd = window
+        .hwnd()
+        .map_err(|_| overlay_error("Native overlay handle is unavailable"))?;
+    position_non_activating_tool_window(hwnd, &placement)
+}
+
+#[cfg(target_os = "macos")]
+fn position_overlay(
+    window: &WebviewWindow,
+    anchor_logical: PhysicalRect,
+    logical_size: OverlaySize,
+) -> Result<(), AppError> {
+    use crate::platform::macos::{active_display_transforms, MacScreenGeometry};
+
+    let screens: Vec<_> = active_display_transforms()
+        .into_iter()
+        .enumerate()
+        .map(|(index, display)| MacScreenGeometry {
+            id: format!("display-{index}"),
+            logical_bounds: display.logical_bounds,
+        })
+        .collect();
+    let placement = crate::platform::macos::window::place_overlay_in_screen_points(
+        anchor_logical,
+        &screens,
+        logical_size,
+        OVERLAY_GAP,
+    )
+    .ok_or_else(|| overlay_error("Overlay position could not be resolved"))?;
+
+    window
+        .set_size(LogicalSize::new(
+            placement.size_logical_points.width,
+            placement.size_logical_points.height,
+        ))
+        .and_then(|_| {
+            window.set_position(LogicalPosition::new(
+                placement.position_logical_points.x,
+                placement.position_logical_points.y,
+            ))
+        })
+        .map_err(|_| overlay_error("Overlay position could not be applied"))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn position_overlay(
     window: &WebviewWindow,
     anchor: PhysicalRect,

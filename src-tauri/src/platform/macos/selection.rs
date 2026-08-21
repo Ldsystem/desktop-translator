@@ -19,6 +19,7 @@ use async_trait::async_trait;
 
 use crate::{
     contracts::{AppError, AppErrorCode, PhysicalRect, SelectionSnapshot},
+    placement::PhysicalPoint,
     platform::{SelectionAdapter, SelectionPolicy},
 };
 
@@ -562,6 +563,22 @@ fn display_transform(id: CGDirectDisplayId) -> Option<DisplayTransform> {
         scale_factor,
     };
     valid_display(&transform).then_some(transform)
+}
+
+/// Reads one live CGEvent location in Quartz's global logical screen points.
+///
+/// # Safety
+/// `event` must be a live CGEvent for the duration of this call.
+pub(crate) unsafe fn event_location_logical(event: *const c_void) -> Option<PhysicalPoint> {
+    if event.is_null() {
+        return None;
+    }
+    // SAFETY: guaranteed by the caller and CoreGraphics does not retain it.
+    let location = unsafe { CGEventGetLocation(event) };
+    (location.x.is_finite() && location.y.is_finite()).then_some(PhysicalPoint {
+        x: location.x,
+        y: location.y,
+    })
 }
 
 fn display_scale_factor(id: CGDirectDisplayId) -> Option<f64> {
