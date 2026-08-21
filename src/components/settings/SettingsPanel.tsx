@@ -72,7 +72,9 @@ export function SettingsPanel({
           <div>
             <h2 id="permission-title">Accessibility Permission Required</h2>
             <p>
-              Monitoring is off. Allow access in System Settings, then return here to enable it.
+              Monitoring is off. Allow access in System Settings, then quit
+              Desktop Translator from the menu bar and open it again. macOS does
+              not apply this permission to an app that is already running.
             </p>
           </div>
           <button className="button button--secondary" type="button" onClick={onOpenSystemSettings}>

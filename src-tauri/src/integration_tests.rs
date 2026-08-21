@@ -51,6 +51,45 @@ impl SelectionAdapter for FixedSelectionAdapter {
     }
 }
 
+/// Stands in for a surface that publishes its accessibility tree lazily: it
+/// reports no selection until it has been woken and asked enough times.
+struct LazySelectionAdapter {
+    selection: SelectionSnapshot,
+    reads_before_selection_appears: usize,
+    reads: AtomicUsize,
+    wakes: AtomicUsize,
+}
+
+impl LazySelectionAdapter {
+    fn new(reads_before_selection_appears: usize) -> Self {
+        Self {
+            selection: selection(),
+            reads_before_selection_appears,
+            reads: AtomicUsize::new(0),
+            wakes: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl SelectionAdapter for LazySelectionAdapter {
+    async fn resolve_selection(&self, _: &SelectionPolicy) -> Result<SelectionSnapshot, AppError> {
+        let read = self.reads.fetch_add(1, Ordering::SeqCst);
+        if read < self.reads_before_selection_appears {
+            return Err(AppError::new(
+                AppErrorCode::NoSelection,
+                "no selection",
+                false,
+            ));
+        }
+        Ok(self.selection.clone())
+    }
+
+    async fn prepare_source(&self) {
+        self.wakes.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 #[derive(Default)]
 struct RecordingOverlay {
     actions: Mutex<Vec<&'static str>>,
@@ -153,6 +192,65 @@ fn application_coordinator(
         },
         true,
     )
+}
+
+fn coordinator_with_selection(
+    selection: Arc<dyn SelectionAdapter>,
+    overlay: Arc<RecordingOverlay>,
+) -> ApplicationCoordinator {
+    ApplicationCoordinator::new(
+        selection,
+        overlay,
+        Arc::new(CountingProvider {
+            calls: AtomicUsize::new(0),
+        }),
+        Arc::new(RecordingSpeech::default()),
+        SelectionPolicy {
+            max_code_points: 5_000,
+            excluded_application_id: Some("com.desktop-translator.app".into()),
+        },
+        true,
+    )
+}
+
+#[tokio::test]
+async fn a_press_wakes_the_surface_before_the_selection_is_read() {
+    let adapter = Arc::new(LazySelectionAdapter::new(0));
+    let coordinator =
+        coordinator_with_selection(adapter.clone(), Arc::new(RecordingOverlay::default()));
+
+    coordinator.pointer_down().await.expect("pointer down");
+
+    assert_eq!(adapter.wakes.load(Ordering::SeqCst), 1);
+    assert_eq!(adapter.reads.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_surface_that_wakes_late_still_produces_a_button() {
+    let adapter = Arc::new(LazySelectionAdapter::new(1));
+    let overlay = Arc::new(RecordingOverlay::default());
+    let coordinator = coordinator_with_selection(adapter.clone(), overlay.clone());
+
+    coordinator.pointer_down().await.expect("pointer down");
+    coordinator.pointer_up().await.expect("pointer up");
+
+    assert_eq!(adapter.reads.load(Ordering::SeqCst), 2);
+    assert!(
+        overlay.actions.lock().expect("actions").contains(&"button"),
+        "a late-waking surface must still show the button"
+    );
+}
+
+#[tokio::test]
+async fn a_surface_with_no_selection_is_not_retried_forever() {
+    let adapter = Arc::new(LazySelectionAdapter::new(usize::MAX));
+    let overlay = Arc::new(RecordingOverlay::default());
+    let coordinator = coordinator_with_selection(adapter.clone(), overlay.clone());
+
+    coordinator.pointer_up().await.expect("pointer up");
+
+    assert_eq!(adapter.reads.load(Ordering::SeqCst), 2);
+    assert!(!overlay.actions.lock().expect("actions").contains(&"button"));
 }
 
 #[tokio::test]
@@ -409,6 +507,10 @@ fn denied_startup_preserves_preference_but_tray_retries_enable() {
 
     let granted = MonitoringDecision::new(denied.preferred_enabled(), true);
     assert!(granted.effective_enabled());
+    assert_eq!(denied.desired_monitor_change(false), None);
+    assert_eq!(denied.desired_monitor_change(true), Some(false));
+    assert_eq!(granted.desired_monitor_change(false), Some(true));
+    assert_eq!(granted.desired_monitor_change(true), None);
 }
 
 #[test]

@@ -11,6 +11,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use crate::placement::PhysicalPoint;
+
 type CGEventTapProxy = *mut c_void;
 type CGEventRef = *mut c_void;
 type CFMachPortRef = *mut c_void;
@@ -61,10 +63,10 @@ unsafe extern "C" {
     fn CFRunLoopStop(run_loop: CFRunLoopRef);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PrimaryMouseEvent {
-    Pressed,
-    Released,
+    Pressed { position: PhysicalPoint },
+    Released { position: PhysicalPoint },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,11 +78,11 @@ impl PrimaryGestureState {
     /// Returns true exactly when a primary press is completed by its release.
     pub fn observe(&mut self, event: PrimaryMouseEvent) -> bool {
         match event {
-            PrimaryMouseEvent::Pressed => {
+            PrimaryMouseEvent::Pressed { .. } => {
                 self.pressed = true;
                 false
             }
-            PrimaryMouseEvent::Released => std::mem::take(&mut self.pressed),
+            PrimaryMouseEvent::Released { .. } => std::mem::take(&mut self.pressed),
         }
     }
 }
@@ -287,9 +289,14 @@ unsafe extern "C" fn event_tap_callback(
         }
         return event;
     }
+    // SAFETY: Quartz supplies a live event for mouse callbacks.
+    let Some(position) = (unsafe { super::selection::event_location_logical(event.cast_const()) })
+    else {
+        return event;
+    };
     let observed = match event_type {
-        LEFT_MOUSE_DOWN => Some(PrimaryMouseEvent::Pressed),
-        LEFT_MOUSE_UP => Some(PrimaryMouseEvent::Released),
+        LEFT_MOUSE_DOWN => Some(PrimaryMouseEvent::Pressed { position }),
+        LEFT_MOUSE_UP => Some(PrimaryMouseEvent::Released { position }),
         _ => None,
     };
     if let Some(observed) = observed {
@@ -329,21 +336,37 @@ mod tests {
         deliver_event, EventTapContext, ObserverStopState, PrimaryGestureState, PrimaryMouseEvent,
     };
 
+    fn point(x: f64, y: f64) -> crate::placement::PhysicalPoint {
+        crate::placement::PhysicalPoint { x, y }
+    }
+
     #[test]
     fn completes_only_a_matching_primary_press_and_release() {
         let mut state = PrimaryGestureState::default();
-        assert!(!state.observe(PrimaryMouseEvent::Released));
-        assert!(!state.observe(PrimaryMouseEvent::Pressed));
-        assert!(state.observe(PrimaryMouseEvent::Released));
-        assert!(!state.observe(PrimaryMouseEvent::Released));
+        assert!(!state.observe(PrimaryMouseEvent::Released {
+            position: point(10.0, 10.0),
+        }));
+        assert!(!state.observe(PrimaryMouseEvent::Pressed {
+            position: point(10.0, 10.0),
+        }));
+        assert!(state.observe(PrimaryMouseEvent::Released {
+            position: point(20.0, 20.0),
+        }));
+        assert!(!state.observe(PrimaryMouseEvent::Released {
+            position: point(20.0, 20.0),
+        }));
     }
 
     #[test]
     fn independently_completes_double_and_triple_click_cycles() {
         let mut state = PrimaryGestureState::default();
         for _ in 0..3 {
-            assert!(!state.observe(PrimaryMouseEvent::Pressed));
-            assert!(state.observe(PrimaryMouseEvent::Released));
+            assert!(!state.observe(PrimaryMouseEvent::Pressed {
+                position: point(1.0, 1.0),
+            }));
+            assert!(state.observe(PrimaryMouseEvent::Released {
+                position: point(1.0, 1.0),
+            }));
         }
     }
 
@@ -358,10 +381,18 @@ mod tests {
             stop: Arc::new(ObserverStopState::default()),
         };
 
-        deliver_event(&context, PrimaryMouseEvent::Pressed);
-        deliver_event(&context, PrimaryMouseEvent::Released);
+        let pressed = PrimaryMouseEvent::Pressed {
+            position: point(2200.0, 500.0),
+        };
+        deliver_event(&context, pressed);
+        deliver_event(
+            &context,
+            PrimaryMouseEvent::Released {
+                position: point(2200.0, 500.0),
+            },
+        );
 
-        assert_eq!(receiver.try_recv(), Ok(PrimaryMouseEvent::Pressed));
+        assert_eq!(receiver.try_recv(), Ok(pressed));
         assert_eq!(dropped_events.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
@@ -376,12 +407,20 @@ mod tests {
             stop: stop.clone(),
         };
 
-        deliver_event(&context, PrimaryMouseEvent::Pressed);
+        let pressed = PrimaryMouseEvent::Pressed {
+            position: point(2200.0, 500.0),
+        };
+        deliver_event(&context, pressed);
         assert!(stop.stop());
         assert!(!stop.stop());
-        deliver_event(&context, PrimaryMouseEvent::Released);
+        deliver_event(
+            &context,
+            PrimaryMouseEvent::Released {
+                position: point(2200.0, 500.0),
+            },
+        );
 
-        assert_eq!(receiver.try_recv(), Ok(PrimaryMouseEvent::Pressed));
+        assert_eq!(receiver.try_recv(), Ok(pressed));
         assert!(receiver.try_recv().is_err());
     }
 }

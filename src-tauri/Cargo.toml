@@ -1,6 +1,6 @@
 [package]
 name = "desktop-translator"
-version = "0.1.0"
+version = "0.1.1"
 description = "Lightweight cross-platform selection translator"
 authors = ["Desktop Translator Contributors"]
 edition = "2021"
@@ -17,7 +17,11 @@ async-trait = "0.1.92"
 crossbeam-channel = "0.5.16"
 html-escape = "0.2.15"
 keyring = { version = "4.1.6", default-features = false, features = ["apple-native-keyring-store", "v1", "windows-native-keyring-store"] }
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+# `system-proxy` and `socks` are part of reqwest's defaults and must be kept
+# explicitly: without them the client only honours HTTP_PROXY-style variables,
+# which a GUI app launched from Finder never inherits. Users who reach Google
+# only through a local proxy would see every request time out.
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "socks", "system-proxy"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tauri = { version = "2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }

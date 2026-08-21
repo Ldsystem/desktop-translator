@@ -9,7 +9,8 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    contracts::{AppError, SelectionSnapshot, TranslationResult},
+    contracts::{AppError, PhysicalRect, SelectionSnapshot, TranslationResult},
+    placement::{PhysicalPoint, PhysicalSize},
     platform::OverlayController,
 };
 
@@ -26,6 +27,129 @@ const CAN_JOIN_ALL_SPACES: NSUInteger = 1 << 0;
 const IGNORES_CYCLE: NSUInteger = 1 << 6;
 const FULL_SCREEN_AUXILIARY: NSUInteger = 1 << 8;
 const STATUS_WINDOW_LEVEL: NSInteger = 25;
+
+/// One macOS display in Quartz's global top-left logical-point space.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacScreenGeometry {
+    pub id: String,
+    pub logical_bounds: PhysicalRect,
+}
+
+/// Resolved macOS overlay geometry, expressed entirely in logical screen points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacOverlayPlacement {
+    pub screen_id: String,
+    pub position_logical_points: PhysicalPoint,
+    pub size_logical_points: PhysicalSize,
+}
+
+impl MacOverlayPlacement {
+    pub fn bounds(&self) -> PhysicalRect {
+        PhysicalRect {
+            x: self.position_logical_points.x,
+            y: self.position_logical_points.y,
+            width: self.size_logical_points.width,
+            height: self.size_logical_points.height,
+        }
+    }
+}
+
+/// Places an overlay without mixing Quartz logical points and backing pixels.
+pub fn place_overlay_in_screen_points(
+    anchor: PhysicalRect,
+    screens: &[MacScreenGeometry],
+    logical_size: PhysicalSize,
+    gap: f64,
+) -> Option<MacOverlayPlacement> {
+    if !valid_rect(anchor) || !valid_size(logical_size) || !gap.is_finite() || gap < 0.0 {
+        return None;
+    }
+    let center_x = anchor.x + anchor.width / 2.0;
+    let center_y = anchor.y + anchor.height / 2.0;
+    let screen =
+        screens
+            .iter()
+            .filter(|screen| valid_rect(screen.logical_bounds))
+            .min_by(|left, right| {
+                distance_to_rect(center_x, center_y, left.logical_bounds)
+                    .total_cmp(&distance_to_rect(center_x, center_y, right.logical_bounds))
+            })?;
+    let area = screen.logical_bounds;
+    let right = area.x + area.width;
+    let bottom = area.y + area.height;
+    let mut x = anchor.x + anchor.width + gap;
+    let mut y = anchor.y + anchor.height + gap;
+    if x + logical_size.width > right {
+        x = anchor.x - logical_size.width - gap;
+    }
+    if y + logical_size.height > bottom {
+        y = anchor.y - logical_size.height - gap;
+    }
+    x = x.clamp(area.x, (right - logical_size.width).max(area.x));
+    y = y.clamp(area.y, (bottom - logical_size.height).max(area.y));
+
+    Some(MacOverlayPlacement {
+        screen_id: screen.id.clone(),
+        position_logical_points: PhysicalPoint { x, y },
+        size_logical_points: logical_size,
+    })
+}
+
+pub fn point_is_inside_overlay(point: PhysicalPoint, bounds: PhysicalRect) -> bool {
+    point.x >= bounds.x
+        && point.x < bounds.x + bounds.width
+        && point.y >= bounds.y
+        && point.y < bounds.y + bounds.height
+}
+
+/// Converts Tauri's backing-pixel window bounds back to Quartz logical points
+/// using the overlay's current display scale.
+pub fn logical_window_bounds(
+    origin_backing_px: PhysicalPoint,
+    size_backing_px: PhysicalSize,
+    scale_factor: f64,
+) -> Option<PhysicalRect> {
+    if !valid_size(size_backing_px) || !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return None;
+    }
+    Some(PhysicalRect {
+        x: origin_backing_px.x / scale_factor,
+        y: origin_backing_px.y / scale_factor,
+        width: size_backing_px.width / scale_factor,
+        height: size_backing_px.height / scale_factor,
+    })
+}
+
+fn valid_rect(rect: PhysicalRect) -> bool {
+    rect.x.is_finite()
+        && rect.y.is_finite()
+        && rect.width.is_finite()
+        && rect.height.is_finite()
+        && rect.width > 0.0
+        && rect.height > 0.0
+}
+
+fn valid_size(size: PhysicalSize) -> bool {
+    size.width.is_finite() && size.height.is_finite() && size.width > 0.0 && size.height > 0.0
+}
+
+fn distance_to_rect(x: f64, y: f64, rect: PhysicalRect) -> f64 {
+    let dx = if x < rect.x {
+        rect.x - x
+    } else if x > rect.x + rect.width {
+        x - (rect.x + rect.width)
+    } else {
+        0.0
+    };
+    let dy = if y < rect.y {
+        rect.y - y
+    } else if y > rect.y + rect.height {
+        y - (rect.y + rect.height)
+    } else {
+        0.0
+    };
+    dx * dx + dy * dy
+}
 
 #[link(name = "AppKit", kind = "framework")]
 unsafe extern "C" {}
@@ -297,9 +421,86 @@ mod tests {
     };
 
     use super::{
-        MacOverlayWindow, NonActivatingPanelPolicy, OverlayCommand, CAN_JOIN_ALL_SPACES,
-        FULL_SCREEN_AUXILIARY, IGNORES_CYCLE, NONACTIVATING_PANEL_MASK,
+        logical_window_bounds, place_overlay_in_screen_points, point_is_inside_overlay,
+        MacOverlayWindow, MacScreenGeometry, NonActivatingPanelPolicy, OverlayCommand,
+        CAN_JOIN_ALL_SPACES, FULL_SCREEN_AUXILIARY, IGNORES_CYCLE, NONACTIVATING_PANEL_MASK,
     };
+
+    #[test]
+    fn mixed_scale_secondary_display_uses_captured_quartz_screen_points() {
+        // Captured from the user's Mac: the main display is Retina (2x), while
+        // the secondary display is 1x and begins at Quartz x=1800.
+        let screens = [
+            MacScreenGeometry {
+                id: "main".into(),
+                logical_bounds: PhysicalRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1800.0,
+                    height: 1169.0,
+                },
+            },
+            MacScreenGeometry {
+                id: "secondary".into(),
+                logical_bounds: PhysicalRect {
+                    x: 1800.0,
+                    y: 0.0,
+                    width: 2560.0,
+                    height: 1440.0,
+                },
+            },
+        ];
+        let release_event = crate::platform::macos::PrimaryMouseEvent::Released {
+            position: crate::placement::PhysicalPoint {
+                x: 2200.0,
+                y: 500.0,
+            },
+        };
+        // The pointer may move during Accessibility's settle/retry delay. The
+        // overlay must use the event's release coordinate, not sample this later.
+        let pointer_after_resolution_delay = crate::placement::PhysicalPoint { x: 300.0, y: 300.0 };
+        let crate::platform::macos::PrimaryMouseEvent::Released { position } = release_event else {
+            unreachable!()
+        };
+        assert_ne!(position, pointer_after_resolution_delay);
+        let release_point = PhysicalRect {
+            x: position.x,
+            y: position.y,
+            width: 1.0,
+            height: 1.0,
+        };
+
+        let placement = place_overlay_in_screen_points(
+            release_point,
+            &screens,
+            crate::placement::PhysicalSize {
+                width: 44.0,
+                height: 44.0,
+            },
+            8.0,
+        )
+        .expect("secondary placement");
+
+        assert_eq!(placement.screen_id, "secondary");
+        assert_eq!(placement.size_logical_points.width, 44.0);
+        assert!(placement.bounds().x >= 1800.0);
+        let logical_bounds = logical_window_bounds(
+            placement.position_logical_points,
+            placement.size_logical_points,
+            1.0,
+        )
+        .expect("secondary window bounds");
+        let press_event = crate::platform::macos::PrimaryMouseEvent::Pressed {
+            position: crate::placement::PhysicalPoint {
+                x: logical_bounds.x + 22.0,
+                y: logical_bounds.y + 22.0,
+            },
+        };
+        let crate::platform::macos::PrimaryMouseEvent::Pressed { position } = press_event else {
+            unreachable!()
+        };
+        assert!(point_is_inside_overlay(position, logical_bounds));
+    }
 
     #[test]
     fn default_policy_preserves_foreground_application() {

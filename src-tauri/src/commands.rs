@@ -13,8 +13,8 @@ use zeroize::Zeroize;
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, TranslationRequest, TranslationResult, UserSettings,
-        ValidateContract,
+        AppError, AppErrorCode, SelectionSnapshot, TranslationRequest, TranslationResult,
+        UserSettings, ValidateContract,
     },
     coordinator::{CoordinatorEvent, OverlayState},
     platform::{
@@ -30,13 +30,15 @@ use crate::{
 };
 
 #[cfg(target_os = "macos")]
-use crate::platform::macos::{
-    AccessibilityPermission, DisplayTransform, MacSelectionAdapter, MacSpeechAdapter,
-};
+use crate::platform::macos::{AccessibilityPermission, MacSelectionAdapter, MacSpeechAdapter};
 #[cfg(target_os = "windows")]
 use crate::platform::windows::{WindowsSelectionAdapter, WindowsSpeechAdapter};
 
 const SELECTION_SETTLE_DELAY: Duration = Duration::from_millis(25);
+/// A surface woken at pointer-down may still be publishing its accessibility
+/// tree when the gesture ends, so one late retry follows an empty first read.
+const SELECTION_RETRY_DELAY: Duration = Duration::from_millis(150);
+const SELECTION_ATTEMPTS: usize = 2;
 const APPLICATION_ID: &str = "com.desktoptranslator.desktop";
 
 /// Separates persisted user intent from permission-gated runtime monitoring.
@@ -61,6 +63,13 @@ impl MonitoringDecision {
 
     pub(crate) fn effective_enabled(self) -> bool {
         self.preferred_enabled && self.permission_granted
+    }
+
+    /// Whether monitoring should start or stop after a permission re-check.
+    /// `None` means the running state already matches.
+    pub(crate) fn desired_monitor_change(self, currently_enabled: bool) -> Option<bool> {
+        let desired = self.effective_enabled();
+        (desired != currently_enabled).then_some(desired)
     }
 
     #[cfg(test)]
@@ -125,7 +134,30 @@ impl ApplicationCoordinator {
             return Ok(());
         }
         self.reduce(CoordinatorEvent::PointerDown);
+        self.selection.prepare_source().await;
         self.overlay.hide().await
+    }
+
+    /// Reads the selection, retrying once so a surface that was still waking at
+    /// pointer-up is not reported as having no selection.
+    async fn resolve_selection(
+        &self,
+        policy: &SelectionPolicy,
+        request_id: u64,
+    ) -> Option<SelectionSnapshot> {
+        for attempt in 1..=SELECTION_ATTEMPTS {
+            if !self.request_is_current(request_id) {
+                return None;
+            }
+            match self.selection.resolve_selection(policy).await {
+                Ok(selection) => return Some(selection),
+                Err(_) if attempt < SELECTION_ATTEMPTS => {
+                    tokio::time::sleep(SELECTION_RETRY_DELAY).await;
+                }
+                Err(_) => return None,
+            }
+        }
+        None
     }
 
     /// Resolves the focused selection after a short settle delay without polling.
@@ -140,8 +172,8 @@ impl ApplicationCoordinator {
             return Ok(());
         }
         let policy = self.policy.lock().expect("selection policy").clone();
-        match self.selection.resolve_selection(&policy).await {
-            Ok(selection) => {
+        match self.resolve_selection(&policy, request_id).await {
+            Some(selection) => {
                 let should_show = {
                     let mut state = self.state.lock().expect("coordinator state");
                     let next = state.clone().reduce(CoordinatorEvent::SelectionResolved {
@@ -162,7 +194,7 @@ impl ApplicationCoordinator {
                     self.overlay.show_button(&selection).await?;
                 }
             }
-            Err(_) => {
+            None => {
                 self.reduce(CoordinatorEvent::SelectionRejected { request_id });
             }
         }
@@ -343,7 +375,7 @@ impl RuntimeState {
 
         #[cfg(target_os = "macos")]
         let selection: Arc<dyn SelectionAdapter> =
-            Arc::new(MacSelectionAdapter::new(display_transforms(app)?));
+            Arc::new(MacSelectionAdapter::with_live_displays());
         #[cfg(target_os = "windows")]
         let selection: Arc<dyn SelectionAdapter> = Arc::new(WindowsSelectionAdapter::new()?);
         let loaded_settings = settings.load()?;
@@ -377,6 +409,11 @@ impl RuntimeState {
     /// Exposes the coordinator to the global event worker.
     pub fn coordinator(&self) -> Arc<ApplicationCoordinator> {
         self.coordinator.clone()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn overlay_controller(&self) -> Arc<crate::overlay::TauriOverlayController> {
+        self.overlay.clone()
     }
 
     /// Reports effective monitoring independently from persisted preference.
@@ -575,21 +612,47 @@ pub fn open_accessibility_settings() -> Result<(), AppError> {
         .map_err(|_| internal_error("System accessibility settings could not be opened"))
 }
 
+fn permission_status_label() -> &'static str {
+    if platform_permission_granted() {
+        "granted"
+    } else {
+        "denied"
+    }
+}
+
 /// Reports platform permission without triggering a prompt.
 #[tauri::command]
 pub fn get_permission_status() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        match MacSelectionAdapter::permission_status() {
-            crate::platform::macos::AccessibilityPermission::Granted => "granted",
-            crate::platform::macos::AccessibilityPermission::Denied => "denied",
+    permission_status_label()
+}
+
+/// Re-reads Accessibility permission and starts or stops monitoring to match.
+///
+/// macOS does not always apply a newly granted toggle to a process that is
+/// already running. Callers should still quit and relaunch after a first-time
+/// grant; this path covers the cases where the kernel does update in place,
+/// and recovers monitoring after Settings is reopened.
+#[tauri::command]
+pub async fn sync_permission(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<&'static str, AppError> {
+    let granted = platform_permission_granted();
+    let preferred = state.settings.load()?.enabled;
+    let decision = MonitoringDecision::new(preferred, granted);
+    match decision.desired_monitor_change(state.coordinator.is_enabled()) {
+        Some(true) => {
+            crate::start_global_monitor(&app)?;
+            state.coordinator.set_enabled(true).await?;
         }
+        Some(false) => {
+            let disabled = state.coordinator.set_enabled(false).await;
+            state.stop_monitor();
+            disabled?;
+        }
+        None => {}
     }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::any::TypeId::of::<WindowsSelectionAdapter>();
-        "granted"
-    }
+    Ok(permission_status_label())
 }
 
 /// Quits through Tauri so managed windows and state are dropped.
@@ -685,28 +748,4 @@ fn platform_permission_granted() -> bool {
     {
         true
     }
-}
-
-#[cfg(target_os = "macos")]
-fn display_transforms(app: &AppHandle) -> Result<Vec<DisplayTransform>, AppError> {
-    let monitors = app
-        .available_monitors()
-        .map_err(|_| internal_error("Monitor topology is unavailable"))?;
-    Ok(monitors
-        .into_iter()
-        .map(|monitor| {
-            let scale = monitor.scale_factor();
-            DisplayTransform {
-                logical_bounds: crate::contracts::PhysicalRect {
-                    x: monitor.position().x as f64 / scale,
-                    y: monitor.position().y as f64 / scale,
-                    width: monitor.size().width as f64 / scale,
-                    height: monitor.size().height as f64 / scale,
-                },
-                physical_origin_x: monitor.position().x as f64,
-                physical_origin_y: monitor.position().y as f64,
-                scale_factor: scale,
-            }
-        })
-        .collect())
 }

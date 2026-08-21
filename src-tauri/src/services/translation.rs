@@ -33,13 +33,20 @@ pub struct GoogleTranslationProvider {
 }
 
 impl GoogleTranslationProvider {
-    /// Creates a provider with a bounded request timeout and one retry.
-    pub fn new(credentials: Arc<dyn CredentialStore>) -> Result<Self, AppError> {
-        let client = Client::builder()
+    /// Builds the outbound client. Proxy discovery is left at reqwest's default
+    /// so the operating system's proxy configuration is honoured; many networks
+    /// reach Google only through one.
+    fn build_client() -> Result<Client, AppError> {
+        Client::builder()
             .timeout(DEFAULT_TIMEOUT)
             .https_only(true)
             .build()
-            .map_err(|_| internal_error("translation client could not be initialized"))?;
+            .map_err(|_| internal_error("translation client could not be initialized"))
+    }
+
+    /// Creates a provider with a bounded request timeout and one retry.
+    pub fn new(credentials: Arc<dyn CredentialStore>) -> Result<Self, AppError> {
+        let client = Self::build_client()?;
 
         Ok(Self {
             client,
@@ -844,5 +851,35 @@ mod tests {
             0,
         );
         assert_eq!(provider.max_attempts, 1);
+    }
+
+    /// Networks that reach Google only through a local proxy expose whether the
+    /// production client performs proxy discovery at all. Run it with the proxy
+    /// environment variables removed, so only the operating system's own
+    /// configuration can satisfy the request:
+    ///
+    /// ```sh
+    /// env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    ///   cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture reaches_google
+    /// ```
+    #[tokio::test]
+    #[ignore = "manual network fixture: contacts the real Google endpoint"]
+    async fn production_client_reaches_google_without_proxy_environment_variables() {
+        let client = GoogleTranslationProvider::build_client().expect("production client");
+        let response = client
+            .get(format!("{LANGUAGES_ENDPOINT}?key=deliberately-invalid"))
+            .send()
+            .await;
+
+        match response {
+            // An invalid key is rejected by Google, which proves the endpoint
+            // was reached rather than blocked.
+            Ok(response) => assert!(
+                response.status().is_client_error(),
+                "unexpected status {}",
+                response.status()
+            ),
+            Err(error) => panic!("the endpoint was unreachable ({error})"),
+        }
     }
 }
