@@ -91,7 +91,15 @@ impl VocabularyStore {
         let transaction = connection.transaction().map_err(storage_error)?;
         let cached = transaction.query_row(
             "SELECT id, translated_text, detected_source_language, effective_source_language, target_language
-             FROM vocabulary_entries WHERE normalized_text = ?1 AND requested_source_language = ?2 AND target_language = ?3",
+             FROM vocabulary_entries
+             WHERE normalized_text = ?1 AND target_language = ?3
+               AND (
+                 requested_source_language = ?2 COLLATE NOCASE
+                 OR (lower(?2) <> 'auto' AND requested_source_language = 'auto'
+                     AND effective_source_language = ?2 COLLATE NOCASE)
+               )
+             ORDER BY CASE WHEN requested_source_language = ?2 COLLATE NOCASE THEN 0 ELSE 1 END, id
+             LIMIT 1",
             params![normalized, request.source_language.trim(), request.target_language.trim()],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)),
         ).optional().map_err(storage_error)?;
@@ -800,13 +808,33 @@ mod tests {
             1
         );
 
+        Connection::open(file.path())
+            .expect("edit personal translation")
+            .execute(
+                "UPDATE vocabulary_entries SET translated_text = '短暂的（个人）' WHERE id = ?1",
+                params![promoted[0].id],
+            )
+            .expect("preserve personal meaning");
+        let explicit_source = TranslationRequest {
+            selection_id: 2,
+            text: "ephemeral".into(),
+            source_language: "en".into(),
+            target_language: "zh-CN".into(),
+        };
+        let explicit_hit = provider
+            .translate(&explicit_source)
+            .await
+            .expect("explicit source personal hit");
+        assert_eq!(explicit_hit.translated_text, "短暂的（个人）");
+        assert_eq!(api.calls.load(Ordering::SeqCst), 0);
+
         provider
-            .translate(&request_to(2, "ephemeral", "zh-CN"))
+            .translate(&request_to(3, "ephemeral", "zh-CN"))
             .await
             .expect("personal hit");
         assert_eq!(api.calls.load(Ordering::SeqCst), 0);
         provider
-            .translate(&request_to(3, "unknown", "zh-CN"))
+            .translate(&request_to(4, "unknown", "zh-CN"))
             .await
             .expect("api miss");
         assert_eq!(api.calls.load(Ordering::SeqCst), 1);
