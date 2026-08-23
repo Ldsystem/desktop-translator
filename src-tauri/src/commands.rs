@@ -17,7 +17,7 @@ use crate::{
         AppError, AppErrorCode, InstalledTextbook, PracticeDirection, PracticePreferences,
         RelatedSource, RelatedWord, SelectionSnapshot, StudyPracticeOutcome, StudyPracticeQuestion,
         TextbookCatalogItem, TextbookEntryPage, TextbookPromotionResult, TranslationRequest,
-        TranslationResult, UserSettings, ValidateContract, VocabularyEntry,
+        TranslationResult, UserSettings, ValidateContract, VocabularyEntry, VocabularyProvenance,
     },
     coordinator::{CoordinatorEvent, OverlayState},
     platform::{
@@ -592,6 +592,14 @@ pub fn list_vocabulary(
     search: Option<String>,
 ) -> Result<Vec<VocabularyEntry>, AppError> {
     state.vocabulary.list_current(search.as_deref())
+}
+
+#[tauri::command]
+pub fn list_vocabulary_provenance(
+    state: State<'_, RuntimeState>,
+    entry_id: i64,
+) -> Result<Vec<VocabularyProvenance>, AppError> {
+    state.vocabulary.provenance(entry_id)
 }
 
 /// Finds conservative relationships from exactly one selected local corpus.

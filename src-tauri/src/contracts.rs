@@ -190,6 +190,21 @@ pub struct TextbookPromotionResult {
     pub inserted: bool,
 }
 
+/// Durable attribution retained by a personal entry after its textbook is removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyProvenance {
+    pub textbook_id: String,
+    pub textbook_title: String,
+    pub textbook_version: String,
+    pub license: String,
+    pub attribution: String,
+    pub source_url: String,
+    pub source_text: String,
+    pub translated_text: String,
+    pub promoted_at_epoch_ms: u64,
+}
+
 /// Selects which local corpus supplies related-word results.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]

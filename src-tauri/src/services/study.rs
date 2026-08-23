@@ -109,6 +109,12 @@ impl StudyService {
                     .collect()
             }),
             RelatedSource::Textbook { textbook_id } => {
+                let active = self
+                    .textbooks
+                    .list_installed()?
+                    .into_iter()
+                    .find(|book| book.active && book.id == textbook_id)
+                    .ok_or_else(|| internal("The selected textbook is not active"))?;
                 let entries = self.vocabulary.list(None, now_ms)?;
                 let anchor = entries
                     .iter()
@@ -116,7 +122,7 @@ impl StudyService {
                     .ok_or_else(|| internal("Vocabulary entry was not found"))?;
                 let root = conservative_root(&anchor.source_text);
                 let page = self.textbooks.list_entries(
-                    &textbook_id,
+                    &active.id,
                     root.as_deref().or(Some(anchor.source_text.as_str())),
                     0,
                     100,
@@ -174,86 +180,89 @@ impl StudyService {
                 .then_with(|| right.lookup_count.cmp(&left.lookup_count))
                 .then_with(|| left.id.cmp(&right.id))
         });
-        let candidate = entries[0].clone();
-        let (prompt, prompt_language, answer_language, correct_answer) = match direction {
-            PracticeDirection::SourceToTarget => (
-                candidate.source_text.clone(),
-                candidate.effective_source_language.clone(),
-                candidate.target_language.clone(),
-                candidate.translated_text.clone(),
-            ),
-            PracticeDirection::TargetToSource => (
-                candidate.translated_text.clone(),
-                candidate.target_language.clone(),
-                candidate.effective_source_language.clone(),
-                candidate.source_text.clone(),
-            ),
-            PracticeDirection::Random => unreachable!(),
-        };
-        let mut choices = vec![display(&correct_answer)];
-        let mut choice_keys = HashSet::from([key(&correct_answer)]);
-        if let Some(active) = self
+        let active_textbook = self
             .textbooks
             .list_installed()?
             .into_iter()
-            .find(|book| book.active)
-        {
-            if active.source_language == candidate.effective_source_language
-                && active.target_language == candidate.target_language
-            {
-                for textbook_entry in self
-                    .textbooks
-                    .list_entries(&active.id, None, 0, 500)?
-                    .entries
-                {
+            .find(|book| book.active);
+        let active_entries = if let Some(active) = &active_textbook {
+            self.textbooks
+                .list_entries(&active.id, None, 0, 500)?
+                .entries
+        } else {
+            Vec::new()
+        };
+
+        for candidate in &entries {
+            let (prompt, prompt_language, answer_language, correct_answer) = match direction {
+                PracticeDirection::SourceToTarget => (
+                    candidate.source_text.clone(),
+                    candidate.effective_source_language.clone(),
+                    candidate.target_language.clone(),
+                    candidate.translated_text.clone(),
+                ),
+                PracticeDirection::TargetToSource => (
+                    candidate.translated_text.clone(),
+                    candidate.target_language.clone(),
+                    candidate.effective_source_language.clone(),
+                    candidate.source_text.clone(),
+                ),
+                PracticeDirection::Random => unreachable!(),
+            };
+            let mut choices = vec![display(&correct_answer)];
+            let mut choice_keys = HashSet::from([key(&correct_answer)]);
+            if active_textbook.as_ref().is_some_and(|active| {
+                active.source_language == candidate.effective_source_language
+                    && active.target_language == candidate.target_language
+            }) {
+                for textbook_entry in &active_entries {
                     let answer = match direction {
-                        PracticeDirection::SourceToTarget => textbook_entry.translated_text,
-                        PracticeDirection::TargetToSource => textbook_entry.source_text,
+                        PracticeDirection::SourceToTarget => &textbook_entry.translated_text,
+                        PracticeDirection::TargetToSource => &textbook_entry.source_text,
                         PracticeDirection::Random => unreachable!(),
                     };
-                    if choice_keys.insert(key(&answer)) {
-                        choices.push(display(&answer));
+                    if choice_keys.insert(key(answer)) {
+                        choices.push(display(answer));
                     }
                     if choices.len() == 4 {
                         break;
                     }
                 }
             }
-        }
-        for entry in entries.into_iter().skip(1) {
-            if choices.len() >= 4 {
-                break;
+            for entry in &entries {
+                if choices.len() >= 4 {
+                    break;
+                }
+                if entry.id == candidate.id
+                    || entry.effective_source_language != candidate.effective_source_language
+                    || entry.target_language != candidate.target_language
+                {
+                    continue;
+                }
+                let answer = match direction {
+                    PracticeDirection::SourceToTarget => &entry.translated_text,
+                    PracticeDirection::TargetToSource => &entry.source_text,
+                    PracticeDirection::Random => unreachable!(),
+                };
+                if choice_keys.insert(key(answer)) {
+                    choices.push(display(answer));
+                }
             }
-            if entry.effective_source_language != candidate.effective_source_language
-                || entry.target_language != candidate.target_language
-            {
+            if choices.len() < 2 {
                 continue;
             }
-            let answer = match direction {
-                PracticeDirection::SourceToTarget => entry.translated_text,
-                PracticeDirection::TargetToSource => entry.source_text,
-                PracticeDirection::Random => unreachable!(),
-            };
-            if choice_keys.insert(key(&answer)) {
-                choices.push(display(&answer));
-            }
-            if choices.len() == 4 {
-                break;
-            }
+            let rotation = seed as usize % choices.len();
+            choices.rotate_left(rotation);
+            return Ok(Some(StudyPracticeQuestion {
+                entry_id: candidate.id,
+                direction,
+                prompt,
+                prompt_language,
+                answer_language,
+                choices,
+            }));
         }
-        if choices.len() < 2 {
-            return Ok(None);
-        }
-        let rotation = seed as usize % choices.len();
-        choices.rotate_left(rotation);
-        Ok(Some(StudyPracticeQuestion {
-            entry_id: candidate.id,
-            direction,
-            prompt,
-            prompt_language,
-            answer_language,
-            choices,
-        }))
+        Ok(None)
     }
 
     pub fn submit(
@@ -514,5 +523,40 @@ mod tests {
             )
             .expect("textbook");
         assert!(textbook.iter().all(|item| item.kind == "textbook"));
+        service.textbooks.set_active(None).expect("deactivate");
+        assert!(service
+            .related(
+                anchor.id,
+                RelatedSource::Textbook {
+                    textbook_id: "test-en-zh".into(),
+                },
+                100,
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn skips_an_incompatible_top_ranked_candidate_for_a_later_practicable_pair() {
+        let (_file, service) = seeded_service();
+        {
+            let connection = service.preferences.lock().expect("connection");
+            connection
+                .execute(
+                    "UPDATE vocabulary_entries SET target_language = 'es', recall_score = 0 WHERE source_text = 'ephemeral'",
+                    [],
+                )
+                .expect("make top candidate incompatible");
+        }
+        service
+            .save_preferences(PracticePreferences {
+                direction: PracticeDirection::SourceToTarget,
+            })
+            .expect("forward");
+        let question = service
+            .question(100, 0)
+            .expect("question")
+            .expect("later compatible candidate");
+        assert_ne!(question.prompt, "ephemeral");
+        assert!(question.choices.len() >= 2);
     }
 }

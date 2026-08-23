@@ -14,7 +14,7 @@ use crate::{
     contracts::{
         AppError, AppErrorCode, PracticeDirection, PracticeOutcome, PracticeQuestion,
         RelatedVocabulary, StudyPracticeOutcome, TranslationRequest, TranslationResult,
-        VocabularyEntry,
+        VocabularyEntry, VocabularyProvenance,
     },
     services::{textbooks::TextbookStore, TranslationProvider},
 };
@@ -173,6 +173,37 @@ impl VocabularyStore {
         ).map_err(storage_error)?;
         let rows = statement
             .query_map(params![query], |row| row_to_entry(row, now_ms))
+            .map_err(storage_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+    }
+
+    pub fn provenance(&self, entry_id: i64) -> Result<Vec<VocabularyProvenance>, AppError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| internal("Vocabulary database lock failed"))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT textbook_id, textbook_title, textbook_version, license, attribution,
+                        source_url, source_text, translated_text, promoted_at_epoch_ms
+                 FROM vocabulary_textbook_provenance WHERE vocabulary_entry_id = ?1
+                 ORDER BY promoted_at_epoch_ms, id",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![entry_id], |row| {
+                Ok(VocabularyProvenance {
+                    textbook_id: row.get(0)?,
+                    textbook_title: row.get(1)?,
+                    textbook_version: row.get(2)?,
+                    license: row.get(3)?,
+                    attribution: row.get(4)?,
+                    source_url: row.get(5)?,
+                    source_text: row.get(6)?,
+                    translated_text: row.get(7)?,
+                    promoted_at_epoch_ms: row.get::<_, i64>(8)? as u64,
+                })
+            })
             .map_err(storage_error)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
     }
@@ -747,7 +778,10 @@ mod tests {
         let api = Arc::new(FakeProvider {
             calls: AtomicUsize::new(0),
         });
-        let textbook = Arc::new(TextbookTranslationProvider::new(api.clone(), textbooks));
+        let textbook = Arc::new(TextbookTranslationProvider::new(
+            api.clone(),
+            textbooks.clone(),
+        ));
         let provider = VocabularyTranslationProvider::new(textbook, personal.clone());
 
         let first = provider
@@ -756,7 +790,15 @@ mod tests {
             .expect("textbook hit");
         assert_eq!(first.translated_text, "短暂的");
         assert_eq!(api.calls.load(Ordering::SeqCst), 0);
-        assert_eq!(personal.list(None, 2).expect("personal").len(), 1);
+        let promoted = personal.list(None, 2).expect("personal");
+        assert_eq!(promoted.len(), 1);
+        assert_eq!(
+            personal
+                .provenance(promoted[0].id)
+                .expect("provenance")
+                .len(),
+            1
+        );
 
         provider
             .translate(&request_to(2, "ephemeral", "zh-CN"))
@@ -768,6 +810,16 @@ mod tests {
             .await
             .expect("api miss");
         assert_eq!(api.calls.load(Ordering::SeqCst), 1);
+
+        // Provenance is personal history and remains displayable after source removal.
+        textbooks.remove("test-en-zh").expect("remove textbook");
+        assert_eq!(
+            personal
+                .provenance(promoted[0].id)
+                .expect("retained provenance")
+                .len(),
+            1
+        );
     }
 
     #[test]
