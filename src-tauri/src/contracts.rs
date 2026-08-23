@@ -190,6 +190,74 @@ pub struct TextbookPromotionResult {
     pub inserted: bool,
 }
 
+/// Selects which local corpus supplies related-word results.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RelatedSource {
+    Personal,
+    Textbook {
+        #[serde(rename = "textbookId")]
+        textbook_id: String,
+    },
+}
+
+/// A related lexical item with identities that cannot be confused across stores.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedWord {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vocabulary_entry_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub textbook_entry_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub textbook_id: Option<String>,
+    pub source_text: String,
+    pub translated_text: String,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    pub reason: String,
+    pub promoted: bool,
+}
+
+/// User-selectable prompt direction for local practice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PracticeDirection {
+    Random,
+    SourceToTarget,
+    TargetToSource,
+}
+
+/// Persisted study preferences, deliberately separate from application settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PracticePreferences {
+    pub direction: PracticeDirection,
+}
+
+/// Direction-neutral multiple-choice prompt selected from personal vocabulary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyPracticeQuestion {
+    pub entry_id: i64,
+    pub direction: PracticeDirection,
+    pub prompt: String,
+    pub prompt_language: LanguageCode,
+    pub answer_language: LanguageCode,
+    pub choices: Vec<String>,
+}
+
+/// Direction-aware result returned only after one explicit submission.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyPracticeOutcome {
+    pub correct: bool,
+    pub correct_answer: String,
+    pub direction: PracticeDirection,
+    pub entry: VocabularyEntry,
+}
+
 /// Stable error categories safe to expose across IPC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

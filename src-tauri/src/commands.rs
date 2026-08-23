@@ -1,11 +1,12 @@
 //! Narrow validated Tauri commands and application service state.
 
 use std::{
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use tauri::{AppHandle, Manager, State, WebviewWindow};
@@ -13,9 +14,10 @@ use zeroize::Zeroize;
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, PracticeOutcome, PracticeQuestion, RelatedVocabulary,
-        SelectionSnapshot, TranslationRequest, TranslationResult, UserSettings, ValidateContract,
-        VocabularyEntry,
+        AppError, AppErrorCode, InstalledTextbook, PracticeDirection, PracticePreferences,
+        RelatedSource, RelatedWord, SelectionSnapshot, StudyPracticeOutcome, StudyPracticeQuestion,
+        TextbookCatalogItem, TextbookEntryPage, TextbookPromotionResult, TranslationRequest,
+        TranslationResult, UserSettings, ValidateContract, VocabularyEntry,
     },
     coordinator::{CoordinatorEvent, OverlayState},
     platform::{
@@ -25,8 +27,10 @@ use crate::{
     services::{
         credentials::{KeyringVault, VaultCredentialStore},
         settings::JsonSettingsStore,
+        study::StudyService,
+        textbooks::{curated_catalog, TextbookStore},
         translation::GoogleTranslationProvider,
-        vocabulary::{VocabularyStore, VocabularyTranslationProvider},
+        vocabulary::{TextbookTranslationProvider, VocabularyStore, VocabularyTranslationProvider},
         CredentialStore, SettingsStore, TranslationProvider,
     },
 };
@@ -353,6 +357,9 @@ pub struct RuntimeState {
     coordinator: Arc<ApplicationCoordinator>,
     overlay: Arc<crate::overlay::TauriOverlayController>,
     vocabulary: Arc<VocabularyStore>,
+    textbooks: Arc<TextbookStore>,
+    study: Arc<StudyService>,
+    textbook_staging: PathBuf,
     observer: ObserverManager,
 }
 
@@ -375,11 +382,19 @@ impl RuntimeState {
             .map_err(|_| internal_error("Application data path is unavailable"))?;
         std::fs::create_dir_all(&vocabulary_directory)
             .map_err(|_| internal_error("Application data directory could not be created"))?;
-        let vocabulary = Arc::new(VocabularyStore::open(
-            vocabulary_directory.join("vocabulary.sqlite3"),
+        let database_path = vocabulary_directory.join("vocabulary.sqlite3");
+        let vocabulary = Arc::new(VocabularyStore::open(&database_path)?);
+        let textbooks = Arc::new(TextbookStore::open(&database_path)?);
+        let study = Arc::new(StudyService::open(
+            &database_path,
+            vocabulary.clone(),
+            textbooks.clone(),
         )?);
+        let textbook_provider: Arc<dyn TranslationProvider> = Arc::new(
+            TextbookTranslationProvider::new(upstream, textbooks.clone()),
+        );
         let translation: Arc<dyn TranslationProvider> = Arc::new(
-            VocabularyTranslationProvider::new(upstream, vocabulary.clone()),
+            VocabularyTranslationProvider::new(textbook_provider, vocabulary.clone()),
         );
 
         #[cfg(target_os = "macos")]
@@ -414,6 +429,9 @@ impl RuntimeState {
             coordinator,
             overlay,
             vocabulary,
+            textbooks,
+            study,
+            textbook_staging: vocabulary_directory.join("textbook-downloads"),
             observer: ObserverManager::default(),
         })
     }
@@ -576,21 +594,37 @@ pub fn list_vocabulary(
     state.vocabulary.list_current(search.as_deref())
 }
 
-/// Finds conservative root or overlapping-meaning relationships from local entries.
+/// Finds conservative relationships from exactly one selected local corpus.
 #[tauri::command]
 pub fn get_related_vocabulary(
     state: State<'_, RuntimeState>,
     entry_id: i64,
-) -> Result<Vec<RelatedVocabulary>, AppError> {
-    state.vocabulary.related_current(entry_id)
+    source: RelatedSource,
+) -> Result<Vec<RelatedWord>, AppError> {
+    state.study.related(entry_id, source, now_epoch_ms())
 }
 
-/// Selects the highest-need local practice candidate without recording a review.
+#[tauri::command]
+pub fn get_practice_preferences(
+    state: State<'_, RuntimeState>,
+) -> Result<PracticePreferences, AppError> {
+    state.study.preferences()
+}
+
+#[tauri::command]
+pub fn save_practice_preferences(
+    state: State<'_, RuntimeState>,
+    preferences: PracticePreferences,
+) -> Result<(), AppError> {
+    state.study.save_preferences(preferences)
+}
+
+/// Selects a personal practice candidate without recording a review.
 #[tauri::command]
 pub fn get_practice_question(
     state: State<'_, RuntimeState>,
-) -> Result<Option<PracticeQuestion>, AppError> {
-    state.vocabulary.practice_question_current()
+) -> Result<Option<StudyPracticeQuestion>, AppError> {
+    state.study.question(now_epoch_ms(), now_epoch_ms())
 }
 
 /// Scores one explicit answer and returns feedback after persistence succeeds.
@@ -598,11 +632,74 @@ pub fn get_practice_question(
 pub fn submit_practice_answer(
     state: State<'_, RuntimeState>,
     entry_id: i64,
-    selected_translation: String,
-) -> Result<PracticeOutcome, AppError> {
+    direction: PracticeDirection,
+    selected_answer: String,
+) -> Result<StudyPracticeOutcome, AppError> {
     state
-        .vocabulary
-        .submit_answer_current(entry_id, &selected_translation)
+        .study
+        .submit(entry_id, direction, &selected_answer, now_epoch_ms())
+}
+
+#[tauri::command]
+pub fn list_textbook_catalog() -> Vec<TextbookCatalogItem> {
+    curated_catalog()
+}
+
+#[tauri::command]
+pub fn list_downloaded_textbooks(
+    state: State<'_, RuntimeState>,
+) -> Result<Vec<InstalledTextbook>, AppError> {
+    state.textbooks.list_installed()
+}
+
+#[tauri::command]
+pub async fn download_textbook(
+    state: State<'_, RuntimeState>,
+    textbook_id: String,
+) -> Result<InstalledTextbook, AppError> {
+    state
+        .textbooks
+        .download_and_install(&textbook_id, &state.textbook_staging, now_epoch_ms())
+        .await
+}
+
+#[tauri::command]
+pub fn set_active_textbook(
+    state: State<'_, RuntimeState>,
+    textbook_id: Option<String>,
+) -> Result<(), AppError> {
+    state.textbooks.set_active(textbook_id.as_deref())
+}
+
+#[tauri::command]
+pub fn remove_downloaded_textbook(
+    state: State<'_, RuntimeState>,
+    textbook_id: String,
+) -> Result<(), AppError> {
+    state.textbooks.remove(&textbook_id)
+}
+
+#[tauri::command]
+pub fn list_textbook_entries(
+    state: State<'_, RuntimeState>,
+    textbook_id: String,
+    search: Option<String>,
+    offset: u64,
+    limit: u64,
+) -> Result<TextbookEntryPage, AppError> {
+    state
+        .textbooks
+        .list_entries(&textbook_id, search.as_deref(), offset, limit)
+}
+
+#[tauri::command]
+pub fn add_textbook_entry_to_personal(
+    state: State<'_, RuntimeState>,
+    textbook_entry_id: i64,
+) -> Result<TextbookPromotionResult, AppError> {
+    state
+        .textbooks
+        .promote_entry(textbook_entry_id, now_epoch_ms())
 }
 
 /// Speaks source or translated text using the local operating system.
@@ -772,6 +869,14 @@ fn sync_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
 
 fn internal_error(message: &'static str) -> AppError {
     AppError::new(AppErrorCode::Internal, message, false)
+}
+
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
 }
 
 fn visible_selection(state: &OverlayState) -> Option<&crate::contracts::SelectionSnapshot> {

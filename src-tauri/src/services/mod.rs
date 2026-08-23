@@ -2,6 +2,7 @@
 
 pub mod credentials;
 pub mod settings;
+pub mod study;
 pub mod textbooks;
 pub mod translation;
 pub mod vocabulary;

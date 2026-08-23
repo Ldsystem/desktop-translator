@@ -12,10 +12,11 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, PracticeOutcome, PracticeQuestion, RelatedVocabulary,
-        TranslationRequest, TranslationResult, VocabularyEntry,
+        AppError, AppErrorCode, PracticeDirection, PracticeOutcome, PracticeQuestion,
+        RelatedVocabulary, StudyPracticeOutcome, TranslationRequest, TranslationResult,
+        VocabularyEntry,
     },
-    services::TranslationProvider,
+    services::{textbooks::TextbookStore, TranslationProvider},
 };
 
 pub struct VocabularyStore {
@@ -265,19 +266,43 @@ impl VocabularyStore {
         selected_translation: &str,
         now_ms: u64,
     ) -> Result<PracticeOutcome, AppError> {
+        let outcome = self.submit_answer_direction(
+            entry_id,
+            PracticeDirection::SourceToTarget,
+            selected_translation,
+            now_ms,
+        )?;
+        Ok(PracticeOutcome {
+            correct: outcome.correct,
+            correct_translation: outcome.correct_answer,
+            entry: outcome.entry,
+        })
+    }
+
+    pub fn submit_answer_direction(
+        &self,
+        entry_id: i64,
+        direction: PracticeDirection,
+        selected_answer: &str,
+        now_ms: u64,
+    ) -> Result<StudyPracticeOutcome, AppError> {
+        if direction == PracticeDirection::Random {
+            return Err(internal("A resolved practice direction is required"));
+        }
         let mut connection = self
             .connection
             .lock()
             .map_err(|_| internal("Vocabulary database lock failed"))?;
         let transaction = connection.transaction().map_err(storage_error)?;
         let stored = transaction.query_row(
-            "SELECT translated_text, recall_score, review_count, correct_count, wrong_count,
+            "SELECT translated_text, source_text, recall_score, review_count, correct_count, wrong_count,
                     correct_streak, wrong_streak, last_reviewed_epoch_ms FROM vocabulary_entries WHERE id = ?1",
             params![entry_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)? as u64, row.get::<_, i64>(3)? as u64, row.get::<_, i64>(4)? as u64, row.get::<_, i64>(5)? as u64, row.get::<_, i64>(6)? as u64, row.get::<_, Option<i64>>(7)?.map(|value| value as u64))),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?, row.get::<_, i64>(3)? as u64, row.get::<_, i64>(4)? as u64, row.get::<_, i64>(5)? as u64, row.get::<_, i64>(6)? as u64, row.get::<_, i64>(7)? as u64, row.get::<_, Option<i64>>(8)?.map(|value| value as u64))),
         ).optional().map_err(storage_error)?.ok_or_else(|| internal("Vocabulary entry was not found"))?;
         let (
-            correct_translation,
+            translated_text,
+            source_text,
             score,
             review_count,
             correct_count,
@@ -286,8 +311,12 @@ impl VocabularyStore {
             wrong_streak,
             last_reviewed,
         ) = stored;
-        let correct =
-            translation_key(selected_translation) == translation_key(&correct_translation);
+        let correct_answer = match direction {
+            PracticeDirection::SourceToTarget => translated_text,
+            PracticeDirection::TargetToSource => source_text,
+            PracticeDirection::Random => unreachable!(),
+        };
+        let correct = translation_key(selected_answer) == translation_key(&correct_answer);
         let effective_before = effective_recall(score, last_reviewed, now_ms);
         let next_score = if correct {
             let gain = (8.0
@@ -321,10 +350,12 @@ impl VocabularyStore {
         insert_event(
             &transaction,
             entry_id,
-            if correct {
-                "practice-correct"
-            } else {
-                "practice-wrong"
+            match (direction, correct) {
+                (PracticeDirection::SourceToTarget, true) => "practice-source-to-target-correct",
+                (PracticeDirection::SourceToTarget, false) => "practice-source-to-target-wrong",
+                (PracticeDirection::TargetToSource, true) => "practice-target-to-source-correct",
+                (PracticeDirection::TargetToSource, false) => "practice-target-to-source-wrong",
+                (PracticeDirection::Random, _) => unreachable!(),
             },
             now_ms,
             Some(score),
@@ -340,9 +371,10 @@ impl VocabularyStore {
         debug_assert_eq!(entry.review_count, review_count + 1);
         debug_assert_eq!(entry.correct_count, correct_count + u64::from(correct));
         debug_assert_eq!(entry.wrong_count, wrong_count + u64::from(!correct));
-        Ok(PracticeOutcome {
+        Ok(StudyPracticeOutcome {
             correct,
-            correct_translation: display_translation(&correct_translation),
+            correct_answer: display_translation(&correct_answer),
+            direction,
             entry,
         })
     }
@@ -371,6 +403,68 @@ impl VocabularyStore {
 pub struct VocabularyTranslationProvider {
     upstream: Arc<dyn TranslationProvider>,
     store: Arc<VocabularyStore>,
+}
+
+/// Consults only the singular active textbook before delegating to the online provider.
+pub struct TextbookTranslationProvider {
+    upstream: Arc<dyn TranslationProvider>,
+    textbooks: Arc<TextbookStore>,
+}
+
+impl TextbookTranslationProvider {
+    pub fn new(upstream: Arc<dyn TranslationProvider>, textbooks: Arc<TextbookStore>) -> Self {
+        Self {
+            upstream,
+            textbooks,
+        }
+    }
+}
+
+#[async_trait]
+impl TranslationProvider for TextbookTranslationProvider {
+    async fn translate(&self, request: &TranslationRequest) -> Result<TranslationResult, AppError> {
+        if is_vocabulary_eligible(&request.text) {
+            if let Some(book) = self
+                .textbooks
+                .list_installed()?
+                .into_iter()
+                .find(|book| book.active)
+            {
+                let source_compatible = request.source_language.eq_ignore_ascii_case("auto")
+                    || request
+                        .source_language
+                        .eq_ignore_ascii_case(&book.source_language);
+                if source_compatible
+                    && request
+                        .target_language
+                        .eq_ignore_ascii_case(&book.target_language)
+                {
+                    let normalized = normalize_text(&request.text);
+                    let entry = self
+                        .textbooks
+                        .list_entries(&book.id, Some(&request.text), 0, 50)?
+                        .entries
+                        .into_iter()
+                        .find(|entry| normalize_text(&entry.source_text) == normalized);
+                    if let Some(entry) = entry {
+                        self.textbooks.promote_entry(entry.id, now_epoch_ms())?;
+                        return Ok(TranslationResult {
+                            selection_id: request.selection_id,
+                            translated_text: display_translation(&entry.translated_text),
+                            detected_source_language: Some(entry.source_language.clone()),
+                            effective_source_language: entry.source_language,
+                            target_language: entry.target_language,
+                        });
+                    }
+                }
+            }
+        }
+        self.upstream.translate(request).await
+    }
+
+    async fn supported_languages(&self) -> Result<Vec<String>, AppError> {
+        self.upstream.supported_languages().await
+    }
 }
 
 impl VocabularyTranslationProvider {
@@ -556,12 +650,13 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use sha2::{Digest, Sha256};
     use tempfile::NamedTempFile;
 
     use super::*;
     use crate::{
-        contracts::{AppError, TranslationRequest, TranslationResult},
-        services::TranslationProvider,
+        contracts::{AppError, TextbookCatalogItem, TranslationRequest, TranslationResult},
+        services::{textbooks::TextbookStore, TranslationProvider},
     };
 
     struct FakeProvider {
@@ -607,6 +702,72 @@ mod tests {
             source_language: "auto".into(),
             target_language: target_language.into(),
         }
+    }
+
+    fn install_test_textbook(app_db: &std::path::Path) -> Arc<TextbookStore> {
+        let fixture = NamedTempFile::new().expect("fixture");
+        let connection = Connection::open(fixture.path()).expect("fixture db");
+        connection
+            .execute_batch("CREATE TABLE simple_translation (written_rep TEXT NOT NULL, trans_list TEXT NOT NULL);")
+            .expect("fixture schema");
+        connection
+            .execute(
+                "INSERT INTO simple_translation VALUES ('ephemeral', '短暂的')",
+                [],
+            )
+            .expect("fixture entry");
+        drop(connection);
+        let bytes = std::fs::read(fixture.path()).expect("fixture bytes");
+        let catalog = TextbookCatalogItem {
+            id: "test-en-zh".into(),
+            title: "Test".into(),
+            source_language: "en".into(),
+            target_language: "zh-CN".into(),
+            version: "1".into(),
+            download_url: "https://download.wikdict.com/test.sqlite3".into(),
+            expected_bytes: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            license: "CC BY-SA 4.0".into(),
+            attribution: "Test".into(),
+            source_url: "https://www.wikdict.com/page/download".into(),
+        };
+        let store = Arc::new(TextbookStore::open(app_db).expect("textbook store"));
+        store
+            .install_sqlite(&catalog, fixture.path(), 1)
+            .expect("install");
+        store.set_active(Some("test-en-zh")).expect("activate");
+        store
+    }
+
+    #[tokio::test]
+    async fn provider_chain_prefers_personal_then_active_textbook_then_api() {
+        let file = NamedTempFile::new().expect("app db");
+        let personal = Arc::new(VocabularyStore::open(file.path()).expect("personal"));
+        let textbooks = install_test_textbook(file.path());
+        let api = Arc::new(FakeProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let textbook = Arc::new(TextbookTranslationProvider::new(api.clone(), textbooks));
+        let provider = VocabularyTranslationProvider::new(textbook, personal.clone());
+
+        let first = provider
+            .translate(&request_to(1, "ephemeral", "zh-CN"))
+            .await
+            .expect("textbook hit");
+        assert_eq!(first.translated_text, "短暂的");
+        assert_eq!(api.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(personal.list(None, 2).expect("personal").len(), 1);
+
+        provider
+            .translate(&request_to(2, "ephemeral", "zh-CN"))
+            .await
+            .expect("personal hit");
+        assert_eq!(api.calls.load(Ordering::SeqCst), 0);
+        provider
+            .translate(&request_to(3, "unknown", "zh-CN"))
+            .await
+            .expect("api miss");
+        assert_eq!(api.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
