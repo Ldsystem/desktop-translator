@@ -53,6 +53,7 @@ export function PracticeView({ api }: PracticeViewProps) {
   useEffect(() => { if (outcome) nextButton.current?.focus(); }, [outcome]);
 
   const chooseDirection = (next: PracticeDirection) => {
+    if (submittingRef.current) return;
     setSaving(true);
     setError(undefined);
     setFailedDirection(undefined);
@@ -81,7 +82,7 @@ export function PracticeView({ api }: PracticeViewProps) {
 
   return <section aria-labelledby="practice-title">
     <header className="study-header"><div><p className="eyebrow">Practice</p><h2 id="practice-title">Choose the answer</h2><p>Questions come from your wordbook. The active textbook supplies choices first.</p></div></header>
-    <fieldset className="direction-selector" disabled={saving}><legend>Practice direction</legend>{directions.map((item) => <label key={item.value} className={direction === item.value ? "is-active" : ""}><input type="radio" name="practice-direction" value={item.value} checked={direction === item.value} onChange={() => chooseDirection(item.value)} /><span><strong>{item.label}</strong><small>{item.note}</small></span></label>)}</fieldset>
+    <fieldset className="direction-selector" disabled={saving || submitting}><legend>Practice direction</legend>{directions.map((item) => <label key={item.value} className={direction === item.value ? "is-active" : ""}><input type="radio" name="practice-direction" value={item.value} checked={direction === item.value} onChange={() => chooseDirection(item.value)} /><span><strong>{item.label}</strong><small>{item.note}</small></span></label>)}</fieldset>
     {error && <div className="study-notice study-notice--error" role="alert">{error} <button className="text-button" type="button" onClick={() => failedDirection ? chooseDirection(failedDirection) : loadQuestion()}>{failedDirection ? "Try saving again" : "Try again"}</button></div>}
     {question === undefined ? <div className="study-empty" role="status"><strong>Choosing what needs attention…</strong></div> : question === null ? <div className="study-empty"><strong>Add at least one word and one distinct choice.</strong><span>Download and activate a textbook to widen the local choice pool.</span></div> : <section className="practice-card">
       <div className="practice-prompt"><span>{question.promptLanguage.toUpperCase()} → {question.answerLanguage.toUpperCase()}</span><strong>{question.prompt}</strong></div>

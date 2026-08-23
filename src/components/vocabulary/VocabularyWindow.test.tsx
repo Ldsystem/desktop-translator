@@ -346,4 +346,23 @@ describe("VocabularyWindow", () => {
     expect(check.disabled).toBe(true);
     await act(async () => pending.resolve({ correct: true, correctAnswer: "hola", direction: "source-to-target", entry }));
   });
+
+  it("keeps direction controls locked to the question while scoring is pending", async () => {
+    const pending = deferred<Awaited<ReturnType<StudyApi["submitPracticeAnswer"]>>>();
+    const savePracticePreferences = vi.fn().mockResolvedValue(undefined);
+    const api = makeStudyApi({ savePracticePreferences, submitPracticeAnswer: vi.fn().mockReturnValue(pending.promise), getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: ["hola", "mundo"] }) });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
+    await flushEffects();
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".practice-choice")].find((button) => button.textContent === "hola")?.click());
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Check answer")?.click());
+    const reverse = container.querySelector<HTMLInputElement>('input[value="target-to-source"]')!;
+
+    expect(reverse.matches(":disabled")).toBe(true);
+    act(() => reverse.click());
+    expect(savePracticePreferences).not.toHaveBeenCalled();
+    await act(async () => pending.resolve({ correct: true, correctAnswer: "hola", direction: "source-to-target", entry }));
+    expect(container.textContent).toContain("hello");
+    expect(container.textContent).toContain("Correct");
+  });
 });
