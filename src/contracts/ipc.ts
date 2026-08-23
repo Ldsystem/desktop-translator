@@ -142,6 +142,19 @@ export interface TextbookPromotionResult {
   inserted: boolean;
 }
 
+/** Attribution retained when a downloaded textbook entry joins the personal wordbook. */
+export interface VocabularyProvenance {
+  textbookId: string;
+  textbookTitle: string;
+  textbookVersion: string;
+  license: string;
+  attribution: string;
+  sourceUrl: string;
+  sourceText: string;
+  translatedText: string;
+  promotedAtEpochMs: number;
+}
+
 export type RelatedSource =
   | { kind: "personal" }
   | { kind: "textbook"; textbookId: string };

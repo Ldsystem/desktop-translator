@@ -189,7 +189,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
               const update = installed && installed.version !== item.version;
               return <article className="textbook-volume" key={item.id}>
                 <span className="textbook-volume__spine" aria-hidden="true">{item.sourceLanguage.toUpperCase()}<br />{item.targetLanguage.toUpperCase()}</span>
-                <div className="textbook-volume__copy"><p className="eyebrow">{item.version}</p><h3>{item.title}</h3><p>{item.attribution}</p><small>{item.license}</small></div>
+                <div className="textbook-volume__copy"><p className="eyebrow">{item.version}</p><h3>{item.title}</h3><p>{item.attribution}</p><small>{item.license}</small><a href={item.sourceUrl} target="_blank" rel="noreferrer">View source</a></div>
                 <button className="button button--primary" type="button" disabled={busyBook === item.id || Boolean(installed && !update)} onClick={() => install(item)}>{busyBook === item.id ? "Downloading…" : update ? "Update" : installed ? "Downloaded" : "Download"}</button>
               </article>;
             })}</div>

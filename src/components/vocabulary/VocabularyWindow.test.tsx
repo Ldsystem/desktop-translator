@@ -67,6 +67,7 @@ function makeStudyApi(overrides: Partial<StudyApi> = {}): StudyApi {
     removeTextbook: vi.fn().mockResolvedValue(undefined),
     listTextbookEntries: vi.fn().mockResolvedValue({ entries: [], total: 0, offset: 0, limit: 40 }),
     addTextbookEntry: vi.fn().mockResolvedValue({ vocabularyEntryId: 9, inserted: true }),
+    listVocabularyProvenance: vi.fn().mockResolvedValue([]),
     listRelated: vi.fn().mockResolvedValue([]),
     getPracticePreferences: vi.fn().mockResolvedValue({ direction: "random" }),
     savePracticePreferences: vi.fn().mockResolvedValue(undefined),
@@ -137,6 +138,34 @@ describe("VocabularyWindow", () => {
     const cardAction = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello");
     act(() => cardAction?.click());
     expect(open).toHaveBeenCalledWith(1);
+  });
+
+  it("shows retained textbook provenance and its source for an opened personal word", async () => {
+    const api = makeStudyApi({
+      listVocabularyProvenance: vi.fn().mockResolvedValue([{
+        textbookId: "wikdict-en-zh",
+        textbookTitle: "WikDict English - Chinese",
+        textbookVersion: "2_2026-06",
+        license: "CC BY-SA 4.0",
+        attribution: "WikDict, Wiktionary and DBnary contributors",
+        sourceUrl: "https://www.wikdict.com/page/download",
+        sourceText: "hello",
+        translatedText: "\u4f60\u597d",
+        promotedAtEpochMs: 1,
+      }]),
+    });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+
+    const cardAction = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello");
+    act(() => cardAction?.click());
+    await flushEffects();
+
+    expect(api.listVocabularyProvenance).toHaveBeenCalledWith(1);
+    expect(container.textContent).toContain("WikDict English - Chinese");
+    expect(container.textContent).toContain("2_2026-06");
+    expect(container.textContent).toContain("CC BY-SA 4.0");
+    expect(container.textContent).toContain("WikDict, Wiktionary and DBnary contributors");
+    expect(container.querySelector<HTMLAnchorElement>('a[href="https://www.wikdict.com/page/download"]')?.textContent).toBe("View source");
   });
 
   it("explains unavailable pronunciation states", () => {

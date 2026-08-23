@@ -191,6 +191,9 @@ input:focus-visible,
 .relation-badge--root { background: var(--accent-soft); color: var(--accent-strong); }
 .relation-badge--meaning { background: var(--warning-soft); color: var(--warning); }
 .relation-add { min-width: 78px; }
+.word-provenance { display: grid; gap: 9px; margin-bottom: 18px; padding: 16px 18px; border: 1px solid var(--study-rule); border-radius: 16px; background: color-mix(in srgb, var(--study-accent) 7%, transparent); }
+.word-provenance > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.word-provenance a, .textbook-volume__copy a { color: var(--study-accent); text-underline-offset: 3px; }
 
 .source-selector,
 .direction-selector {

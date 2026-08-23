@@ -27,6 +27,7 @@ import type {
   TranslationResult,
   UserSettings,
   VocabularyEntry,
+  VocabularyProvenance,
 } from "./contracts/ipc";
 import {
   initialOverlayState,
@@ -82,6 +83,7 @@ export function createStudyApi(refreshPersonal: () => void): StudyApi {
     removeTextbook: (textbookId) => invoke<void>("remove_downloaded_textbook", { textbookId }),
     listTextbookEntries: (textbookId, search, offset, limit) => invoke<TextbookEntryPage>("list_textbook_entries", { textbookId, search: search || null, offset, limit }),
     addTextbookEntry: (textbookEntryId) => invoke<TextbookPromotionResult>("add_textbook_entry_to_personal", { textbookEntryId }),
+    listVocabularyProvenance: (entryId) => invoke<VocabularyProvenance[]>("list_vocabulary_provenance", { entryId }),
     listRelated: (entryId, source: RelatedSource) => invoke<RelatedWord[]>("get_related_vocabulary", { entryId, source }),
     getPracticePreferences: () => invoke<PracticePreferences>("get_practice_preferences"),
     savePracticePreferences: (preferences) => invoke<void>("save_practice_preferences", { preferences }),

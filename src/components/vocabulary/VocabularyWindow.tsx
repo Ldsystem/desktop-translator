@@ -14,6 +14,7 @@ import type {
   TextbookEntryPage,
   TextbookPromotionResult,
   VocabularyEntry,
+  VocabularyProvenance,
 } from "../../contracts/ipc";
 import { PracticeView } from "./PracticeView";
 import { RelatedWordsView } from "./RelatedWordsView";
@@ -45,6 +46,7 @@ export interface StudyApi {
   removeTextbook: (textbookId: string) => Promise<void>;
   listTextbookEntries: (textbookId: string, search: string, offset: number, limit: number) => Promise<TextbookEntryPage>;
   addTextbookEntry: (textbookEntryId: number) => Promise<TextbookPromotionResult>;
+  listVocabularyProvenance: (entryId: number) => Promise<VocabularyProvenance[]>;
   listRelated: (entryId: number, source: RelatedSource) => Promise<RelatedWord[]>;
   getPracticePreferences: () => Promise<PracticePreferences>;
   savePracticePreferences: (preferences: PracticePreferences) => Promise<void>;
