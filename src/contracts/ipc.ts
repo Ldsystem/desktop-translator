@@ -142,6 +142,48 @@ export interface TextbookPromotionResult {
   inserted: boolean;
 }
 
+export type RelatedSource =
+  | { kind: "personal" }
+  | { kind: "textbook"; textbookId: string };
+
+export interface RelatedWord {
+  kind: "personal" | "textbook";
+  vocabularyEntryId?: number;
+  textbookEntryId?: number;
+  textbookId?: string;
+  sourceText: string;
+  translatedText: string;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  reason: "root" | "meaning";
+  promoted: boolean;
+}
+
+export type PracticeDirection =
+  | "random"
+  | "source-to-target"
+  | "target-to-source";
+
+export interface PracticePreferences {
+  direction: PracticeDirection;
+}
+
+export interface StudyPracticeQuestion {
+  entryId: number;
+  direction: Exclude<PracticeDirection, "random">;
+  prompt: string;
+  promptLanguage: LanguageCode;
+  answerLanguage: LanguageCode;
+  choices: string[];
+}
+
+export interface StudyPracticeOutcome {
+  correct: boolean;
+  correctAnswer: string;
+  direction: Exclude<PracticeDirection, "random">;
+  entry: VocabularyEntry;
+}
+
 /** Stable error codes safe to expose across IPC without provider details. */
 export const appErrorCodes = [
   "permission-denied",

@@ -1,13 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 
 import type {
+  InstalledTextbook,
+  PracticePreferences,
   PracticeOutcome,
   PracticeQuestion,
+  RelatedSource,
+  RelatedWord,
   RelatedVocabulary,
+  StudyPracticeOutcome,
+  StudyPracticeQuestion,
+  TextbookCatalogItem,
+  TextbookEntryPage,
+  TextbookPromotionResult,
   VocabularyEntry,
 } from "../../contracts/ipc";
+import { PracticeView } from "./PracticeView";
+import { RelatedWordsView } from "./RelatedWordsView";
+import { TextbooksView } from "./TextbooksView";
 
-type StudyView = "library" | "related" | "practice";
+type StudyView = "library" | "related" | "practice" | "textbooks";
 
 interface VocabularyWindowProps {
   entries: readonly VocabularyEntry[];
@@ -22,6 +34,23 @@ interface VocabularyWindowProps {
   onSelectEntry: (entryId: number) => void;
   onStartPractice: () => void;
   onSubmitAnswer: (entryId: number, selectedTranslation: string) => void;
+  studyApi?: StudyApi;
+}
+
+export interface StudyApi {
+  listCatalog: () => Promise<TextbookCatalogItem[]>;
+  listDownloaded: () => Promise<InstalledTextbook[]>;
+  downloadTextbook: (textbookId: string) => Promise<InstalledTextbook>;
+  setActiveTextbook: (textbookId?: string) => Promise<void>;
+  removeTextbook: (textbookId: string) => Promise<void>;
+  listTextbookEntries: (textbookId: string, search: string, offset: number, limit: number) => Promise<TextbookEntryPage>;
+  addTextbookEntry: (textbookEntryId: number) => Promise<TextbookPromotionResult>;
+  listRelated: (entryId: number, source: RelatedSource) => Promise<RelatedWord[]>;
+  getPracticePreferences: () => Promise<PracticePreferences>;
+  savePracticePreferences: (preferences: PracticePreferences) => Promise<void>;
+  getPracticeQuestion: () => Promise<StudyPracticeQuestion | null>;
+  submitPracticeAnswer: (entryId: number, direction: StudyPracticeQuestion["direction"], selectedAnswer: string) => Promise<StudyPracticeOutcome>;
+  refreshPersonal: () => void;
 }
 
 const familiarityNames = ["New", "Fragile", "Forming", "Steady", "Strong", "Fluent"];
@@ -104,12 +133,14 @@ export function VocabularyWindow({
   onSelectEntry,
   onStartPractice,
   onSubmitAnswer,
+  studyApi,
 }: VocabularyWindowProps) {
   const [view, setView] = useState<StudyView>(question !== undefined ? "practice" : "library");
   const [search, setSearch] = useState("");
   const [selectedChoice, setSelectedChoice] = useState<string>();
   const searchInput = useRef<HTMLInputElement>(null);
   const nextWordButton = useRef<HTMLButtonElement>(null);
+  const [relatedAnchor, setRelatedAnchor] = useState<VocabularyEntry>();
 
   useEffect(() => {
     if (view === "library") searchInput.current?.focus();
@@ -123,7 +154,7 @@ export function VocabularyWindow({
 
   const navigate = (next: StudyView) => {
     setView(next);
-    if (next === "practice") onStartPractice();
+    if (next === "practice" && !studyApi) onStartPractice();
   };
 
   return (
@@ -136,9 +167,9 @@ export function VocabularyWindow({
           <p>Built quietly from the words you translate.</p>
         </div>
         <nav>
-          {(["library", "related", "practice"] as const).map((item) => (
+          {(["library", "related", "practice", "textbooks"] as const).map((item) => (
             <button key={item} className={view === item ? "study-nav is-active" : "study-nav"} type="button" onClick={() => navigate(item)}>
-              {item === "library" ? "Textbook" : item === "related" ? "Related words" : "Practice"}
+              {item === "library" ? "My wordbook" : item === "related" ? "Related words" : item === "practice" ? "Practice" : "Textbooks"}
             </button>
           ))}
         </nav>
@@ -146,8 +177,6 @@ export function VocabularyWindow({
       </aside>
 
       <section className="study-content">
-        {error && <div className="study-notice study-notice--error" role="alert">{error}</div>}
-
         {view === "library" && (
           <>
             <header className="study-header">
@@ -157,17 +186,20 @@ export function VocabularyWindow({
                 <input ref={searchInput} value={search} type="search" placeholder="Find a word or translation" onChange={(event) => { setSearch(event.target.value); onSearch(event.target.value); }} />
               </label>
             </header>
+            {error && <div className="study-notice study-notice--error" role="alert">{error}</div>}
             {loading ? (
               <div className="study-empty" role="status"><strong>Opening your wordbook…</strong><span>Reading local study history.</span></div>
             ) : entries.length === 0 ? (
               <div className="study-empty"><strong>Translate a word to begin.</strong><span>Eligible words and short phrases will appear here automatically.</span></div>
             ) : (
-              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} onOpen={() => { onSelectEntry(entry.id); setView("related"); }} />)}</div>
+              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
             )}
           </>
         )}
 
-        {view === "related" && (
+        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} />}
+
+        {view === "related" && !studyApi && (
           <>
             <header className="study-header"><div><p className="eyebrow">Related words</p><h2>Connections in your wordbook</h2><p>Roots use a conservative Latin suffix rule. Meanings share words in stored translations.</p></div></header>
             {related.length === 0 ? (
@@ -178,7 +210,9 @@ export function VocabularyWindow({
           </>
         )}
 
-        {view === "practice" && (
+        {view === "practice" && studyApi && <PracticeView api={studyApi} />}
+
+        {view === "practice" && !studyApi && (
           <>
             <header className="study-header"><div><p className="eyebrow">Practice</p><h2>Choose the translation</h2><p>Recall changes only after you check an answer.</p></div></header>
             {question === undefined ? (
@@ -208,6 +242,8 @@ export function VocabularyWindow({
             )}
           </>
         )}
+
+        {view === "textbooks" && (studyApi ? <TextbooksView api={studyApi} /> : <div className="study-empty"><strong>Textbooks are unavailable.</strong><span>Restart the desktop app to reconnect the local textbook service.</span></div>)}
       </section>
     </main>
   );

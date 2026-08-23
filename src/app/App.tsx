@@ -16,6 +16,7 @@ import {
 } from "../components/quick/QuickTranslatePanel";
 import { SettingsPanel } from "../components/settings/SettingsPanel";
 import { VocabularyWindow } from "../components/vocabulary/VocabularyWindow";
+import type { StudyApi } from "../components/vocabulary/VocabularyWindow";
 import {
   initialOverlayState,
   type OverlayState,
@@ -50,6 +51,7 @@ export interface AppProps {
   relatedVocabulary?: readonly RelatedVocabulary[];
   practiceQuestion?: PracticeQuestion | null;
   practiceOutcome?: PracticeOutcome;
+  studyApi?: StudyApi;
   onQuickTranslate?: (request: TranslationRequest) => void;
   onVocabularySearch?: (search: string) => void;
   onSelectVocabulary?: (entryId: number) => void;
@@ -82,6 +84,7 @@ export default function App({
   relatedVocabulary = [],
   practiceQuestion,
   practiceOutcome,
+  studyApi,
   onQuickTranslate = ignore,
   onVocabularySearch = ignore,
   onSelectVocabulary = ignore,
@@ -147,6 +150,7 @@ export default function App({
           related={relatedVocabulary}
           question={practiceQuestion}
           outcome={practiceOutcome}
+          studyApi={studyApi}
           speechAvailability={speechAvailability}
           onPronounce={onPronounceVocabulary}
           onSearch={onVocabularySearch}

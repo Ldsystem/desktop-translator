@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,12 +7,22 @@ import App from "./app/App";
 import { createPronouncer } from "./app/pronunciation";
 import { getWindowMode } from "./app/windowMode";
 import type { QuickTranslateStatus } from "./components/quick/QuickTranslatePanel";
+import type { StudyApi } from "./components/vocabulary/VocabularyWindow";
 import type {
   AppError,
+  InstalledTextbook,
+  PracticePreferences,
   PracticeOutcome,
   PracticeQuestion,
+  RelatedSource,
+  RelatedWord,
   RelatedVocabulary,
   SelectionSnapshot,
+  StudyPracticeOutcome,
+  StudyPracticeQuestion,
+  TextbookCatalogItem,
+  TextbookEntryPage,
+  TextbookPromotionResult,
   TranslationRequest,
   TranslationResult,
   UserSettings,
@@ -60,6 +70,24 @@ function normalizeAppError(error: unknown): AppError {
     code: "internal",
     message: "The native service could not complete the request.",
     retryable: false,
+  };
+}
+
+export function createStudyApi(refreshPersonal: () => void): StudyApi {
+  return {
+    listCatalog: () => invoke<TextbookCatalogItem[]>("list_textbook_catalog"),
+    listDownloaded: () => invoke<InstalledTextbook[]>("list_downloaded_textbooks"),
+    downloadTextbook: (textbookId) => invoke<InstalledTextbook>("download_textbook", { textbookId }),
+    setActiveTextbook: (textbookId) => invoke<void>("set_active_textbook", { textbookId: textbookId ?? null }),
+    removeTextbook: (textbookId) => invoke<void>("remove_downloaded_textbook", { textbookId }),
+    listTextbookEntries: (textbookId, search, offset, limit) => invoke<TextbookEntryPage>("list_textbook_entries", { textbookId, search: search || null, offset, limit }),
+    addTextbookEntry: (textbookEntryId) => invoke<TextbookPromotionResult>("add_textbook_entry_to_personal", { textbookEntryId }),
+    listRelated: (entryId, source: RelatedSource) => invoke<RelatedWord[]>("get_related_vocabulary", { entryId, source }),
+    getPracticePreferences: () => invoke<PracticePreferences>("get_practice_preferences"),
+    savePracticePreferences: (preferences) => invoke<void>("save_practice_preferences", { preferences }),
+    getPracticeQuestion: () => invoke<StudyPracticeQuestion | null>("get_practice_question"),
+    submitPracticeAnswer: (entryId, direction, selectedAnswer) => invoke<StudyPracticeOutcome>("submit_practice_answer", { entryId, direction, selectedAnswer }),
+    refreshPersonal,
   };
 }
 
@@ -160,7 +188,7 @@ export function Bootstrap() {
     };
   }, [mode]);
 
-  const loadVocabulary = (search?: string) => {
+  const loadVocabulary = useCallback((search?: string) => {
     if (!runningInTauri()) {
       setVocabularyLoading(false);
       return;
@@ -171,7 +199,9 @@ export function Bootstrap() {
       .then(setVocabularyEntries)
       .catch(() => setVocabularyError("Your local wordbook could not be opened."))
       .finally(() => setVocabularyLoading(false));
-  };
+  }, []);
+
+  const studyApi = useMemo(() => createStudyApi(() => loadVocabulary()), [loadVocabulary]);
 
   useEffect(() => {
     if (mode === "study") loadVocabulary();
@@ -316,14 +346,10 @@ export function Bootstrap() {
       relatedVocabulary={relatedVocabulary}
       practiceQuestion={practiceQuestion}
       practiceOutcome={practiceOutcome}
+      studyApi={studyApi}
       onQuickTranslate={quickTranslate}
       onVocabularySearch={loadVocabulary}
-      onSelectVocabulary={(entryId) => {
-        setVocabularyError(undefined);
-        void invoke<RelatedVocabulary[]>("get_related_vocabulary", { entryId })
-          .then(setRelatedVocabulary)
-          .catch(() => setVocabularyError("Related words could not be loaded."));
-      }}
+      onSelectVocabulary={() => undefined}
       onStartPractice={() => {
         setPracticeQuestion(undefined);
         setPracticeOutcome(undefined);
