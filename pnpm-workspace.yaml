@@ -1,0 +1,7 @@
+packages:
+  - "."
+
+# Vite and Vitest require esbuild's platform binary. No other dependency
+# lifecycle scripts are approved.
+onlyBuiltDependencies:
+  - esbuild

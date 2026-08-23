@@ -124,6 +124,72 @@ pub struct PracticeOutcome {
     pub entry: VocabularyEntry,
 }
 
+/// One pinned, app-curated textbook artifact offered for native installation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextbookCatalogItem {
+    pub id: String,
+    pub title: String,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    pub version: String,
+    pub download_url: String,
+    pub expected_bytes: u64,
+    pub sha256: String,
+    pub license: String,
+    pub attribution: String,
+    pub source_url: String,
+}
+
+/// Installed textbook metadata safe to expose without local file paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledTextbook {
+    pub id: String,
+    pub title: String,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    pub version: String,
+    pub license: String,
+    pub attribution: String,
+    pub source_url: String,
+    pub entry_count: u64,
+    pub installed_at_epoch_ms: u64,
+    pub active: bool,
+}
+
+/// One normalized dictionary entry imported from a validated textbook.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextbookEntry {
+    pub id: i64,
+    pub textbook_id: String,
+    pub source_text: String,
+    pub translated_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phonetic_symbols: Option<String>,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+}
+
+/// Bounded page used for textbook browsing and search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextbookEntryPage {
+    pub entries: Vec<TextbookEntry>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u64,
+}
+
+/// Outcome of idempotently adding a textbook entry to the personal wordbook.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextbookPromotionResult {
+    pub vocabulary_entry_id: i64,
+    pub inserted: bool,
+}
+
 /// Stable error categories safe to expose across IPC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -250,6 +316,34 @@ impl ValidateContract for TranslationResult {
             return Err(validation_error(
                 "translation result contains an empty field",
             ));
+        }
+        Ok(())
+    }
+}
+
+impl ValidateContract for TextbookCatalogItem {
+    fn validate(&self) -> Result<(), AppError> {
+        let required = [
+            self.id.as_str(),
+            self.title.as_str(),
+            self.source_language.as_str(),
+            self.target_language.as_str(),
+            self.version.as_str(),
+            self.license.as_str(),
+            self.attribution.as_str(),
+        ];
+        if required.iter().any(|value| value.trim().is_empty())
+            || !self.download_url.starts_with("https://")
+            || !self.source_url.starts_with("https://")
+            || self.expected_bytes == 0
+            || self.expected_bytes > JS_SAFE_INTEGER_MAX
+            || self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(validation_error("textbook catalog item is unsafe"));
         }
         Ok(())
     }

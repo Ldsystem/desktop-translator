@@ -88,6 +88,60 @@ export interface PracticeOutcome {
   entry: VocabularyEntry;
 }
 
+/** One pinned, app-curated textbook artifact offered for native installation. */
+export interface TextbookCatalogItem {
+  id: string;
+  title: string;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  version: string;
+  downloadUrl: string;
+  expectedBytes: number;
+  sha256: string;
+  license: string;
+  attribution: string;
+  sourceUrl: string;
+}
+
+/** Installed textbook metadata safe to render without exposing local paths. */
+export interface InstalledTextbook {
+  id: string;
+  title: string;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  version: string;
+  license: string;
+  attribution: string;
+  sourceUrl: string;
+  entryCount: number;
+  installedAtEpochMs: number;
+  active: boolean;
+}
+
+/** One normalized entry imported from a validated textbook artifact. */
+export interface TextbookEntry {
+  id: number;
+  textbookId: string;
+  sourceText: string;
+  translatedText: string;
+  phoneticSymbols?: string;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+}
+
+/** Bounded result page for textbook browsing and search. */
+export interface TextbookEntryPage {
+  entries: TextbookEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface TextbookPromotionResult {
+  vocabularyEntryId: number;
+  inserted: boolean;
+}
+
 /** Stable error codes safe to expose across IPC without provider details. */
 export const appErrorCodes = [
   "permission-denied",
@@ -135,6 +189,19 @@ function isPhysicalRect(value: unknown): value is PhysicalRect {
     Number(value.width) > 0 &&
     Number(value.height) > 0
   );
+}
+
+function isHttpsUrl(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 /** Validates an unknown value as a selection snapshot at the IPC boundary. */
@@ -188,6 +255,78 @@ export function isTranslationResult(value: unknown): value is TranslationResult 
     isNonEmptyString(value.targetLanguage) &&
     (value.detectedSourceLanguage === undefined ||
       isNonEmptyString(value.detectedSourceLanguage))
+  );
+}
+
+/** Validates pinned textbook metadata before it is shown by the renderer. */
+export function isTextbookCatalogItem(value: unknown): value is TextbookCatalogItem {
+  return (
+    isRecord(value) &&
+    [
+      value.id,
+      value.title,
+      value.sourceLanguage,
+      value.targetLanguage,
+      value.version,
+      value.license,
+      value.attribution,
+    ].every(isNonEmptyString) &&
+    isHttpsUrl(value.downloadUrl) &&
+    isHttpsUrl(value.sourceUrl) &&
+    isNonNegativeInteger(value.expectedBytes) &&
+    Number(value.expectedBytes) > 0 &&
+    isSha256(value.sha256)
+  );
+}
+
+/** Validates installed textbook metadata returned by native storage. */
+export function isInstalledTextbook(value: unknown): value is InstalledTextbook {
+  return (
+    isRecord(value) &&
+    [
+      value.id,
+      value.title,
+      value.sourceLanguage,
+      value.targetLanguage,
+      value.version,
+      value.license,
+      value.attribution,
+    ].every(isNonEmptyString) &&
+    isHttpsUrl(value.sourceUrl) &&
+    isNonNegativeInteger(value.entryCount) &&
+    isNonNegativeInteger(value.installedAtEpochMs) &&
+    typeof value.active === "boolean"
+  );
+}
+
+/** Validates one normalized textbook entry returned by native storage. */
+export function isTextbookEntry(value: unknown): value is TextbookEntry {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.id) &&
+    [
+      value.textbookId,
+      value.sourceText,
+      value.translatedText,
+      value.sourceLanguage,
+      value.targetLanguage,
+    ].every(isNonEmptyString) &&
+    (value.phoneticSymbols === undefined || isNonEmptyString(value.phoneticSymbols))
+  );
+}
+
+/** Validates bounded textbook browse/search output. */
+export function isTextbookEntryPage(value: unknown): value is TextbookEntryPage {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.entries) &&
+    value.entries.every(isTextbookEntry) &&
+    isNonNegativeInteger(value.total) &&
+    isNonNegativeInteger(value.offset) &&
+    Number.isSafeInteger(value.limit) &&
+    Number(value.limit) > 0 &&
+    Number(value.limit) <= 500 &&
+    value.entries.length <= Number(value.limit)
   );
 }
 
