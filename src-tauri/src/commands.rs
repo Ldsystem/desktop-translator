@@ -13,8 +13,9 @@ use zeroize::Zeroize;
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, SelectionSnapshot, TranslationRequest, TranslationResult,
-        UserSettings, ValidateContract,
+        AppError, AppErrorCode, PracticeOutcome, PracticeQuestion, RelatedVocabulary,
+        SelectionSnapshot, TranslationRequest, TranslationResult, UserSettings, ValidateContract,
+        VocabularyEntry,
     },
     coordinator::{CoordinatorEvent, OverlayState},
     platform::{
@@ -25,6 +26,7 @@ use crate::{
         credentials::{KeyringVault, VaultCredentialStore},
         settings::JsonSettingsStore,
         translation::GoogleTranslationProvider,
+        vocabulary::{VocabularyStore, VocabularyTranslationProvider},
         CredentialStore, SettingsStore, TranslationProvider,
     },
 };
@@ -350,6 +352,7 @@ pub struct RuntimeState {
     credentials: Arc<VaultCredentialStore<KeyringVault>>,
     coordinator: Arc<ApplicationCoordinator>,
     overlay: Arc<crate::overlay::TauriOverlayController>,
+    vocabulary: Arc<VocabularyStore>,
     observer: ObserverManager,
 }
 
@@ -364,7 +367,20 @@ impl RuntimeState {
         let settings = Arc::new(JsonSettingsStore::with_application_defaults(settings_path));
         let credentials = Arc::new(VaultCredentialStore::application_default()?);
         let credential_provider: Arc<dyn CredentialStore> = credentials.clone();
-        let translation = Arc::new(GoogleTranslationProvider::new(credential_provider)?);
+        let upstream: Arc<dyn TranslationProvider> =
+            Arc::new(GoogleTranslationProvider::new(credential_provider)?);
+        let vocabulary_directory = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| internal_error("Application data path is unavailable"))?;
+        std::fs::create_dir_all(&vocabulary_directory)
+            .map_err(|_| internal_error("Application data directory could not be created"))?;
+        let vocabulary = Arc::new(VocabularyStore::open(
+            vocabulary_directory.join("vocabulary.sqlite3"),
+        )?);
+        let translation: Arc<dyn TranslationProvider> = Arc::new(
+            VocabularyTranslationProvider::new(upstream, vocabulary.clone()),
+        );
 
         #[cfg(target_os = "macos")]
         let speech: Arc<dyn SpeechAdapter> = Arc::new(MacSpeechAdapter::new()?);
@@ -397,6 +413,7 @@ impl RuntimeState {
             credentials,
             coordinator,
             overlay,
+            vocabulary,
             observer: ObserverManager::default(),
         })
     }
@@ -419,6 +436,10 @@ impl RuntimeState {
     /// Reports effective monitoring independently from persisted preference.
     pub fn monitoring_enabled(&self) -> bool {
         self.coordinator.is_enabled()
+    }
+
+    pub fn vocabulary(&self) -> &VocabularyStore {
+        &self.vocabulary
     }
 
     /// Flushes a buffered first-use selection after renderer subscription.
@@ -544,6 +565,44 @@ pub async fn translate_input(
     request: TranslationRequest,
 ) -> Result<TranslationResult, AppError> {
     state.coordinator.translate_input(request).await
+}
+
+/// Searches or browses locally stored lexical items without exposing database access.
+#[tauri::command]
+pub fn list_vocabulary(
+    state: State<'_, RuntimeState>,
+    search: Option<String>,
+) -> Result<Vec<VocabularyEntry>, AppError> {
+    state.vocabulary.list_current(search.as_deref())
+}
+
+/// Finds conservative root or overlapping-meaning relationships from local entries.
+#[tauri::command]
+pub fn get_related_vocabulary(
+    state: State<'_, RuntimeState>,
+    entry_id: i64,
+) -> Result<Vec<RelatedVocabulary>, AppError> {
+    state.vocabulary.related_current(entry_id)
+}
+
+/// Selects the highest-need local practice candidate without recording a review.
+#[tauri::command]
+pub fn get_practice_question(
+    state: State<'_, RuntimeState>,
+) -> Result<Option<PracticeQuestion>, AppError> {
+    state.vocabulary.practice_question_current()
+}
+
+/// Scores one explicit answer and returns feedback after persistence succeeds.
+#[tauri::command]
+pub fn submit_practice_answer(
+    state: State<'_, RuntimeState>,
+    entry_id: i64,
+    selected_translation: String,
+) -> Result<PracticeOutcome, AppError> {
+    state
+        .vocabulary
+        .submit_answer_current(entry_id, &selected_translation)
 }
 
 /// Speaks source or translated text using the local operating system.

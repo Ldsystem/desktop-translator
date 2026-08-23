@@ -72,6 +72,58 @@ pub struct TranslationResult {
     pub target_language: LanguageCode,
 }
 
+/// One locally stored lexical item with independent demand and recall signals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyEntry {
+    pub id: i64,
+    pub source_text: String,
+    pub translated_text: String,
+    pub requested_source_language: LanguageCode,
+    pub effective_source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    pub lookup_count: u64,
+    pub recall_score: f64,
+    pub effective_recall: f64,
+    pub familiarity_level: u8,
+    pub review_count: u64,
+    pub correct_count: u64,
+    pub wrong_count: u64,
+    pub correct_streak: u64,
+    pub wrong_streak: u64,
+    pub last_seen_epoch_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reviewed_epoch_ms: Option<u64>,
+}
+
+/// Locally derived relationship between two vocabulary entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedVocabulary {
+    pub entry: VocabularyEntry,
+    pub reason: String,
+}
+
+/// Multiple-choice translation prompt selected entirely from local entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PracticeQuestion {
+    pub entry_id: i64,
+    pub source_text: String,
+    pub effective_source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    pub choices: Vec<String>,
+}
+
+/// Result returned only after a practice answer is submitted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PracticeOutcome {
+    pub correct: bool,
+    pub correct_translation: String,
+    pub entry: VocabularyEntry,
+}
+
 /// Stable error categories safe to expose across IPC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

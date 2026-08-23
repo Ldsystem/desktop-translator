@@ -3,6 +3,7 @@
 pub mod credentials;
 pub mod settings;
 pub mod translation;
+pub mod vocabulary;
 
 use async_trait::async_trait;
 

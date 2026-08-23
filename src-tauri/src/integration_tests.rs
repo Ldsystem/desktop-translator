@@ -14,7 +14,10 @@ use crate::{
     coordinator::{CoordinatorEvent, OverlayState},
     overlay::OverlaySession,
     platform::{OverlayController, SelectionAdapter, SelectionPolicy, SpeechAdapter},
-    services::TranslationProvider,
+    services::{
+        vocabulary::{VocabularyStore, VocabularyTranslationProvider},
+        TranslationProvider,
+    },
 };
 
 struct CountingProvider {
@@ -317,6 +320,52 @@ async fn typed_input_rejects_an_empty_request() {
         .expect_err("blank input must be rejected before the provider is called");
 
     assert_eq!(error.code, AppErrorCode::Internal);
+}
+
+#[tokio::test]
+async fn selection_and_typed_input_share_the_same_vocabulary_cache() {
+    let provider = Arc::new(CountingProvider {
+        calls: AtomicUsize::new(0),
+    });
+    let database = tempfile::NamedTempFile::new().expect("database file");
+    let store = Arc::new(VocabularyStore::open(database.path()).expect("vocabulary store"));
+    let cached: Arc<dyn TranslationProvider> = Arc::new(VocabularyTranslationProvider::new(
+        provider.clone(),
+        store.clone(),
+    ));
+    let coordinator = ApplicationCoordinator::new(
+        Arc::new(FixedSelectionAdapter {
+            selection: selection(),
+        }),
+        Arc::new(RecordingOverlay::default()),
+        cached,
+        Arc::new(RecordingSpeech::default()),
+        SelectionPolicy {
+            max_code_points: 5_000,
+            excluded_application_id: Some("com.desktop-translator.app".into()),
+        },
+        true,
+    );
+
+    coordinator.pointer_down().await.expect("pointer down");
+    coordinator.pointer_up().await.expect("pointer up");
+    coordinator
+        .translate(request())
+        .await
+        .expect("selection miss");
+    let typed = coordinator
+        .translate_input(TranslationRequest {
+            selection_id: 0,
+            ..request()
+        })
+        .await
+        .expect("typed hit");
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(typed.selection_id, 0);
+    let entries = store.list(None, 1).expect("entries");
+    assert_eq!(entries[0].lookup_count, 2);
+    assert_eq!(entries[0].recall_score, 20.0);
 }
 
 #[tokio::test]

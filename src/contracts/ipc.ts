@@ -49,6 +49,45 @@ export interface TranslationResult {
   targetLanguage: LanguageCode;
 }
 
+export interface VocabularyEntry {
+  id: number;
+  sourceText: string;
+  translatedText: string;
+  requestedSourceLanguage: LanguageCode;
+  effectiveSourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  lookupCount: number;
+  recallScore: number;
+  effectiveRecall: number;
+  familiarityLevel: number;
+  reviewCount: number;
+  correctCount: number;
+  wrongCount: number;
+  correctStreak: number;
+  wrongStreak: number;
+  lastSeenEpochMs: number;
+  lastReviewedEpochMs?: number;
+}
+
+export interface RelatedVocabulary {
+  entry: VocabularyEntry;
+  reason: "root" | "meaning";
+}
+
+export interface PracticeQuestion {
+  entryId: number;
+  sourceText: string;
+  effectiveSourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  choices: string[];
+}
+
+export interface PracticeOutcome {
+  correct: boolean;
+  correctTranslation: string;
+  entry: VocabularyEntry;
+}
+
 /** Stable error codes safe to expose across IPC without provider details. */
 export const appErrorCodes = [
   "permission-denied",

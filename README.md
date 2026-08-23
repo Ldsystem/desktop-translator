@@ -37,6 +37,8 @@ tab.
   operating system's built-in voices.
 - **Quick translate panel.** Click the menu-bar icon to type or paste text
   directly, without selecting anything.
+- **Local vocabulary study.** Eligible translated words and short phrases build
+  a private on-device wordbook with related words and multiple-choice practice.
 - **Stays out of the way.** Lives in the menu bar with no Dock icon, and can
   start at login.
 - **Bring your own key.** Your Google Cloud Translation API key is stored in the
@@ -121,8 +123,24 @@ settings file, and is sent only in the `x-goog-api-key` header over HTTPS.
 | Menu-bar right-click | Settings, enable/disable, start at login, quit |
 
 Nothing is sent anywhere until you click the translate button. Selections in
-password and other secure fields are ignored, and no translation history is
-kept.
+password and other secure fields are ignored. Eligible words and short lexical
+phrases, their successful translations, lookup counts, and submitted practice
+results are stored locally in the application's SQLite database. Sentence-like
+text is never added to the wordbook. The database is not exposed to the
+interface and is not synchronized to a cloud service.
+
+Related-word suggestions also remain local: root matches use a conservative
+Latin suffix heuristic, while meaning matches require overlapping normalized
+terms in translations already stored in the wordbook. They do not use an LLM,
+embeddings, or an external dictionary.
+
+## 隐私与本地学习记录
+
+应用只有在你主动点击翻译后才会调用翻译服务。密码框等安全控件中的内容会被忽略。
+符合条件的单词和短词组、成功的翻译结果、查询次数以及已提交的练习结果会保存在本机的
+SQLite 数据库中，用于词汇本和复习排序；句子式文本不会写入词汇本。数据库不会暴露给
+界面层，也不会同步到云端。只有主动提交练习答案才会改变记忆分数，重复查询只会记录
+查询需求。
 
 ## Development
 

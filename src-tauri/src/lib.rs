@@ -25,11 +25,11 @@ mod integration_tests;
 
 fn builder() -> tauri::Builder<tauri::Wry> {
     use commands::{
-        dismiss_overlay, get_credential_status, get_permission_status, get_settings,
-        get_speech_availability, open_accessibility_settings, overlay_ready,
-        prompt_and_save_credential, quit_application, remove_credential, save_settings, speak_text,
-        stop_speech, sync_permission, test_credential, translate_input, translate_selection,
-        RuntimeState,
+        dismiss_overlay, get_credential_status, get_permission_status, get_practice_question,
+        get_related_vocabulary, get_settings, get_speech_availability, list_vocabulary,
+        open_accessibility_settings, overlay_ready, prompt_and_save_credential, quit_application,
+        remove_credential, save_settings, speak_text, stop_speech, submit_practice_answer,
+        sync_permission, test_credential, translate_input, translate_selection, RuntimeState,
     };
     use tauri_plugin_autostart::MacosLauncher;
 
@@ -47,6 +47,10 @@ fn builder() -> tauri::Builder<tauri::Wry> {
             remove_credential,
             translate_selection,
             translate_input,
+            list_vocabulary,
+            get_related_vocabulary,
+            get_practice_question,
+            submit_practice_answer,
             get_speech_availability,
             speak_text,
             stop_speech,

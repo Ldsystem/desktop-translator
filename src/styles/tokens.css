@@ -28,6 +28,9 @@
   --shadow-trigger: 0 3px 10px rgb(15 35 31 / 18%), 0 1px 2px rgb(15 35 31 / 12%);
   --target: 44px;
   --trigger-size: 28px;
+  --study-ink: #173d36;
+  --study-paper: #f7faf8;
+  --study-rule: #c9d8d2;
 }
 
 [data-theme="light"] {
@@ -55,6 +58,9 @@
   --shadow-card: 0 22px 55px rgb(0 0 0 / 38%), 0 2px 12px rgb(0 0 0 / 28%);
   --shadow-trigger: 0 3px 10px rgb(0 0 0 / 45%), 0 1px 2px rgb(0 0 0 / 35%);
   --shadow-panel: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 20px rgb(0 0 0 / 38%);
+  --study-ink: #9be0ce;
+  --study-paper: #151d1b;
+  --study-rule: #3b4c47;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -78,6 +84,9 @@
     --focus: #61c9ef;
     --shadow-card: 0 22px 55px rgb(0 0 0 / 38%), 0 2px 12px rgb(0 0 0 / 28%);
   --shadow-trigger: 0 3px 10px rgb(0 0 0 / 45%), 0 1px 2px rgb(0 0 0 / 35%);
-  --shadow-panel: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 20px rgb(0 0 0 / 38%);
+    --shadow-panel: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 20px rgb(0 0 0 / 38%);
+    --study-ink: #9be0ce;
+    --study-paper: #151d1b;
+    --study-rule: #3b4c47;
   }
 }

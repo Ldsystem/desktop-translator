@@ -4,14 +4,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import App from "./app/App";
+import { createPronouncer } from "./app/pronunciation";
 import { getWindowMode } from "./app/windowMode";
 import type { QuickTranslateStatus } from "./components/quick/QuickTranslatePanel";
 import type {
   AppError,
+  PracticeOutcome,
+  PracticeQuestion,
+  RelatedVocabulary,
   SelectionSnapshot,
   TranslationRequest,
   TranslationResult,
   UserSettings,
+  VocabularyEntry,
 } from "./contracts/ipc";
 import {
   initialOverlayState,
@@ -73,7 +78,18 @@ export function Bootstrap() {
   const [quickStatus, setQuickStatus] = useState<QuickTranslateStatus>({
     mode: "idle",
   });
+  const [vocabularyEntries, setVocabularyEntries] = useState<VocabularyEntry[]>([]);
+  const [vocabularyLoading, setVocabularyLoading] = useState(mode === "study");
+  const [vocabularyError, setVocabularyError] = useState<string>();
+  const [relatedVocabulary, setRelatedVocabulary] = useState<RelatedVocabulary[]>([]);
+  const [practiceQuestion, setPracticeQuestion] = useState<PracticeQuestion | null>();
+  const [practiceOutcome, setPracticeOutcome] = useState<PracticeOutcome>();
   const speaking = useRef(false);
+  const vocabularyPronouncer = useRef(createPronouncer({
+    stop: () => invoke("stop_speech"),
+    speak: (text, language) => invoke("speak_text", { text, language }),
+    onError: () => setVocabularyError("Pronunciation could not be played with the installed voice."),
+  }));
 
   useEffect(() => {
     if (!runningInTauri()) {
@@ -143,6 +159,44 @@ export function Bootstrap() {
       void subscription?.then((unlisten) => unlisten());
     };
   }, [mode]);
+
+  const loadVocabulary = (search?: string) => {
+    if (!runningInTauri()) {
+      setVocabularyLoading(false);
+      return;
+    }
+    setVocabularyLoading(true);
+    setVocabularyError(undefined);
+    void invoke<VocabularyEntry[]>("list_vocabulary", { search: search || null })
+      .then(setVocabularyEntries)
+      .catch(() => setVocabularyError("Your local wordbook could not be opened."))
+      .finally(() => setVocabularyLoading(false));
+  };
+
+  useEffect(() => {
+    if (mode === "study") loadVocabulary();
+  }, [mode]);
+
+  useEffect(() => {
+    if (!runningInTauri() || mode !== "study" || vocabularyEntries.length === 0) {
+      return;
+    }
+
+    let disposed = false;
+    const languages = [...new Set(vocabularyEntries.map((entry) => entry.effectiveSourceLanguage))];
+    void Promise.all(
+      languages.map(async (language) => [
+        language,
+        await invoke<boolean>("get_speech_availability", { language }).catch(() => false),
+      ] as const),
+    ).then((entries) => {
+      if (!disposed) {
+        setSpeechAvailability((current) => ({ ...current, ...Object.fromEntries(entries) }));
+      }
+    });
+
+    return () => { disposed = true; };
+  }, [mode, vocabularyEntries]);
 
   useEffect(() => {
     if (
@@ -256,7 +310,44 @@ export function Bootstrap() {
       permissionStatus={permissionStatus}
       speechAvailability={speechAvailability}
       quickStatus={quickStatus}
+      vocabularyEntries={vocabularyEntries}
+      vocabularyLoading={vocabularyLoading}
+      vocabularyError={vocabularyError}
+      relatedVocabulary={relatedVocabulary}
+      practiceQuestion={practiceQuestion}
+      practiceOutcome={practiceOutcome}
       onQuickTranslate={quickTranslate}
+      onVocabularySearch={loadVocabulary}
+      onSelectVocabulary={(entryId) => {
+        setVocabularyError(undefined);
+        void invoke<RelatedVocabulary[]>("get_related_vocabulary", { entryId })
+          .then(setRelatedVocabulary)
+          .catch(() => setVocabularyError("Related words could not be loaded."));
+      }}
+      onStartPractice={() => {
+        setPracticeQuestion(undefined);
+        setPracticeOutcome(undefined);
+        setVocabularyError(undefined);
+        void invoke<PracticeQuestion | null>("get_practice_question")
+          .then(setPracticeQuestion)
+          .catch(() => {
+            setPracticeQuestion(null);
+            setVocabularyError("A practice question could not be prepared.");
+          });
+      }}
+      onSubmitPracticeAnswer={(entryId, selectedTranslation) => {
+        setVocabularyError(undefined);
+        void invoke<PracticeOutcome>("submit_practice_answer", { entryId, selectedTranslation })
+          .then((outcome) => {
+            setPracticeOutcome(outcome);
+            setVocabularyEntries((entries) => entries.map((entry) => entry.id === outcome.entry.id ? outcome.entry : entry));
+          })
+          .catch(() => setVocabularyError("Your answer could not be saved."));
+      }}
+      onPronounceVocabulary={(text, language) => {
+        setVocabularyError(undefined);
+        vocabularyPronouncer.current(text, language);
+      }}
       onTranslate={translate}
       onCorrectSource={translate}
       onSpeak={(text, language) => {
