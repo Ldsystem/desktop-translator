@@ -84,6 +84,16 @@ async function flushEffects() {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("VocabularyWindow", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -263,5 +273,77 @@ describe("VocabularyWindow", () => {
     expect(container.textContent).toContain("hola");
     expect(container.textContent).toContain("ES → EN");
     expect(container.textContent).toContain("Choose the answer");
+  });
+
+  it("keeps the selected related corpus when an older request resolves last", async () => {
+    const personal = deferred<Awaited<ReturnType<StudyApi["listRelated"]>>>();
+    const textbook = deferred<Awaited<ReturnType<StudyApi["listRelated"]>>>();
+    const listRelated = vi.fn((_entryId: number, source: { kind: string }) => source.kind === "personal" ? personal.promise : textbook.promise);
+    const api = makeStudyApi({ listDownloaded: vi.fn().mockResolvedValue([installedBook]), listRelated });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello")?.click());
+    await flushEffects();
+    act(() => container.querySelector<HTMLInputElement>('input[value="textbook"]')?.click());
+    await act(async () => textbook.resolve([{ kind: "textbook", textbookEntryId: 81, textbookId: installedBook.id, sourceText: "current", translatedText: "当前", sourceLanguage: "en", targetLanguage: "zh-CN", reason: "root", promoted: false }]));
+    await act(async () => personal.resolve([{ kind: "personal", vocabularyEntryId: 2, sourceText: "stale", translatedText: "过时", sourceLanguage: "en", targetLanguage: "zh-CN", reason: "root", promoted: true }]));
+
+    expect(container.textContent).toContain("current");
+    expect(container.textContent).not.toContain("stale");
+  });
+
+  it("keeps the latest textbook search when an older page resolves last", async () => {
+    const initial = deferred<Awaited<ReturnType<StudyApi["listTextbookEntries"]>>>();
+    const latest = deferred<Awaited<ReturnType<StudyApi["listTextbookEntries"]>>>();
+    const listTextbookEntries = vi.fn().mockImplementationOnce(() => initial.promise).mockImplementationOnce(() => latest.promise);
+    const api = makeStudyApi({ listDownloaded: vi.fn().mockResolvedValue([installedBook]), listTextbookEntries });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Textbooks")?.click());
+    await flushEffects();
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Downloaded")?.click());
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Browse words")?.click());
+    const search = container.querySelector<HTMLInputElement>('input[placeholder="Find a word in this textbook"]')!;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(search, "current");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      search.closest("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await act(async () => latest.resolve({ entries: [{ id: 82, textbookId: installedBook.id, sourceText: "current", translatedText: "当前", sourceLanguage: "en", targetLanguage: "zh-CN" }], total: 1, offset: 0, limit: 40 }));
+    await act(async () => initial.resolve({ entries: [{ id: 81, textbookId: installedBook.id, sourceText: "stale", translatedText: "过时", sourceLanguage: "en", targetLanguage: "zh-CN" }], total: 1, offset: 0, limit: 40 }));
+
+    expect(container.textContent).toContain("current");
+    expect(container.textContent).not.toContain("stale");
+  });
+
+  it("restores the persisted direction when saving fails and retries the save", async () => {
+    const savePracticePreferences = vi.fn().mockRejectedValueOnce(new Error("disk busy")).mockResolvedValueOnce(undefined);
+    const api = makeStudyApi({ savePracticePreferences, getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: ["hola", "mundo"] }) });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
+    await flushEffects();
+    await act(async () => container.querySelector<HTMLInputElement>('input[value="target-to-source"]')?.click());
+    await flushEffects();
+    expect(container.querySelector<HTMLInputElement>('input[value="random"]')?.checked).toBe(true);
+    expect(container.textContent).toContain("could not be saved");
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Try saving again")?.click());
+    await flushEffects();
+    expect(savePracticePreferences).toHaveBeenCalledTimes(2);
+    expect(container.querySelector<HTMLInputElement>('input[value="target-to-source"]')?.checked).toBe(true);
+  });
+
+  it("submits each practice question at most once while scoring is pending", async () => {
+    const pending = deferred<Awaited<ReturnType<StudyApi["submitPracticeAnswer"]>>>();
+    const submitPracticeAnswer = vi.fn().mockReturnValue(pending.promise);
+    const api = makeStudyApi({ submitPracticeAnswer, getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: ["hola", "mundo"] }) });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
+    await flushEffects();
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".practice-choice")].find((button) => button.textContent === "hola")?.click());
+    const check = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Check answer")!;
+    act(() => { check.click(); check.click(); });
+
+    expect(submitPracticeAnswer).toHaveBeenCalledTimes(1);
+    expect(check.disabled).toBe(true);
+    await act(async () => pending.resolve({ correct: true, correctAnswer: "hola", direction: "source-to-target", entry }));
   });
 });

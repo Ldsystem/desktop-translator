@@ -20,14 +20,22 @@ export function PracticeView({ api }: PracticeViewProps) {
   const [selected, setSelected] = useState<string>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [failedDirection, setFailedDirection] = useState<PracticeDirection>();
   const nextButton = useRef<HTMLButtonElement>(null);
+  const questionRequest = useRef(0);
+  const submittingRef = useRef(false);
 
   const loadQuestion = () => {
+    const request = ++questionRequest.current;
     setQuestion(undefined);
     setOutcome(undefined);
     setSelected(undefined);
     setError(undefined);
-    void api.getPracticeQuestion().then(setQuestion).catch(() => {
+    void api.getPracticeQuestion().then((next) => {
+      if (request === questionRequest.current) setQuestion(next);
+    }).catch(() => {
+      if (request !== questionRequest.current) return;
       setQuestion(null);
       setError("A practice question could not be prepared.");
     });
@@ -45,20 +53,40 @@ export function PracticeView({ api }: PracticeViewProps) {
   useEffect(() => { if (outcome) nextButton.current?.focus(); }, [outcome]);
 
   const chooseDirection = (next: PracticeDirection) => {
-    setDirection(next);
     setSaving(true);
     setError(undefined);
-    void api.savePracticePreferences({ direction: next }).then(loadQuestion).catch(() => setError("Your practice direction could not be saved.")).finally(() => setSaving(false));
+    setFailedDirection(undefined);
+    void api.savePracticePreferences({ direction: next }).then(() => {
+      setDirection(next);
+      loadQuestion();
+    }).catch(() => {
+      setFailedDirection(next);
+      setError("Your practice direction could not be saved.");
+    }).finally(() => setSaving(false));
+  };
+
+  const submit = (questionValue: StudyPracticeQuestion, answer: string) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(undefined);
+    void api.submitPracticeAnswer(questionValue.entryId, questionValue.direction, answer)
+      .then(setOutcome)
+      .catch(() => setError("Your answer could not be saved."))
+      .finally(() => {
+        submittingRef.current = false;
+        setSubmitting(false);
+      });
   };
 
   return <section aria-labelledby="practice-title">
     <header className="study-header"><div><p className="eyebrow">Practice</p><h2 id="practice-title">Choose the answer</h2><p>Questions come from your wordbook. The active textbook supplies choices first.</p></div></header>
     <fieldset className="direction-selector" disabled={saving}><legend>Practice direction</legend>{directions.map((item) => <label key={item.value} className={direction === item.value ? "is-active" : ""}><input type="radio" name="practice-direction" value={item.value} checked={direction === item.value} onChange={() => chooseDirection(item.value)} /><span><strong>{item.label}</strong><small>{item.note}</small></span></label>)}</fieldset>
-    {error && <div className="study-notice study-notice--error" role="alert">{error} <button className="text-button" type="button" onClick={loadQuestion}>Try again</button></div>}
+    {error && <div className="study-notice study-notice--error" role="alert">{error} <button className="text-button" type="button" onClick={() => failedDirection ? chooseDirection(failedDirection) : loadQuestion()}>{failedDirection ? "Try saving again" : "Try again"}</button></div>}
     {question === undefined ? <div className="study-empty" role="status"><strong>Choosing what needs attention…</strong></div> : question === null ? <div className="study-empty"><strong>Add at least one word and one distinct choice.</strong><span>Download and activate a textbook to widen the local choice pool.</span></div> : <section className="practice-card">
       <div className="practice-prompt"><span>{question.promptLanguage.toUpperCase()} → {question.answerLanguage.toUpperCase()}</span><strong>{question.prompt}</strong></div>
-      <div className="practice-choices" role="radiogroup" aria-label="Answer choices">{question.choices.map((choice) => <button key={choice} className={selected === choice ? "practice-choice is-selected" : "practice-choice"} type="button" role="radio" aria-checked={selected === choice} disabled={Boolean(outcome)} onClick={() => setSelected(choice)}>{choice}</button>)}</div>
-      <div className="practice-actions">{outcome ? <><div className={outcome.correct ? "practice-feedback is-correct" : "practice-feedback is-wrong"} role="status"><span className="practice-feedback__mark" aria-hidden="true">{outcome.correct ? "✓" : "↺"}</span><span className="practice-feedback__copy"><strong>{outcome.correct ? "Correct" : "Review this answer"}</strong><span>{outcome.correct ? `Recall is now ${Math.round(outcome.entry.effectiveRecall)}.` : `The answer is “${outcome.correctAnswer}”.`}</span></span></div><button ref={nextButton} className="button button--primary practice-next" type="button" onClick={loadQuestion}>Next word</button></> : <button className="button button--primary practice-submit" type="button" disabled={!selected} onClick={() => selected && void api.submitPracticeAnswer(question.entryId, question.direction, selected).then(setOutcome).catch(() => setError("Your answer could not be saved."))}>Check answer</button>}</div>
+      <div className="practice-choices" role="radiogroup" aria-label="Answer choices">{question.choices.map((choice) => <button key={choice} className={selected === choice ? "practice-choice is-selected" : "practice-choice"} type="button" role="radio" aria-checked={selected === choice} disabled={Boolean(outcome) || submitting} onClick={() => setSelected(choice)}>{choice}</button>)}</div>
+      <div className="practice-actions">{outcome ? <><div className={outcome.correct ? "practice-feedback is-correct" : "practice-feedback is-wrong"} role="status"><span className="practice-feedback__mark" aria-hidden="true">{outcome.correct ? "✓" : "↺"}</span><span className="practice-feedback__copy"><strong>{outcome.correct ? "Correct" : "Review this answer"}</strong><span>{outcome.correct ? `Recall is now ${Math.round(outcome.entry.effectiveRecall)}.` : `The answer is “${outcome.correctAnswer}”.`}</span></span></div><button ref={nextButton} className="button button--primary practice-next" type="button" onClick={loadQuestion}>Next word</button></> : <button className="button button--primary practice-submit" type="button" disabled={!selected || submitting} onClick={() => selected && submit(question, selected)}>{submitting ? "Checking…" : "Check answer"}</button>}</div>
     </section>}
   </section>;
 }

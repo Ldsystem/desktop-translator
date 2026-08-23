@@ -41,6 +41,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
   const [added, setAdded] = useState<Set<number>>(new Set());
   const [adding, setAdding] = useState<number>();
   const searchInput = useRef<HTMLInputElement>(null);
+  const entryRequest = useRef(0);
 
   const loadShelf = () => {
     setCatalogLoading(true);
@@ -65,17 +66,19 @@ export function TextbooksView({ api }: TextbooksViewProps) {
   );
 
   const loadEntries = (book: InstalledTextbook, search = entrySearch, offset = 0) => {
+    const request = ++entryRequest.current;
     setOpenBook(book);
     setEntryLoading(true);
     setEntryError(undefined);
     void api.listTextbookEntries(book.id, search, offset, PAGE_SIZE)
       .then((page) => {
+        if (request !== entryRequest.current) return;
         setEntries(page.entries);
         setEntryTotal(page.total);
         setEntryOffset(page.offset);
       })
-      .catch((error) => setEntryError(message(error, "This textbook could not be browsed.")))
-      .finally(() => setEntryLoading(false));
+      .catch((error) => { if (request === entryRequest.current) setEntryError(message(error, "This textbook could not be browsed.")); })
+      .finally(() => { if (request === entryRequest.current) setEntryLoading(false); });
   };
 
   const updateShelf = async (operation: () => Promise<unknown>, bookId: string) => {
@@ -171,14 +174,14 @@ export function TextbooksView({ api }: TextbooksViewProps) {
     <section aria-labelledby="textbook-shelf-title">
       <header className="study-header textbook-shelf__header">
         <div><p className="eyebrow">Textbooks</p><h2 id="textbook-shelf-title">Textbook shelf</h2><p>Bring a curated dictionary into your local study desk, then choose one active source.</p></div>
-        <div className="shelf-tabs" role="tablist" aria-label="Textbook shelf sections">
-          <button type="button" role="tab" aria-selected={tab === "discover"} className={tab === "discover" ? "is-active" : ""} onClick={() => setTab("discover")}>Discover</button>
-          <button type="button" role="tab" aria-selected={tab === "downloaded"} className={tab === "downloaded" ? "is-active" : ""} onClick={() => setTab("downloaded")}>Downloaded</button>
+        <div className="shelf-tabs" aria-label="Textbook shelf sections">
+          <button type="button" aria-pressed={tab === "discover"} className={tab === "discover" ? "is-active" : ""} onClick={() => setTab("discover")}>Discover</button>
+          <button type="button" aria-pressed={tab === "downloaded"} className={tab === "downloaded" ? "is-active" : ""} onClick={() => setTab("downloaded")}>Downloaded</button>
         </div>
       </header>
 
       {tab === "discover" ? (
-        <div className="textbook-surface" role="tabpanel">
+        <div className="textbook-surface">
           {catalogError && <div className="study-notice study-notice--error" role="alert">{catalogError} <button className="text-button" type="button" onClick={loadShelf}>Try again</button></div>}
           {catalogLoading ? <div className="study-empty" role="status"><strong>Opening the catalog…</strong></div> : catalog.length === 0 ? <div className="study-empty"><strong>No textbooks are available right now.</strong><span>Your personal wordbook and practice remain available.</span></div> : (
             <div className="textbook-grid">{catalog.map((item) => {
@@ -193,7 +196,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
           )}
         </div>
       ) : (
-        <div className="textbook-surface" role="tabpanel">
+        <div className="textbook-surface">
           {downloadedError && <div className="study-notice study-notice--error" role="alert">{downloadedError}</div>}
           {downloadedLoading ? <div className="study-empty" role="status"><strong>Reading your shelf…</strong></div> : downloaded.length === 0 ? <div className="study-empty"><strong>No downloaded textbooks yet.</strong><span>Open Discover to add a curated local reference.</span><button className="button button--secondary study-empty__action" type="button" onClick={() => setTab("discover")}>Browse Discover</button></div> : (
             <div className="downloaded-list">{downloaded.map((book) => <article className={book.active ? "downloaded-book is-active" : "downloaded-book"} key={book.id}>

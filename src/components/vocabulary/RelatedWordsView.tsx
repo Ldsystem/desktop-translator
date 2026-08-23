@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { InstalledTextbook, RelatedSource, RelatedWord, VocabularyEntry } from "../../contracts/ipc";
 import type { StudyApi } from "./VocabularyWindow";
@@ -15,6 +15,7 @@ export function RelatedWordsView({ anchor, api }: RelatedWordsViewProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [adding, setAdding] = useState<number>();
+  const relatedRequest = useRef(0);
 
   useEffect(() => {
     void api.listDownloaded().then((books) => setActiveBook(books.find((book) => book.active))).catch(() => {
@@ -24,6 +25,7 @@ export function RelatedWordsView({ anchor, api }: RelatedWordsViewProps) {
   }, [api]);
 
   useEffect(() => {
+    const request = ++relatedRequest.current;
     if (!anchor || (sourceKind === "textbook" && !activeBook)) {
       setItems([]);
       return;
@@ -34,9 +36,9 @@ export function RelatedWordsView({ anchor, api }: RelatedWordsViewProps) {
     setLoading(true);
     setError(undefined);
     void api.listRelated(anchor.id, source)
-      .then(setItems)
-      .catch(() => setError("Related words could not be loaded from this source."))
-      .finally(() => setLoading(false));
+      .then((next) => { if (request === relatedRequest.current) setItems(next); })
+      .catch(() => { if (request === relatedRequest.current) setError("Related words could not be loaded from this source."); })
+      .finally(() => { if (request === relatedRequest.current) setLoading(false); });
   }, [activeBook, anchor, api, sourceKind]);
 
   return <section aria-labelledby="related-title">
