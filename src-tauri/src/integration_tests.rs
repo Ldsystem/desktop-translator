@@ -35,6 +35,7 @@ impl TranslationProvider for CountingProvider {
             detected_source_language: Some("en".into()),
             effective_source_language: "en".into(),
             target_language: request.target_language.clone(),
+            part_of_speech: None,
         })
     }
 

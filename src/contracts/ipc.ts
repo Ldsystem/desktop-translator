@@ -47,6 +47,7 @@ export interface TranslationResult {
   detectedSourceLanguage?: LanguageCode;
   effectiveSourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
+  partOfSpeech?: string;
 }
 
 export interface VocabularyEntry {
@@ -56,6 +57,7 @@ export interface VocabularyEntry {
   requestedSourceLanguage: LanguageCode;
   effectiveSourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
+  partOfSpeech?: string;
   lookupCount: number;
   recallScore: number;
   effectiveRecall: number;
@@ -143,6 +145,7 @@ export interface TextbookEntry {
   sourceText: string;
   translatedText: string;
   phoneticSymbols?: string;
+  partOfSpeech?: string;
   sourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
 }
@@ -182,6 +185,7 @@ export interface RelatedWord {
   translatedText: string;
   sourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
+  partOfSpeech?: string;
   reason: "root" | "meaning";
   promoted: boolean;
   origins: RelatedOrigin[];
@@ -208,7 +212,13 @@ export interface StudyPracticeQuestion {
   prompt: string;
   promptLanguage: LanguageCode;
   answerLanguage: LanguageCode;
-  choices: string[];
+  promptPartOfSpeech?: string;
+  choices: StudyPracticeChoice[];
+}
+
+export interface StudyPracticeChoice {
+  text: string;
+  partOfSpeech?: string;
 }
 
 export interface StudyPracticeOutcome {
@@ -343,7 +353,8 @@ export function isTranslationResult(value: unknown): value is TranslationResult 
     isNonEmptyString(value.effectiveSourceLanguage) &&
     isNonEmptyString(value.targetLanguage) &&
     (value.detectedSourceLanguage === undefined ||
-      isNonEmptyString(value.detectedSourceLanguage))
+      isNonEmptyString(value.detectedSourceLanguage)) &&
+    (value.partOfSpeech === undefined || isNonEmptyString(value.partOfSpeech))
   );
 }
 
@@ -406,7 +417,8 @@ export function isTextbookEntry(value: unknown): value is TextbookEntry {
       value.sourceLanguage,
       value.targetLanguage,
     ].every(isNonEmptyString) &&
-    (value.phoneticSymbols === undefined || isNonEmptyString(value.phoneticSymbols))
+    (value.phoneticSymbols === undefined || isNonEmptyString(value.phoneticSymbols)) &&
+    (value.partOfSpeech === undefined || isNonEmptyString(value.partOfSpeech))
   );
 }
 

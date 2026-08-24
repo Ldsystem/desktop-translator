@@ -29,7 +29,8 @@
     "translatedText": "你好",
     "detectedSourceLanguage": "en",
     "effectiveSourceLanguage": "en",
-    "targetLanguage": "zh-CN"
+    "targetLanguage": "zh-CN",
+    "partOfSpeech": "adjective"
   },
   "vocabularyRevision": {
     "revision": 1,

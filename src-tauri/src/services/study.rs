@@ -11,7 +11,7 @@ use rusqlite::{params, Connection};
 use crate::{
     contracts::{
         AppError, AppErrorCode, PracticeDirection, PracticePreferences, RelatedOrigin, RelatedWord,
-        StudyPracticeOutcome, StudyPracticeQuestion, TextbookEntry,
+        StudyPracticeChoice, StudyPracticeOutcome, StudyPracticeQuestion, TextbookEntry,
     },
     services::{textbooks::TextbookStore, vocabulary::VocabularyStore},
 };
@@ -100,6 +100,7 @@ impl StudyService {
         let source_language = anchor.effective_source_language.clone();
         let target_language = anchor.target_language.clone();
         let mut combined = HashMap::<String, RelatedWord>::new();
+        let mut categories = HashMap::<String, HashSet<String>>::new();
 
         for item in self.vocabulary.related(entry_id, now_ms)? {
             if !item
@@ -134,6 +135,9 @@ impl StudyService {
                     },
                 );
             }
+            if let Some(category) = item.entry.part_of_speech.clone() {
+                categories.entry(pair.clone()).or_default().insert(category);
+            }
             combined.insert(
                 pair,
                 RelatedWord {
@@ -145,6 +149,7 @@ impl StudyService {
                     translated_text: item.entry.translated_text,
                     source_language: item.entry.effective_source_language,
                     target_language: item.entry.target_language,
+                    part_of_speech: item.entry.part_of_speech,
                     reason: item.reason,
                     promoted: true,
                     origins,
@@ -196,10 +201,18 @@ impl StudyService {
                         textbook_id: Some(book.id.clone()),
                         textbook_title: Some(book.title.clone()),
                     };
+                    if let Some(category) = entry.part_of_speech.clone() {
+                        categories.entry(pair.clone()).or_default().insert(category);
+                    }
                     if let Some(existing) = combined.get_mut(&pair) {
                         push_origin(&mut existing.origins, origin);
                         existing.textbook_entry_id.get_or_insert(entry.id);
                         existing.textbook_id.get_or_insert(book.id.clone());
+                        existing.part_of_speech = categories.get(&pair).and_then(|values| {
+                            (values.len() == 1)
+                                .then(|| values.iter().next().cloned())
+                                .flatten()
+                        });
                     } else {
                         combined.insert(
                             pair,
@@ -212,6 +225,7 @@ impl StudyService {
                                 translated_text: entry.translated_text,
                                 source_language: entry.source_language,
                                 target_language: entry.target_language,
+                                part_of_speech: entry.part_of_speech,
                                 reason: reason.into(),
                                 promoted: false,
                                 origins: vec![origin],
@@ -317,7 +331,10 @@ impl StudyService {
                 ),
                 PracticeDirection::Random => unreachable!(),
             };
-            let mut choices = vec![display(&correct_answer)];
+            let mut choices = vec![StudyPracticeChoice {
+                text: display(&correct_answer),
+                part_of_speech: candidate.part_of_speech.clone(),
+            }];
             let mut choice_keys = HashSet::from([key(&correct_answer)]);
 
             for related in self
@@ -337,7 +354,10 @@ impl StudyService {
                     PracticeDirection::Random => unreachable!(),
                 };
                 if choice_keys.insert(key(&answer)) {
-                    choices.push(display(&answer));
+                    choices.push(StudyPracticeChoice {
+                        text: display(&answer),
+                        part_of_speech: related.part_of_speech,
+                    });
                 }
                 if choices.len() == 4 {
                     break;
@@ -370,7 +390,10 @@ impl StudyService {
                     PracticeDirection::Random => unreachable!(),
                 };
                 if choice_keys.insert(key(answer)) {
-                    choices.push(display(answer));
+                    choices.push(StudyPracticeChoice {
+                        text: display(answer),
+                        part_of_speech: textbook_entry.part_of_speech,
+                    });
                 }
             }
 
@@ -402,7 +425,10 @@ impl StudyService {
                     PracticeDirection::Random => unreachable!(),
                 };
                 if choice_keys.insert(key(answer)) {
-                    choices.push(display(answer));
+                    choices.push(StudyPracticeChoice {
+                        text: display(answer),
+                        part_of_speech: entry.part_of_speech.clone(),
+                    });
                 }
             }
             if choices.len() < 2 {
@@ -417,6 +443,7 @@ impl StudyService {
                 prompt,
                 prompt_language,
                 answer_language,
+                prompt_part_of_speech: candidate.part_of_speech.clone(),
                 choices,
             }));
         }
@@ -594,14 +621,14 @@ mod tests {
         let service = StudyService::open(file.path(), vocabulary, textbooks).expect("study");
         {
             let connection = service.preferences.lock().expect("connection");
-            for (source, translation, seen) in [
-                ("ephemeral", "短暂的", 30),
-                ("supersede", "取代", 20),
-                ("predeclare", "预先申报", 10),
+            for (source, translation, part_of_speech, seen) in [
+                ("ephemeral", "短暂的", Some("adjective"), 30),
+                ("supersede", "取代", Some("verb"), 20),
+                ("predeclare", "预先申报", None, 10),
             ] {
                 connection.execute(
-                    "INSERT INTO vocabulary_entries (normalized_text, source_text, requested_source_language, target_language, translated_text, detected_source_language, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms) VALUES (?1, ?1, 'auto', 'zh-CN', ?2, 'en', 'en', ?3, ?3)",
-                    params![source, translation, seen],
+                    "INSERT INTO vocabulary_entries (normalized_text, source_text, requested_source_language, target_language, translated_text, detected_source_language, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms, part_of_speech) VALUES (?1, ?1, 'auto', 'zh-CN', ?2, 'en', 'en', ?4, ?4, ?3)",
+                    params![source, translation, part_of_speech, seen],
                 ).expect("personal entry");
             }
         }
@@ -611,7 +638,10 @@ mod tests {
     fn install_book(service: &StudyService) {
         let fixture = NamedTempFile::new().expect("fixture");
         let connection = Connection::open(fixture.path()).expect("fixture db");
-        connection.execute_batch("CREATE TABLE simple_translation (written_rep TEXT NOT NULL, trans_list TEXT NOT NULL);").expect("schema");
+        connection.execute_batch(
+            "CREATE TABLE simple_translation (written_rep TEXT NOT NULL, trans_list TEXT NOT NULL);
+             CREATE TABLE translation (lexentry TEXT, written_rep TEXT NOT NULL, trans_list TEXT NOT NULL, score REAL);",
+        ).expect("schema");
         for (source, translation) in [
             ("ephemeral", "短暂的"),
             ("ephemerally", "短暂地"),
@@ -626,6 +656,18 @@ mod tests {
                     params![source, translation],
                 )
                 .expect("fixture entry");
+        }
+        for (source, translation, category) in [
+            ("ephemeral", "短暂的", "Adjective"),
+            ("ephemerally", "短暂地", "Adverb"),
+            ("ephemeralness", "短暂性", "Noun"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO translation VALUES (?1, ?2, ?3, 1)",
+                    params![format!("eng/{source}__{category}__1"), source, translation],
+                )
+                .expect("lexical fixture entry");
         }
         drop(connection);
         let bytes = std::fs::read(fixture.path()).expect("bytes");
@@ -685,7 +727,11 @@ mod tests {
             .expect("forward question");
         assert_eq!(forward.direction, PracticeDirection::SourceToTarget);
         assert_eq!(forward.prompt, "ephemeral");
-        assert!(forward.choices.contains(&"短暂的".to_owned()));
+        assert_eq!(forward.prompt_part_of_speech.as_deref(), Some("adjective"));
+        assert!(forward.choices.iter().any(|choice| choice.text == "短暂的"));
+        assert!(forward.choices.iter().any(|choice| {
+            choice.text == "短暂的" && choice.part_of_speech.as_deref() == Some("adjective")
+        }));
 
         service
             .save_preferences(PracticePreferences {
@@ -698,7 +744,11 @@ mod tests {
             .expect("reverse question");
         assert_eq!(reverse.direction, PracticeDirection::TargetToSource);
         assert_eq!(reverse.prompt, "短暂的");
-        assert!(reverse.choices.contains(&"ephemeral".to_owned()));
+        assert_eq!(reverse.prompt_part_of_speech.as_deref(), Some("adjective"));
+        assert!(reverse
+            .choices
+            .iter()
+            .any(|choice| choice.text == "ephemeral"));
         assert_eq!(before, service.vocabulary.list(None, 100).expect("after"));
     }
 
@@ -730,7 +780,7 @@ mod tests {
             forward
                 .choices
                 .iter()
-                .map(|choice| key(choice))
+                .map(|choice| key(&choice.text))
                 .collect::<HashSet<_>>()
                 .len(),
             forward.choices.len()
@@ -784,6 +834,7 @@ mod tests {
             .find(|item| item.source_text == "ephemerally")
             .expect("merged pair");
         assert_eq!(merged.kind, "personal");
+        assert_eq!(merged.part_of_speech.as_deref(), Some("adverb"));
         assert!(merged.vocabulary_entry_id.is_some());
         assert!(merged
             .origins
@@ -969,8 +1020,17 @@ mod tests {
             .expect("question")
             .expect("candidate");
         assert_eq!(question.prompt, "ephemeral");
-        assert!(question.choices.contains(&"短暂地".to_owned()));
-        assert!(question.choices.contains(&"短暂性".to_owned()));
+        assert!(question
+            .choices
+            .iter()
+            .any(|choice| choice.text == "短暂地"));
+        assert!(question
+            .choices
+            .iter()
+            .any(|choice| choice.text == "短暂性"));
+        assert!(question.choices.iter().any(|choice| {
+            choice.text == "短暂地" && choice.part_of_speech.as_deref() == Some("adverb")
+        }));
         assert_eq!(
             question,
             service
@@ -982,7 +1042,7 @@ mod tests {
             question
                 .choices
                 .iter()
-                .map(|choice| key(choice))
+                .map(|choice| key(&choice.text))
                 .collect::<HashSet<_>>()
                 .len(),
             question.choices.len()
@@ -991,7 +1051,7 @@ mod tests {
             question
                 .choices
                 .iter()
-                .filter(|choice| key(choice) == key("短暂的"))
+                .filter(|choice| key(&choice.text) == key("短暂的"))
                 .count(),
             1
         );
@@ -1056,6 +1116,6 @@ mod tests {
         assert!(question
             .choices
             .iter()
-            .any(|choice| choice.starts_with("页外选项")));
+            .any(|choice| choice.text.starts_with("页外选项")));
     }
 }

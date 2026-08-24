@@ -59,6 +59,7 @@ impl VocabularyStore {
                last_reviewed_epoch_ms INTEGER,
                last_correct_epoch_ms INTEGER,
                last_wrong_epoch_ms INTEGER,
+               part_of_speech TEXT,
                UNIQUE(normalized_text, requested_source_language, target_language)
              );
              CREATE TABLE IF NOT EXISTS vocabulary_events (
@@ -73,6 +74,14 @@ impl VocabularyStore {
                ON vocabulary_events(entry_id, created_at_epoch_ms);",
             )
             .map_err(storage_error)?;
+        if !table_has_column(&connection, "vocabulary_entries", "part_of_speech")? {
+            connection
+                .execute(
+                    "ALTER TABLE vocabulary_entries ADD COLUMN part_of_speech TEXT",
+                    [],
+                )
+                .map_err(storage_error)?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -90,7 +99,7 @@ impl VocabularyStore {
             .map_err(|_| internal("Vocabulary database lock failed"))?;
         let transaction = connection.transaction().map_err(storage_error)?;
         let cached = transaction.query_row(
-            "SELECT id, translated_text, detected_source_language, effective_source_language, target_language
+            "SELECT id, translated_text, detected_source_language, effective_source_language, target_language, part_of_speech
              FROM vocabulary_entries
              WHERE normalized_text = ?1 AND target_language = ?3
                AND (
@@ -101,7 +110,7 @@ impl VocabularyStore {
              ORDER BY CASE WHEN requested_source_language = ?2 COLLATE NOCASE THEN 0 ELSE 1 END, id
              LIMIT 1",
             params![normalized, request.source_language.trim(), request.target_language.trim()],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<String>>(5)?)),
         ).optional().map_err(storage_error)?;
         let Some((
             entry_id,
@@ -109,6 +118,7 @@ impl VocabularyStore {
             detected_source_language,
             effective_source_language,
             target_language,
+            part_of_speech,
         )) = cached
         else {
             return Ok(None);
@@ -125,6 +135,7 @@ impl VocabularyStore {
             detected_source_language,
             effective_source_language,
             target_language,
+            part_of_speech,
         }))
     }
 
@@ -146,11 +157,13 @@ impl VocabularyStore {
             "INSERT INTO vocabulary_entries (
                normalized_text, source_text, requested_source_language, target_language,
                translated_text, detected_source_language, effective_source_language,
-               first_seen_epoch_ms, last_seen_epoch_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+               first_seen_epoch_ms, last_seen_epoch_ms, part_of_speech
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)
              ON CONFLICT(normalized_text, requested_source_language, target_language)
-             DO UPDATE SET lookup_count = lookup_count + 1, last_seen_epoch_ms = excluded.last_seen_epoch_ms",
-            params![normalize_text(&request.text), request.text.trim(), request.source_language.trim(), request.target_language.trim(), result.translated_text, result.detected_source_language, result.effective_source_language, to_i64(now_ms)],
+             DO UPDATE SET lookup_count = lookup_count + 1,
+                           last_seen_epoch_ms = excluded.last_seen_epoch_ms,
+                           part_of_speech = coalesce(excluded.part_of_speech, vocabulary_entries.part_of_speech)",
+            params![normalize_text(&request.text), request.text.trim(), request.source_language.trim(), request.target_language.trim(), result.translated_text, result.detected_source_language, result.effective_source_language, to_i64(now_ms), result.part_of_speech],
         ).map_err(storage_error)?;
         let entry_id = transaction.query_row(
             "SELECT id FROM vocabulary_entries WHERE normalized_text = ?1 AND requested_source_language = ?2 AND target_language = ?3",
@@ -178,6 +191,7 @@ impl VocabularyStore {
             "SELECT id, source_text, translated_text, requested_source_language, effective_source_language,
                     target_language, lookup_count, recall_score, review_count, correct_count, wrong_count,
                     correct_streak, wrong_streak, last_seen_epoch_ms, last_reviewed_epoch_ms
+                    , part_of_speech
              FROM vocabulary_entries
              WHERE ?1 IS NULL OR normalized_text LIKE ?1 OR lower(translated_text) LIKE ?1
              ORDER BY last_seen_epoch_ms DESC, id DESC",
@@ -564,12 +578,21 @@ impl TranslationProvider for TextbookTranslationProvider {
                             detected_source_language: Some(entry.source_language.clone()),
                             effective_source_language: entry.source_language,
                             target_language: entry.target_language,
+                            part_of_speech: entry.part_of_speech,
                         });
                     }
                 }
             }
         }
-        self.upstream.translate(request).await
+        let mut result = self.upstream.translate(request).await?;
+        if result.part_of_speech.is_none() && is_vocabulary_eligible(&request.text) {
+            result.part_of_speech = self.installed_part_of_speech(
+                request,
+                &result.translated_text,
+                &result.effective_source_language,
+            )?;
+        }
+        Ok(result)
     }
 
     async fn supported_languages(&self) -> Result<Vec<String>, AppError> {
@@ -580,6 +603,48 @@ impl TranslationProvider for TextbookTranslationProvider {
 impl VocabularyTranslationProvider {
     pub fn new(upstream: Arc<dyn TranslationProvider>, store: Arc<VocabularyStore>) -> Self {
         Self { upstream, store }
+    }
+}
+
+impl TextbookTranslationProvider {
+    fn installed_part_of_speech(
+        &self,
+        request: &TranslationRequest,
+        translated_text: &str,
+        effective_source_language: &str,
+    ) -> Result<Option<String>, AppError> {
+        let normalized = normalize_text(&request.text);
+        let normalized_translation = translation_key(translated_text);
+        let mut categories = HashSet::new();
+        for book in self.textbooks.list_installed()?.into_iter().filter(|book| {
+            (if request.source_language.eq_ignore_ascii_case("auto") {
+                effective_source_language.eq_ignore_ascii_case(&book.source_language)
+            } else {
+                request
+                    .source_language
+                    .eq_ignore_ascii_case(&book.source_language)
+            }) && request
+                .target_language
+                .eq_ignore_ascii_case(&book.target_language)
+        }) {
+            for entry in self
+                .textbooks
+                .list_entries(&book.id, Some(&request.text), 0, 50)?
+                .entries
+                .into_iter()
+                .filter(|entry| {
+                    normalize_text(&entry.source_text) == normalized
+                        && translation_key(&entry.translated_text) == normalized_translation
+                })
+            {
+                if let Some(category) = entry.part_of_speech {
+                    categories.insert(category);
+                }
+            }
+        }
+        Ok((categories.len() == 1)
+            .then(|| categories.into_iter().next())
+            .flatten())
     }
 }
 
@@ -701,6 +766,7 @@ fn row_to_entry(row: &Row<'_>, now_ms: u64) -> rusqlite::Result<VocabularyEntry>
         requested_source_language: row.get(3)?,
         effective_source_language: row.get(4)?,
         target_language: row.get(5)?,
+        part_of_speech: row.get(15)?,
         lookup_count: row.get::<_, i64>(6)? as u64,
         recall_score,
         effective_recall,
@@ -713,6 +779,20 @@ fn row_to_entry(row: &Row<'_>, now_ms: u64) -> rusqlite::Result<VocabularyEntry>
         last_seen_epoch_ms: row.get::<_, i64>(13)? as u64,
         last_reviewed_epoch_ms,
     })
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, AppError> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut statement = connection.prepare(&sql).map_err(storage_error)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(storage_error)?;
+    for current in rows {
+        if current.map_err(storage_error)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn conservative_root(text: &str) -> Option<String> {
@@ -796,6 +876,7 @@ mod tests {
                 selection_id: request.selection_id,
                 translated_text: match request.text.as_str() {
                     "greeting" => "  HoLa \t",
+                    "ephemeral" => "短暂的",
                     "runner" => "a person who runs",
                     "running" | "quickly" => "run quickly",
                     "world" => "mundo",
@@ -805,6 +886,8 @@ mod tests {
                 detected_source_language: Some("en".into()),
                 effective_source_language: "en".into(),
                 target_language: request.target_language.clone(),
+                part_of_speech: (request.text.trim().eq_ignore_ascii_case("hello"))
+                    .then(|| "interjection".into()),
             })
         }
 
@@ -830,7 +913,10 @@ mod tests {
         let fixture = NamedTempFile::new().expect("fixture");
         let connection = Connection::open(fixture.path()).expect("fixture db");
         connection
-            .execute_batch("CREATE TABLE simple_translation (written_rep TEXT NOT NULL, trans_list TEXT NOT NULL);")
+            .execute_batch(
+                "CREATE TABLE simple_translation (written_rep TEXT NOT NULL, trans_list TEXT NOT NULL);
+                 CREATE TABLE translation (lexentry TEXT, written_rep TEXT NOT NULL, trans_list TEXT NOT NULL, score REAL);",
+            )
             .expect("fixture schema");
         connection
             .execute(
@@ -838,6 +924,12 @@ mod tests {
                 [],
             )
             .expect("fixture entry");
+        connection
+            .execute(
+                "INSERT INTO translation VALUES ('eng/ephemeral__Adjective__1', 'ephemeral', '短暂的', 1)",
+                [],
+            )
+            .expect("lexical fixture entry");
         drop(connection);
         let bytes = std::fs::read(fixture.path()).expect("fixture bytes");
         let catalog = TextbookCatalogItem {
@@ -880,9 +972,11 @@ mod tests {
             .await
             .expect("textbook hit");
         assert_eq!(first.translated_text, "短暂的");
+        assert_eq!(first.part_of_speech.as_deref(), Some("adjective"));
         assert_eq!(api.calls.load(Ordering::SeqCst), 0);
         let promoted = personal.list(None, 2).expect("personal");
         assert_eq!(promoted.len(), 1);
+        assert_eq!(promoted[0].part_of_speech.as_deref(), Some("adjective"));
         assert_eq!(
             personal
                 .provenance(promoted[0].id)
@@ -972,6 +1066,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn existing_vocabulary_rows_migrate_with_unknown_part_of_speech() {
+        let file = NamedTempFile::new().expect("database");
+        let connection = Connection::open(file.path()).expect("legacy database");
+        connection
+            .execute_batch(
+                "CREATE TABLE vocabulary_entries (
+                   id INTEGER PRIMARY KEY,
+                   normalized_text TEXT NOT NULL,
+                   source_text TEXT NOT NULL,
+                   requested_source_language TEXT NOT NULL,
+                   target_language TEXT NOT NULL,
+                   translated_text TEXT NOT NULL,
+                   detected_source_language TEXT,
+                   effective_source_language TEXT NOT NULL,
+                   lookup_count INTEGER NOT NULL DEFAULT 1,
+                   first_seen_epoch_ms INTEGER NOT NULL,
+                   last_seen_epoch_ms INTEGER NOT NULL,
+                   recall_score REAL NOT NULL DEFAULT 20,
+                   review_count INTEGER NOT NULL DEFAULT 0,
+                   correct_count INTEGER NOT NULL DEFAULT 0,
+                   wrong_count INTEGER NOT NULL DEFAULT 0,
+                   correct_streak INTEGER NOT NULL DEFAULT 0,
+                   wrong_streak INTEGER NOT NULL DEFAULT 0,
+                   last_reviewed_epoch_ms INTEGER,
+                   last_correct_epoch_ms INTEGER,
+                   last_wrong_epoch_ms INTEGER,
+                   UNIQUE(normalized_text, requested_source_language, target_language)
+                 );
+                 INSERT INTO vocabulary_entries (
+                   normalized_text, source_text, requested_source_language, target_language,
+                   translated_text, detected_source_language, effective_source_language,
+                   first_seen_epoch_ms, last_seen_epoch_ms
+                 ) VALUES ('legacy', 'legacy', 'auto', 'zh-CN', '旧词', 'en', 'en', 1, 1);",
+            )
+            .expect("legacy schema");
+        drop(connection);
+
+        let store = VocabularyStore::open(file.path()).expect("migrate");
+        let entries = store.list(None, 2).expect("list migrated row");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source_text, "legacy");
+        assert_eq!(entries[0].part_of_speech, None);
+    }
+
     #[tokio::test]
     async fn cache_hit_preserves_selection_and_does_not_call_upstream() {
         let file = NamedTempFile::new().expect("temp db");
@@ -992,10 +1131,64 @@ mod tests {
 
         assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
         assert_eq!(hit.selection_id, 9);
+        assert_eq!(hit.part_of_speech.as_deref(), Some("interjection"));
         let entries = store.list(None, 1).expect("list");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].lookup_count, 2);
         assert_eq!(entries[0].recall_score, 20.0);
+        assert_eq!(entries[0].part_of_speech.as_deref(), Some("interjection"));
+    }
+
+    #[tokio::test]
+    async fn online_translation_can_enrich_from_an_installed_compatible_textbook() {
+        struct DifferentSenseProvider;
+        #[async_trait]
+        impl TranslationProvider for DifferentSenseProvider {
+            async fn translate(
+                &self,
+                request: &TranslationRequest,
+            ) -> Result<TranslationResult, AppError> {
+                Ok(TranslationResult {
+                    selection_id: request.selection_id,
+                    translated_text: "短暂（名词）".into(),
+                    detected_source_language: Some("en".into()),
+                    effective_source_language: "en".into(),
+                    target_language: request.target_language.clone(),
+                    part_of_speech: None,
+                })
+            }
+
+            async fn supported_languages(&self) -> Result<Vec<String>, AppError> {
+                Ok(vec!["en".into(), "zh-CN".into()])
+            }
+        }
+
+        let file = NamedTempFile::new().expect("app db");
+        let textbooks = install_test_textbook(file.path());
+        textbooks.set_active(None).expect("deactivate textbook");
+        let upstream = Arc::new(FakeProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let provider = TextbookTranslationProvider::new(upstream.clone(), textbooks);
+
+        let result = provider
+            .translate(&request_to(1, "ephemeral", "zh-CN"))
+            .await
+            .expect("online translation");
+
+        assert_eq!(result.translated_text, "短暂的");
+        assert_eq!(result.part_of_speech.as_deref(), Some("adjective"));
+        assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
+
+        let unmatched = TextbookTranslationProvider::new(
+            Arc::new(DifferentSenseProvider),
+            provider.textbooks.clone(),
+        )
+        .translate(&request_to(2, "ephemeral", "zh-CN"))
+        .await
+        .expect("different online sense");
+        assert_eq!(unmatched.translated_text, "短暂（名词）");
+        assert_eq!(unmatched.part_of_speech, None);
     }
 
     #[tokio::test]
@@ -1343,6 +1536,7 @@ mod tests {
                     detected_source_language: Some("en".into()),
                     effective_source_language: "en".into(),
                     target_language: request.target_language.clone(),
+                    part_of_speech: None,
                 })
             }
             async fn supported_languages(&self) -> Result<Vec<String>, AppError> {

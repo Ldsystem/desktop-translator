@@ -70,6 +70,8 @@ pub struct TranslationResult {
     pub detected_source_language: Option<LanguageCode>,
     pub effective_source_language: LanguageCode,
     pub target_language: LanguageCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<String>,
 }
 
 /// One locally stored lexical item with independent demand and recall signals.
@@ -82,6 +84,8 @@ pub struct VocabularyEntry {
     pub requested_source_language: LanguageCode,
     pub effective_source_language: LanguageCode,
     pub target_language: LanguageCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<String>,
     pub lookup_count: u64,
     pub recall_score: f64,
     pub effective_recall: f64,
@@ -189,6 +193,8 @@ pub struct TextbookEntry {
     pub translated_text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phonetic_symbols: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<String>,
     pub source_language: LanguageCode,
     pub target_language: LanguageCode,
 }
@@ -241,6 +247,8 @@ pub struct RelatedWord {
     pub translated_text: String,
     pub source_language: LanguageCode,
     pub target_language: LanguageCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<String>,
     pub reason: String,
     pub promoted: bool,
     pub origins: Vec<RelatedOrigin>,
@@ -282,7 +290,18 @@ pub struct StudyPracticeQuestion {
     pub prompt: String,
     pub prompt_language: LanguageCode,
     pub answer_language: LanguageCode,
-    pub choices: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_part_of_speech: Option<String>,
+    pub choices: Vec<StudyPracticeChoice>,
+}
+
+/// One undecorated answer identity plus optional source-backed lexical metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyPracticeChoice {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<String>,
 }
 
 /// Direction-aware result returned only after one explicit submission.
@@ -417,6 +436,10 @@ impl ValidateContract for TranslationResult {
                 .detected_source_language
                 .as_ref()
                 .is_some_and(|language| language.trim().is_empty())
+            || self
+                .part_of_speech
+                .as_ref()
+                .is_some_and(|category| category.trim().is_empty())
         {
             return Err(validation_error(
                 "translation result contains an empty field",

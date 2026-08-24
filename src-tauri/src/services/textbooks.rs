@@ -1,7 +1,7 @@
 //! Native-only textbook catalog, validation, and local storage boundary.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io::Write,
     path::Path,
@@ -346,8 +346,8 @@ impl TextbookStore {
                 .prepare(
                     "INSERT INTO textbook_entries (
                        textbook_id, normalized_source, source_text, translated_text,
-                       original_translations, source_language, target_language
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                       original_translations, source_language, target_language, part_of_speech
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 )
                 .map_err(storage_error)?;
             let mut insert_alias = tx
@@ -367,6 +367,7 @@ impl TextbookStore {
                         entry.original_translations.join(" | "),
                         catalog.source_language,
                         catalog.target_language,
+                        entry.part_of_speech,
                     ])
                     .map_err(storage_error)?;
                 let textbook_entry_id = tx.last_insert_rowid();
@@ -376,6 +377,36 @@ impl TextbookStore {
                         .map_err(storage_error)?;
                 }
             }
+        }
+        if table_has_column(&tx, "vocabulary_entries", "part_of_speech")? {
+            tx.execute(
+                "UPDATE vocabulary_entries
+                 SET part_of_speech = (
+                   SELECT CASE WHEN count(DISTINCT e.part_of_speech) = 1
+                               THEN min(e.part_of_speech) ELSE NULL END
+                   FROM vocabulary_textbook_provenance p
+                   JOIN textbook_entries e
+                     ON e.textbook_id = p.textbook_id
+                    AND e.source_text = p.source_text
+                    AND e.translated_text = p.translated_text
+                   WHERE p.vocabulary_entry_id = vocabulary_entries.id
+                     AND p.textbook_id = ?1
+                     AND e.part_of_speech IS NOT NULL
+                 )
+                 WHERE part_of_speech IS NULL
+                   AND EXISTS (
+                     SELECT 1 FROM vocabulary_textbook_provenance p
+                     JOIN textbook_entries e
+                       ON e.textbook_id = p.textbook_id
+                      AND e.source_text = p.source_text
+                      AND e.translated_text = p.translated_text
+                     WHERE p.vocabulary_entry_id = vocabulary_entries.id
+                       AND p.textbook_id = ?1
+                       AND e.part_of_speech IS NOT NULL
+                   )",
+                params![catalog.id],
+            )
+            .map_err(storage_error)?;
         }
         tx.commit().map_err(storage_error)?;
         drop(connection);
@@ -484,7 +515,7 @@ impl TextbookStore {
         let mut statement = connection
             .prepare(
                 "SELECT id, textbook_id, source_text, translated_text, phonetic_symbols,
-                        source_language, target_language
+                        source_language, target_language, part_of_speech
                  FROM textbook_entries
                  WHERE textbook_id = ?1 AND
                        (?2 IS NULL OR normalized_source LIKE ?2 ESCAPE '\\'
@@ -514,6 +545,7 @@ impl TextbookStore {
                         phonetic_symbols: row.get(4)?,
                         source_language: row.get(5)?,
                         target_language: row.get(6)?,
+                        part_of_speech: row.get(7)?,
                     })
                 },
             )
@@ -539,7 +571,7 @@ impl TextbookStore {
         let entry = tx
             .query_row(
                 "SELECT e.textbook_id, e.normalized_source, e.source_text, e.translated_text,
-                        e.original_translations, e.source_language, e.target_language, t.title,
+                        e.original_translations, e.source_language, e.target_language, e.part_of_speech, t.title,
                         t.version, t.license, t.attribution, t.source_url
                  FROM textbook_entries e JOIN textbooks t ON t.id = e.textbook_id
                  WHERE e.id = ?1",
@@ -553,11 +585,12 @@ impl TextbookStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
+                        row.get::<_, Option<String>>(7)?,
                         row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
                         row.get::<_, String>(10)?,
                         row.get::<_, String>(11)?,
+                        row.get::<_, String>(12)?,
                     ))
                 },
             )
@@ -572,6 +605,7 @@ impl TextbookStore {
             original_translations,
             source_language,
             target_language,
+            part_of_speech,
             title,
             version,
             license,
@@ -602,8 +636,8 @@ impl TextbookStore {
                 "INSERT INTO vocabulary_entries (
                normalized_text, source_text, requested_source_language, target_language,
                translated_text, detected_source_language, effective_source_language,
-               lookup_count, first_seen_epoch_ms, last_seen_epoch_ms
-             ) VALUES (?1, ?2, 'auto', ?3, ?4, ?5, ?5, 1, ?6, ?6)
+               lookup_count, first_seen_epoch_ms, last_seen_epoch_ms, part_of_speech
+             ) VALUES (?1, ?2, 'auto', ?3, ?4, ?5, ?5, 1, ?6, ?6, ?7)
              ON CONFLICT(normalized_text, requested_source_language, target_language) DO NOTHING",
                 params![
                     normalized_source,
@@ -611,7 +645,8 @@ impl TextbookStore {
                     target_language,
                     translated_text,
                     source_language,
-                    i64_from_u64(now_ms)?
+                    i64_from_u64(now_ms)?,
+                    part_of_speech,
                 ],
             )
             .map_err(storage_error)?
@@ -628,6 +663,15 @@ impl TextbookStore {
                 |row| row.get::<_, i64>(0),
             ).map_err(storage_error)?
         };
+        if let Some(part_of_speech) = part_of_speech.as_deref() {
+            tx.execute(
+                "UPDATE vocabulary_entries
+                 SET part_of_speech = coalesce(part_of_speech, ?1)
+                 WHERE id = ?2",
+                params![part_of_speech, vocabulary_entry_id],
+            )
+            .map_err(storage_error)?;
+        }
         tx.execute(
             "INSERT INTO vocabulary_textbook_provenance (
                    vocabulary_entry_id, textbook_id, textbook_title, textbook_version,
@@ -673,6 +717,16 @@ struct ImportedEntry {
     translated_text: String,
     original_translations: Vec<String>,
     aliases: Vec<String>,
+    part_of_speech: Option<String>,
+    part_of_speech_conflicted: bool,
+}
+
+#[derive(Debug)]
+struct LexicalCandidate {
+    part_of_speech: String,
+    score: f64,
+    is_good: i64,
+    importance: f64,
 }
 
 struct LegacyProvenance {
@@ -869,6 +923,7 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
     if count <= 0 || count as u64 > MAX_ENTRIES {
         return Err(invalid_package());
     }
+    let lexical_parts = read_lexical_parts(&source)?;
     let mut statement = source
         .prepare("SELECT written_rep, trans_list FROM simple_translation ORDER BY written_rep")
         .map_err(|_| invalid_package())?;
@@ -893,12 +948,16 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
             return Err(invalid_package());
         }
         let (display, originals, aliases) = normalized_zh_cn(&converter, &translated_text)?;
+        let part_of_speech = lexical_parts
+            .get(&(source_text.clone(), translated_text.clone()))
+            .cloned();
         if let Some(existing) = imported.get_mut(&key) {
             append_unique(&mut existing.original_translations, originals);
             append_unique(&mut existing.aliases, aliases);
             if source_text == key && existing.source_text != key {
                 existing.source_text = source_text;
             }
+            merge_part_of_speech(existing, part_of_speech);
         } else {
             imported.insert(
                 key.clone(),
@@ -908,11 +967,151 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
                     translated_text: display,
                     original_translations: originals,
                     aliases,
+                    part_of_speech,
+                    part_of_speech_conflicted: false,
                 },
             );
         }
     }
     Ok(imported.into_values().collect())
+}
+
+fn read_lexical_parts(source: &Connection) -> Result<HashMap<(String, String), String>, AppError> {
+    let columns = source
+        .prepare("PRAGMA table_info(translation)")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<HashSet<_>, _>>()
+        })
+        .map_err(|_| invalid_package())?;
+    if !["written_rep", "trans_list", "lexentry"]
+        .iter()
+        .all(|required| columns.contains(*required))
+    {
+        return Ok(HashMap::new());
+    }
+    let score = if columns.contains("score") {
+        "CAST(coalesce(score, 0) AS REAL)"
+    } else {
+        "0"
+    };
+    let is_good = if columns.contains("is_good") {
+        "CAST(coalesce(is_good, 0) AS INTEGER)"
+    } else {
+        "0"
+    };
+    let importance = if columns.contains("importance") {
+        "CAST(coalesce(importance, 0) AS REAL)"
+    } else {
+        "0"
+    };
+    let sql = format!(
+        "SELECT written_rep, trans_list, lexentry, {score}, {is_good}, {importance}
+         FROM translation
+         WHERE typeof(written_rep) = 'text'
+           AND typeof(trans_list) = 'text'
+           AND typeof(lexentry) = 'text'"
+    );
+    let mut statement = source.prepare(&sql).map_err(|_| invalid_package())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, f64>(5)?,
+            ))
+        })
+        .map_err(|_| invalid_package())?;
+    let mut ranked = HashMap::<(String, String), LexicalCandidate>::new();
+    for row in rows {
+        let (source_text, translated_text, lexentry, score, is_good, importance) =
+            row.map_err(|_| invalid_package())?;
+        let Some(part_of_speech) = parse_part_of_speech(&lexentry) else {
+            continue;
+        };
+        let candidate = LexicalCandidate {
+            part_of_speech,
+            score,
+            is_good,
+            importance,
+        };
+        let key = (clean(&source_text), clean(&translated_text));
+        let replace = ranked
+            .get(&key)
+            .is_none_or(|current| lexical_candidate_precedes(&candidate, current));
+        if replace {
+            ranked.insert(key, candidate);
+        }
+    }
+    Ok(ranked
+        .into_iter()
+        .map(|(key, candidate)| (key, candidate.part_of_speech))
+        .collect())
+}
+
+fn lexical_candidate_precedes(left: &LexicalCandidate, right: &LexicalCandidate) -> bool {
+    left.score
+        .total_cmp(&right.score)
+        .then_with(|| left.is_good.cmp(&right.is_good))
+        .then_with(|| left.importance.total_cmp(&right.importance))
+        .then_with(|| right.part_of_speech.cmp(&left.part_of_speech))
+        .is_gt()
+}
+
+fn parse_part_of_speech(lexentry: &str) -> Option<String> {
+    let (head, sense) = lexentry.rsplit_once("__")?;
+    if sense.is_empty() || !sense.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let (_, category) = head.rsplit_once("__")?;
+    canonical_part_of_speech(category)
+}
+
+fn canonical_part_of_speech(category: &str) -> Option<String> {
+    let normalized = category.trim().replace('_', " ").to_lowercase();
+    matches!(
+        normalized.as_str(),
+        "adjective"
+            | "adverb"
+            | "article"
+            | "conjunction"
+            | "determiner"
+            | "interjection"
+            | "noun"
+            | "number"
+            | "numeral"
+            | "particle"
+            | "phrase"
+            | "postposition"
+            | "prefix"
+            | "preposition"
+            | "prepositional phrase"
+            | "pronoun"
+            | "proper noun"
+            | "proverb"
+            | "suffix"
+            | "symbol"
+            | "verb"
+    )
+    .then_some(normalized)
+}
+
+fn merge_part_of_speech(entry: &mut ImportedEntry, candidate: Option<String>) {
+    if entry.part_of_speech_conflicted {
+        return;
+    }
+    match (&entry.part_of_speech, candidate) {
+        (None, Some(value)) => entry.part_of_speech = Some(value),
+        (Some(current), Some(value)) if current != &value => {
+            entry.part_of_speech = None;
+            entry.part_of_speech_conflicted = true;
+        }
+        _ => {}
+    }
 }
 
 fn migrate(connection: &Connection) -> Result<(), AppError> {
@@ -1118,7 +1317,30 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
         .map_err(storage_error)?;
         tx.commit().map_err(storage_error)?;
     }
+    if version < 3 {
+        let tx = connection.unchecked_transaction().map_err(storage_error)?;
+        tx.execute_batch(
+            "ALTER TABLE textbook_entries ADD COLUMN part_of_speech TEXT;
+             INSERT INTO textbook_schema_migrations(version) VALUES (3);",
+        )
+        .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+    }
     Ok(())
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, AppError> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut statement = connection.prepare(&sql).map_err(storage_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(storage_error)?;
+    for current in columns {
+        if current.map_err(storage_error)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn row_to_installed(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstalledTextbook> {
@@ -1261,6 +1483,37 @@ mod tests {
         file
     }
 
+    fn wikdict_fixture_with_lexical_rows(
+        entries: &[(&str, &str)],
+        lexical_rows: &[(&str, &str, &str, f64, i64, f64)],
+    ) -> NamedTempFile {
+        let file = wikdict_fixture(entries);
+        let connection = Connection::open(file.path()).expect("open lexical fixture");
+        connection
+            .execute_batch(
+                "CREATE TABLE translation (
+                   lexentry TEXT,
+                   written_rep TEXT NOT NULL,
+                   trans_list TEXT NOT NULL,
+                   score REAL,
+                   is_good INTEGER,
+                   importance REAL
+                 );",
+            )
+            .expect("lexical schema");
+        for (source, translation, lexentry, score, is_good, importance) in lexical_rows {
+            connection
+                .execute(
+                    "INSERT INTO translation (written_rep, trans_list, lexentry, score, is_good, importance)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![source, translation, lexentry, score, is_good, importance],
+                )
+                .expect("lexical row");
+        }
+        drop(connection);
+        file
+    }
+
     fn test_catalog(path: &std::path::Path, id: &str, version: &str) -> TextbookCatalogItem {
         let bytes = std::fs::read(path).expect("fixture bytes");
         TextbookCatalogItem {
@@ -1346,6 +1599,59 @@ mod tests {
                 .expect("page")
                 .total,
             2
+        );
+    }
+
+    #[test]
+    fn wikdict_import_uses_pair_specific_ranked_canonical_part_of_speech() {
+        let app_db = NamedTempFile::new().expect("app db");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let fixture = wikdict_fixture_with_lexical_rows(
+            &[("essential", "本质"), ("fallback", "后备")],
+            &[
+                ("essential", "本质", "eng/essential__Noun__1", 1.0, 1, 1.0),
+                (
+                    "essential",
+                    "本质",
+                    "eng/essential__Adjective__1",
+                    2.0,
+                    1,
+                    1.0,
+                ),
+                (
+                    "essential",
+                    "other meaning",
+                    "eng/essential__Verb__1",
+                    100.0,
+                    1,
+                    100.0,
+                ),
+                ("fallback", "后备", "malformed", 10.0, 1, 10.0),
+            ],
+        );
+        let catalog = test_catalog(fixture.path(), "pos", "1");
+
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("install");
+        let entries = store
+            .list_entries("pos", None, 0, 50)
+            .expect("entries")
+            .entries;
+
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.source_text == "essential")
+                .and_then(|entry| entry.part_of_speech.as_deref()),
+            Some("adjective")
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.source_text == "fallback")
+                .and_then(|entry| entry.part_of_speech.as_deref()),
+            None
         );
     }
 
@@ -1763,6 +2069,65 @@ mod tests {
             )
             .expect("surviving provenance");
         assert_eq!(surviving, 2);
+    }
+
+    #[test]
+    fn reinstall_enriches_matching_promoted_rows_without_guessing() {
+        let app_db = NamedTempFile::new().expect("app db");
+        crate::services::vocabulary::VocabularyStore::open(app_db.path())
+            .expect("vocabulary migrations");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let original = wikdict_fixture(&[("essential", "本质")]);
+        store
+            .install_sqlite(
+                &test_catalog(original.path(), "test-en-zh", "1"),
+                original.path(),
+                10,
+            )
+            .expect("install metadata-free version");
+        let entry = store
+            .list_entries("test-en-zh", None, 0, 10)
+            .expect("entries")
+            .entries
+            .remove(0);
+        let promoted = store.promote_entry(entry.id, 20).expect("promote");
+        let connection = Connection::open(app_db.path()).expect("inspect");
+        let before: Option<String> = connection
+            .query_row(
+                "SELECT part_of_speech FROM vocabulary_entries WHERE id = ?1",
+                params![promoted.vocabulary_entry_id],
+                |row| row.get(0),
+            )
+            .expect("before reinstall");
+        assert_eq!(before, None);
+
+        let enriched = wikdict_fixture_with_lexical_rows(
+            &[("essential", "本质")],
+            &[(
+                "essential",
+                "本质",
+                "eng/essential__Adjective__1",
+                1.0,
+                1,
+                1.0,
+            )],
+        );
+        store
+            .install_sqlite(
+                &test_catalog(enriched.path(), "test-en-zh", "2"),
+                enriched.path(),
+                30,
+            )
+            .expect("reinstall enriched version");
+
+        let after: Option<String> = connection
+            .query_row(
+                "SELECT part_of_speech FROM vocabulary_entries WHERE id = ?1",
+                params![promoted.vocabulary_entry_id],
+                |row| row.get(0),
+            )
+            .expect("after reinstall");
+        assert_eq!(after.as_deref(), Some("adjective"));
     }
 
     #[test]
