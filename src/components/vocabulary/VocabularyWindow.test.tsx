@@ -1,5 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+// @ts-expect-error The test runtime provides node:fs; production code remains browser-only.
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -9,6 +11,8 @@ import type {
   VocabularyEntry,
 } from "../../contracts/ipc";
 import { VocabularyWindow, type StudyApi } from "./VocabularyWindow";
+
+const appCss = readFileSync("src/styles/app.css", "utf8");
 
 const entry: VocabularyEntry = {
   id: 1,
@@ -280,6 +284,43 @@ describe("VocabularyWindow", () => {
     expect(document.activeElement).toBe(lastManage);
   });
 
+  it("contains modal focus, inerts the background, closes from document Escape, and restores its trigger", () => {
+    const api = makeStudyApi();
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+
+    const rail = container.querySelector<HTMLElement>(".study-rail")!;
+    const scroller = container.querySelector<HTMLElement>(".study-scroll-region")!;
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Manage hello"]')!;
+    rail.setAttribute("inert", "");
+    act(() => trigger.click());
+
+    const drawer = container.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]')!;
+    const close = drawer.querySelector<HTMLButtonElement>(".word-manage__header button")!;
+    const last = drawer.querySelector<HTMLButtonElement>('[aria-label="Delete hello"]')!;
+    expect(rail.hasAttribute("inert")).toBe(true);
+    expect(scroller.hasAttribute("inert")).toBe(true);
+    expect(document.activeElement).toBe(close);
+
+    act(() => {
+      last.focus();
+      last.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(close);
+
+    act(() => {
+      close.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(last);
+
+    act(() => trigger.focus());
+    expect(document.activeElement).toBe(trigger);
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(container.querySelector(".word-manage")).toBeNull();
+    expect(rail.hasAttribute("inert")).toBe(true);
+    expect(scroller.hasAttribute("inert")).toBe(false);
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("wraps long learning text and renders optional POS without an empty badge", () => {
     const long = "pneumonoultramicroscopicsilicovolcanoconiosis";
     act(() => root.render(<VocabularyWindow entries={[{ ...entry, sourceText: long, translatedText: `${long} translated meaning`, partOfSpeech: "noun" }, { ...entry, id: 2, sourceText: "plain", partOfSpeech: undefined }]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
@@ -445,6 +486,10 @@ describe("VocabularyWindow", () => {
     await flushEffects();
 
     expect(container.querySelector(".practice-prompt .part-of-speech")?.textContent).toBe("v.");
+    expect(container.querySelector(".practice-prompt > span")?.classList.contains("part-of-speech")).toBe(false);
+    expect(container.querySelector(".practice-prompt__lexeme > .part-of-speech")?.getAttribute("title")).toBe("verb");
+    expect(appCss).toMatch(/\.practice-prompt\s*>\s*span\s*\{/);
+    expect(appCss).not.toMatch(/\.practice-prompt\s+span\s*\{/);
     const choice = [...container.querySelectorAll<HTMLButtonElement>(".practice-choice")].find((button) => button.textContent?.includes("replace"));
     expect(choice?.querySelector(".part-of-speech")?.textContent).toBe("v.");
     act(() => choice?.click());

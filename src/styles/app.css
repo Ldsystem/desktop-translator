@@ -292,7 +292,7 @@ input:focus-visible,
 
 .practice-card { --practice-card-padding: clamp(24px, 5vw, 46px); position: relative; display: grid; max-width: 680px; border: 1px solid var(--study-rule); border-radius: var(--radius-lg); padding: var(--practice-card-padding); padding-bottom: calc(var(--practice-card-padding) + 84px); background: var(--surface); box-shadow: var(--shadow-card); }
 .practice-prompt { display: grid; gap: 12px; margin-bottom: 28px; }
-.practice-prompt span { color: var(--ink-muted); font-family: var(--font-utility); font-size: 0.7rem; text-transform: uppercase; }
+.practice-prompt > span { color: var(--ink-muted); font-family: var(--font-utility); font-size: 0.7rem; text-transform: uppercase; }
 .practice-prompt__lexeme { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; }
 .practice-prompt strong { color: var(--study-ink); font-family: Georgia, serif; font-size: clamp(1.85rem, 6vw, 4.5rem); font-weight: 500; line-height: 1.08; }
 .practice-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
