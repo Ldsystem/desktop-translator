@@ -6,6 +6,7 @@ import type {
   TextbookEntry,
 } from "../../contracts/ipc";
 import type { StudyApi } from "./VocabularyWindow";
+import { PartOfSpeechBadge } from "./PracticeView";
 
 type ShelfTab = "discover" | "downloaded";
 const PAGE_SIZE = 40;
@@ -160,8 +161,8 @@ export function TextbooksView({ api }: TextbooksViewProps) {
                 const isAdded = added.has(entry.id);
                 return (
                   <article className="textbook-entry" key={entry.id}>
-                    <div><strong>{entry.sourceText}</strong>{entry.phoneticSymbols && <small>{entry.phoneticSymbols}</small>}</div>
-                    <span>{entry.translatedText}</span>
+                    <div><span className="textbook-entry__lexeme"><strong className="lexical-text">{entry.sourceText}</strong><PartOfSpeechBadge value={entry.partOfSpeech} /></span>{entry.phoneticSymbols && <small>{entry.phoneticSymbols}</small>}</div>
+                    <span className="lexical-text">{entry.translatedText}</span>
                     <button className="button button--secondary" type="button" aria-disabled={isAdded} disabled={adding === entry.id} onClick={() => {
                       if (isAdded) return;
                       setAdding(entry.id);

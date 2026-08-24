@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import fixtures from "../contracts/fixtures.json";
+import type { TranslationResult } from "../contracts/ipc";
 import { initialOverlayState, reduceOverlayState } from "./overlayMachine";
 
 describe("overlay state machine", () => {
@@ -42,8 +43,9 @@ describe("overlay state machine", () => {
       selection: fixtures.selection,
       generation: 1,
     };
-    const staleResult = {
+    const staleResult: TranslationResult = {
       ...fixtures.translationResult,
+      partOfSpeech: "adjective",
       selectionId: fixtures.selection.id - 1,
     };
 

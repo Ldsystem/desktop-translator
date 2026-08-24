@@ -136,6 +136,18 @@ describe("VocabularyWindow", () => {
     expect(ruler?.querySelector(".recall-ruler__label")).toBeNull();
   });
 
+  it("keeps the frame fixed and gives the active content one explicit scroll owner", () => {
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
+
+    const frame = container.querySelector(".study-window");
+    const rail = frame?.querySelector(":scope > .study-rail");
+    const content = frame?.querySelector(":scope > .study-content");
+    const scroller = content?.querySelector(":scope > .study-scroll-region");
+    expect(rail).not.toBeNull();
+    expect(scroller?.querySelector(".study-header")).not.toBeNull();
+    expect(scroller?.getAttribute("data-scroll-owner")).toBe("study-content");
+  });
+
   it("keeps two word-oriented pronunciation controls separate from opening the card", () => {
     const pronounce = vi.fn();
     const open = vi.fn();
@@ -143,6 +155,8 @@ describe("VocabularyWindow", () => {
 
     const speaker = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Pronounce hello");
     expect(speaker?.disabled).toBe(false);
+    expect(speaker?.querySelector("svg")?.getAttribute("width")).toBe("16");
+    expect(speaker?.querySelector("svg")?.getAttribute("height")).toBe("16");
     expect(container.querySelector("button button")).toBeNull();
 
     act(() => speaker?.click());
@@ -154,6 +168,11 @@ describe("VocabularyWindow", () => {
     expect(pronounce).toHaveBeenLastCalledWith("hola", "es");
 
     const cardAction = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello");
+    const manageAction = container.querySelector<HTMLButtonElement>('[aria-label="Manage hello"]');
+    expect(manageAction?.title).toBe("Manage word");
+    expect(manageAction?.textContent).toBe("");
+    expect(cardAction?.title).toBe("Find related words");
+    expect(cardAction?.textContent).toBe("");
     act(() => cardAction?.click());
     expect(open).toHaveBeenCalledWith(1);
   });
@@ -179,6 +198,11 @@ describe("VocabularyWindow", () => {
     await flushEffects();
 
     expect(api.listVocabularyProvenance).toHaveBeenCalledWith(1);
+    const disclosure = container.querySelector<HTMLDetailsElement>(".word-provenance");
+    expect(disclosure?.open).toBe(false);
+    expect(disclosure?.querySelector("summary")?.textContent).toContain("Textbook source details");
+    act(() => disclosure?.querySelector("summary")?.click());
+    expect(disclosure?.open).toBe(true);
     expect(container.textContent).toContain("WikDict English - Chinese");
     expect(container.textContent).toContain("2_2026-06");
     expect(container.textContent).toContain("CC BY-SA 4.0");
@@ -208,16 +232,16 @@ describe("VocabularyWindow", () => {
     const api = makeStudyApi({ correctVocabularySourceLanguage, deleteVocabularyEntry });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
 
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Manage")?.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Manage hello"]')?.click());
     const language = container.querySelector<HTMLSelectElement>(".word-manage select")!;
     act(() => { language.value = "fr"; language.dispatchEvent(new Event("change", { bubbles: true })); });
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Save language")?.click());
     expect(correctVocabularySourceLanguage).toHaveBeenCalledWith(1, "fr");
 
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Manage")?.click());
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Delete word")?.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Manage hello"]')?.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Delete hello"]')?.click());
     expect(container.textContent).toContain("Delete this word?");
-    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Confirm delete")?.click());
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Confirm")?.click());
     expect(deleteVocabularyEntry).toHaveBeenCalledWith(1);
   });
 
@@ -231,7 +255,7 @@ describe("VocabularyWindow", () => {
     const api = makeStudyApi();
     act(() => root.render(<VocabularyWindow entries={entries} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
 
-    const manageButtons = [...container.querySelectorAll<HTMLButtonElement>(".vocabulary-card button")].filter((button) => button.textContent === "Manage");
+    const manageButtons = [...container.querySelectorAll<HTMLButtonElement>('.vocabulary-card button[aria-label^="Manage "]')];
     const lastManage = manageButtons.at(-1)!;
     act(() => lastManage.click());
 
@@ -240,11 +264,30 @@ describe("VocabularyWindow", () => {
     expect(lastManage.getAttribute("aria-controls")).toBe("word-manage-18");
     expect(lastManage.getAttribute("aria-expanded")).toBe("true");
     expect(container.querySelectorAll(".word-manage")).toHaveLength(1);
+    expect(drawer?.querySelector(":scope > .word-manage__body")).not.toBeNull();
+    const footer = drawer?.querySelector(":scope > .word-manage__footer");
+    const deleteSlot = footer?.querySelector(".word-manage__delete-slot");
+    expect(footer).not.toBeNull();
+    expect(deleteSlot).not.toBeNull();
     expect(document.activeElement?.textContent).toBe("Close");
+
+    act(() => drawer?.querySelector<HTMLButtonElement>('[aria-label="Delete word-18"]')?.click());
+    expect(drawer?.querySelector(".word-manage__delete-slot")).toBe(deleteSlot);
+    expect(drawer?.querySelector(".word-manage__confirm")?.textContent).toContain("Delete this word?");
 
     act(() => drawer?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(container.querySelector(".word-manage")).toBeNull();
     expect(document.activeElement).toBe(lastManage);
+  });
+
+  it("wraps long learning text and renders optional POS without an empty badge", () => {
+    const long = "pneumonoultramicroscopicsilicovolcanoconiosis";
+    act(() => root.render(<VocabularyWindow entries={[{ ...entry, sourceText: long, translatedText: `${long} translated meaning`, partOfSpeech: "noun" }, { ...entry, id: 2, sourceText: "plain", partOfSpeech: undefined }]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
+
+    const firstCard = container.querySelectorAll(".vocabulary-card")[0];
+    expect(firstCard.querySelector(".lexical-text--long")?.textContent).toBe(long);
+    expect(firstCard.querySelector(".part-of-speech")?.textContent).toBe("n.");
+    expect(container.querySelectorAll(".vocabulary-card")[1].querySelector(".part-of-speech")).toBeNull();
   });
 
   it("does not reveal correctness until an answer is submitted", () => {
@@ -316,7 +359,7 @@ describe("VocabularyWindow", () => {
     const api = makeStudyApi({
       listDownloaded: vi.fn().mockResolvedValue([installedBook]),
       listTextbookEntries: vi.fn().mockResolvedValue({
-        entries: [{ id: 81, textbookId: installedBook.id, sourceText: "ephemeral", translatedText: "短暂的", phoneticSymbols: "/ɪˈfemərəl/", sourceLanguage: "en", targetLanguage: "zh-CN" }],
+        entries: [{ id: 81, textbookId: installedBook.id, sourceText: "ephemeral", translatedText: "短暂的", phoneticSymbols: "/ɪˈfemərəl/", partOfSpeech: "adjective", sourceLanguage: "en", targetLanguage: "zh-CN" }],
         total: 1,
         offset: 0,
         limit: 40,
@@ -331,6 +374,7 @@ describe("VocabularyWindow", () => {
     await flushEffects();
 
     expect(container.textContent).toContain("/ɪˈfemərəl/");
+    expect(container.querySelector(".textbook-entry .part-of-speech")?.textContent).toBe("adj.");
     const add = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Add to my wordbook");
     await act(async () => add?.click());
     expect(addTextbookEntry).toHaveBeenCalledWith(81);
@@ -339,7 +383,7 @@ describe("VocabularyWindow", () => {
   });
 
   it("shows one combined related list with origin badges and promotes textbook results", async () => {
-    const listRelated = vi.fn().mockResolvedValue([{ kind: "textbook", textbookEntryId: 81, textbookId: installedBook.id, sourceText: "helpful", translatedText: "有帮助的", sourceLanguage: "en", targetLanguage: "zh-CN", reason: "root", promoted: false, origins: [{ kind: "textbook", textbookId: installedBook.id, textbookTitle: installedBook.title }] }]);
+    const listRelated = vi.fn().mockResolvedValue([{ kind: "textbook", textbookEntryId: 81, textbookId: installedBook.id, sourceText: "helpful", translatedText: "有帮助的", sourceLanguage: "en", targetLanguage: "zh-CN", partOfSpeech: "adjective", reason: "root", promoted: false, origins: [{ kind: "textbook", textbookId: installedBook.id, textbookTitle: installedBook.title }] }]);
     const addTextbookEntry = vi.fn().mockResolvedValue({ vocabularyEntryId: 10, inserted: true });
     const api = makeStudyApi({ listDownloaded: vi.fn().mockResolvedValue([installedBook]), listRelated, addTextbookEntry });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
@@ -350,6 +394,7 @@ describe("VocabularyWindow", () => {
     expect(listRelated).toHaveBeenLastCalledWith(1);
     expect(container.querySelector(".source-selector")).toBeNull();
     expect(container.textContent).toContain("helpful");
+    expect(container.querySelector(".relation-list .part-of-speech")?.textContent).toBe("adj.");
     expect(container.textContent).toContain(installedBook.title);
     const relatedRow = container.querySelector(".relation-list article")!;
     const tail = relatedRow.querySelector(":scope > .relation-tail");
@@ -363,7 +408,7 @@ describe("VocabularyWindow", () => {
 
   it("persists a practice direction and renders direction-neutral prompt fields", async () => {
     const savePracticePreferences = vi.fn().mockResolvedValue(undefined);
-    const getPracticeQuestion = vi.fn().mockResolvedValue({ entryId: 1, direction: "target-to-source", prompt: "hola", promptLanguage: "es", answerLanguage: "en", choices: ["hello", "world"] });
+    const getPracticeQuestion = vi.fn().mockResolvedValue({ entryId: 1, direction: "target-to-source", prompt: "hola", promptLanguage: "es", answerLanguage: "en", choices: [{ value: "hello" }, { value: "world" }] });
     const api = makeStudyApi({ savePracticePreferences, getPracticeQuestion });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
     act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
@@ -376,6 +421,35 @@ describe("VocabularyWindow", () => {
     expect(container.textContent).toContain("hola");
     expect(container.textContent).toContain("ES → EN");
     expect(container.textContent).toContain("Choose the answer");
+  });
+
+  it("renders practice POS while submitting the raw choice value", async () => {
+    const submitPracticeAnswer = vi.fn().mockResolvedValue({ correct: true, correctAnswer: "replace", direction: "target-to-source", entry });
+    const api = makeStudyApi({
+      getPracticeQuestion: vi.fn().mockResolvedValue({
+        entryId: 1,
+        direction: "target-to-source",
+        prompt: "取代",
+        promptLanguage: "zh-CN",
+        answerLanguage: "en",
+        promptPartOfSpeech: "verb",
+        choices: [
+          { value: "replace", partOfSpeech: "verb" },
+          { value: "replacement", partOfSpeech: "noun" },
+        ],
+      }),
+      submitPracticeAnswer,
+    });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
+    await flushEffects();
+
+    expect(container.querySelector(".practice-prompt .part-of-speech")?.textContent).toBe("v.");
+    const choice = [...container.querySelectorAll<HTMLButtonElement>(".practice-choice")].find((button) => button.textContent?.includes("replace"));
+    expect(choice?.querySelector(".part-of-speech")?.textContent).toBe("v.");
+    act(() => choice?.click());
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Check answer")?.click());
+    expect(submitPracticeAnswer).toHaveBeenCalledWith(1, "target-to-source", "replace");
   });
 
   it("keeps the newest combined related response when an older request resolves last", async () => {
@@ -421,7 +495,7 @@ describe("VocabularyWindow", () => {
 
   it("restores the persisted direction when saving fails and retries the save", async () => {
     const savePracticePreferences = vi.fn().mockRejectedValueOnce(new Error("disk busy")).mockResolvedValueOnce(undefined);
-    const api = makeStudyApi({ savePracticePreferences, getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: ["hola", "mundo"] }) });
+    const api = makeStudyApi({ savePracticePreferences, getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: [{ value: "hola" }, { value: "mundo" }] }) });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
     act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
     await flushEffects();
@@ -438,7 +512,7 @@ describe("VocabularyWindow", () => {
   it("submits each practice question at most once while scoring is pending", async () => {
     const pending = deferred<Awaited<ReturnType<StudyApi["submitPracticeAnswer"]>>>();
     const submitPracticeAnswer = vi.fn().mockReturnValue(pending.promise);
-    const api = makeStudyApi({ submitPracticeAnswer, getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: ["hola", "mundo"] }) });
+    const api = makeStudyApi({ submitPracticeAnswer, getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: [{ value: "hola" }, { value: "mundo" }] }) });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
     act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
     await flushEffects();
@@ -453,8 +527,8 @@ describe("VocabularyWindow", () => {
 
   it("keeps scored feedback until Next when its revision event arrives during submit", async () => {
     const pending = deferred<Awaited<ReturnType<StudyApi["submitPracticeAnswer"]>>>();
-    const first = { entryId: 1, direction: "source-to-target" as const, prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: ["hola", "mundo"] };
-    const second = { entryId: 2, direction: "source-to-target" as const, prompt: "world", promptLanguage: "en", answerLanguage: "es", choices: ["mundo", "hola"] };
+    const first = { entryId: 1, direction: "source-to-target" as const, prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: [{ value: "hola" }, { value: "mundo" }] };
+    const second = { entryId: 2, direction: "source-to-target" as const, prompt: "world", promptLanguage: "en", answerLanguage: "es", choices: [{ value: "mundo" }, { value: "hola" }] };
     const getPracticeQuestion = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     const api = makeStudyApi({ getPracticeQuestion, submitPracticeAnswer: vi.fn().mockReturnValue(pending.promise) });
     const props = { entries: [entry], loading: false, related: [], question: undefined, onSearch: vi.fn(), onSelectEntry: vi.fn(), onStartPractice: vi.fn(), onSubmitAnswer: vi.fn(), studyApi: api };
@@ -482,7 +556,7 @@ describe("VocabularyWindow", () => {
   it("keeps direction controls locked to the question while scoring is pending", async () => {
     const pending = deferred<Awaited<ReturnType<StudyApi["submitPracticeAnswer"]>>>();
     const savePracticePreferences = vi.fn().mockResolvedValue(undefined);
-    const api = makeStudyApi({ savePracticePreferences, submitPracticeAnswer: vi.fn().mockReturnValue(pending.promise), getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: ["hola", "mundo"] }) });
+    const api = makeStudyApi({ savePracticePreferences, submitPracticeAnswer: vi.fn().mockReturnValue(pending.promise), getPracticeQuestion: vi.fn().mockResolvedValue({ entryId: 1, direction: "source-to-target", prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: [{ value: "hola" }, { value: "mundo" }] }) });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
     act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
     await flushEffects();

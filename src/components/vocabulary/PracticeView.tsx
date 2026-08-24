@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { PracticeDirection, StudyPracticeOutcome, StudyPracticeQuestion } from "../../contracts/ipc";
+import type { PartOfSpeech, PracticeDirection, StudyPracticeOutcome, StudyPracticeQuestion } from "../../contracts/ipc";
 import type { StudyApi } from "./VocabularyWindow";
 
 interface PracticeViewProps {
@@ -13,6 +13,22 @@ const directions: { value: PracticeDirection; label: string; note: string }[] = 
   { value: "source-to-target", label: "Word → meaning", note: "Recognition" },
   { value: "target-to-source", label: "Meaning → word", note: "Production" },
 ];
+
+const partOfSpeechLabels: Record<PartOfSpeech, string> = {
+  adjective: "adj.", adverb: "adv.", article: "art.", conjunction: "conj.", determiner: "det.",
+  interjection: "interj.", noun: "n.", number: "num.", numeral: "num.", particle: "part.",
+  phrase: "phr.", postposition: "postp.", prefix: "pref.", preposition: "prep.",
+  "prepositional phrase": "prep. phr.", pronoun: "pron.", "proper noun": "prop. n.",
+  proverb: "prov.", suffix: "suff.", symbol: "sym.", verb: "v.",
+};
+
+export function PartOfSpeechBadge({ value }: { value?: PartOfSpeech }) {
+  return value ? <span className="part-of-speech" title={value}>{partOfSpeechLabels[value]}</span> : null;
+}
+
+function lexicalTextClass(value: string) {
+  return value.length > 28 ? "lexical-text lexical-text--long" : "lexical-text";
+}
 
 export function PracticeView({ api, revision }: PracticeViewProps) {
   const [direction, setDirection] = useState<PracticeDirection>("random");
@@ -89,8 +105,8 @@ export function PracticeView({ api, revision }: PracticeViewProps) {
     <fieldset className="direction-selector" disabled={saving || submitting}><legend>Practice direction</legend>{directions.map((item) => <label key={item.value} className={direction === item.value ? "is-active" : ""}><input type="radio" name="practice-direction" value={item.value} checked={direction === item.value} onChange={() => chooseDirection(item.value)} /><span><strong>{item.label}</strong><small>{item.note}</small></span></label>)}</fieldset>
     {error && <div className="study-notice study-notice--error" role="alert">{error} <button className="text-button" type="button" onClick={() => failedDirection ? chooseDirection(failedDirection) : loadQuestion()}>{failedDirection ? "Try saving again" : "Try again"}</button></div>}
     {question === undefined ? <div className="study-empty" role="status"><strong>Choosing what needs attention…</strong></div> : question === null ? <div className="study-empty study-empty--complete"><strong>You have practised every available word.</strong><span>Come back after recall has faded, or add another word to continue.</span></div> : <section className="practice-card">
-      <div className="practice-prompt"><span>{question.promptLanguage.toUpperCase()} → {question.answerLanguage.toUpperCase()}</span><strong>{question.prompt}</strong></div>
-      <div className="practice-choices" role="radiogroup" aria-label="Answer choices">{question.choices.map((choice) => <button key={choice} className={selected === choice ? "practice-choice is-selected" : "practice-choice"} type="button" role="radio" aria-checked={selected === choice} disabled={Boolean(outcome) || submitting} onClick={() => setSelected(choice)}>{choice}</button>)}</div>
+      <div className="practice-prompt"><span>{question.promptLanguage.toUpperCase()} → {question.answerLanguage.toUpperCase()}</span><div className="practice-prompt__lexeme"><strong className={lexicalTextClass(question.prompt)}>{question.prompt}</strong><PartOfSpeechBadge value={question.promptPartOfSpeech} /></div></div>
+      <div className="practice-choices" role="radiogroup" aria-label="Answer choices">{question.choices.map((choice) => <button key={choice.value} className={selected === choice.value ? "practice-choice is-selected" : "practice-choice"} type="button" role="radio" aria-checked={selected === choice.value} disabled={Boolean(outcome) || submitting} onClick={() => setSelected(choice.value)}><span className={lexicalTextClass(choice.value)}>{choice.value}</span><PartOfSpeechBadge value={choice.partOfSpeech} /></button>)}</div>
       <div className="practice-actions">{outcome ? <><div className={outcome.correct ? "practice-feedback is-correct" : "practice-feedback is-wrong"} role="status"><span className="practice-feedback__mark" aria-hidden="true">{outcome.correct ? "✓" : "↺"}</span><span className="practice-feedback__copy"><strong>{outcome.correct ? "Correct" : "Review this answer"}</strong><span>{outcome.correct ? `Recall is now ${Math.round(outcome.entry.effectiveRecall)}.` : `The answer is “${outcome.correctAnswer}”.`}</span></span></div><button ref={nextButton} className="button button--primary practice-next" type="button" onClick={loadQuestion}>Next word</button></> : <button className="button button--primary practice-submit" type="button" disabled={!selected || submitting} onClick={() => selected && submit(question, selected)}>{submitting ? "Checking…" : "Check answer"}</button>}</div>
     </section>}
   </section>;

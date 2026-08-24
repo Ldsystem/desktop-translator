@@ -15,7 +15,7 @@ import type {
   VocabularyEntry,
   VocabularyProvenance,
 } from "../../contracts/ipc";
-import { PracticeView } from "./PracticeView";
+import { PartOfSpeechBadge, PracticeView } from "./PracticeView";
 import { RelatedWordsView } from "./RelatedWordsView";
 import { TextbooksView } from "./TextbooksView";
 
@@ -75,10 +75,22 @@ function RecallRuler({ entry }: { entry: VocabularyEntry }) {
 
 function SpeakerIcon() {
   return (
-    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-      <path d="M4 9v6h4l5 4V5L8 9H4Zm12.5-.7a5 5 0 0 1 0 7.4M19 5a9 9 0 0 1 0 14" />
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+      <path d="M3.5 8v4h3l4 3.25V4.75L6.5 8h-3ZM13.4 7a4 4 0 0 1 0 6M15.8 4.8a7 7 0 0 1 0 10.4" />
     </svg>
   );
+}
+
+function PencilIcon() {
+  return <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="m4 14.7.6-3.1L13 3.2a1.4 1.4 0 0 1 2 0l1.8 1.8a1.4 1.4 0 0 1 0 2l-8.4 8.4-3.1.6L4 14.7Z" /><path d="m11.8 4.4 3.8 3.8M4.7 11.7l3.6 3.6" /></svg>;
+}
+
+function BranchIcon() {
+  return <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><circle cx="5" cy="5" r="2" /><circle cx="15" cy="5" r="2" /><circle cx="15" cy="15" r="2" /><path d="M7 5h2a4 4 0 0 1 4 4v4M9 5h4" /></svg>;
+}
+
+function lexicalTextClass(value: string) {
+  return value.length > 28 ? "lexical-text lexical-text--long" : "lexical-text";
 }
 
 function EntryCard({
@@ -110,8 +122,8 @@ function EntryCard({
     <article className="vocabulary-card">
       <RecallRuler entry={entry} />
       <div className="vocabulary-card__copy">
-        <span className="vocabulary-card__word-row">{speak(entry.sourceText, entry.effectiveSourceLanguage)}<strong>{entry.sourceText}</strong></span>
-        <span className="vocabulary-card__word-row">{speak(entry.translatedText, entry.targetLanguage)}<span>{entry.translatedText}</span></span>
+        <span className="vocabulary-card__word-row">{speak(entry.sourceText, entry.effectiveSourceLanguage)}<span className="vocabulary-card__lexeme"><strong className={lexicalTextClass(entry.sourceText)}>{entry.sourceText}</strong><PartOfSpeechBadge value={entry.partOfSpeech} /></span></span>
+        <span className="vocabulary-card__word-row">{speak(entry.translatedText, entry.targetLanguage)}<span className={lexicalTextClass(entry.translatedText)}>{entry.translatedText}</span></span>
         <small>{entry.effectiveSourceLanguage} → {entry.targetLanguage}</small>
       </div>
       <div className="vocabulary-card__meta">
@@ -119,8 +131,10 @@ function EntryCard({
           <span>{entry.lookupCount} {entry.lookupCount === 1 ? "lookup" : "lookups"}</span>
           <span>{familiarityNames[entry.familiarityLevel] ?? "New"}</span>
         </span>
-        <button className="text-button" type="button" aria-controls={`word-manage-${entry.id}`} aria-expanded={managed} onClick={(event) => onManage(event.currentTarget)}>Manage</button>
-        <button className="text-button" type="button" aria-label={`Open related words for ${entry.sourceText}`} onClick={onOpen}>Related</button>
+        <span className="vocabulary-card__actions">
+          <button className="icon-button vocabulary-card__action" type="button" aria-label={`Manage ${entry.sourceText}`} title="Manage word" aria-controls={`word-manage-${entry.id}`} aria-expanded={managed} onClick={(event) => onManage(event.currentTarget)}><PencilIcon /></button>
+          <button className="icon-button vocabulary-card__action" type="button" aria-label={`Open related words for ${entry.sourceText}`} title="Find related words" onClick={onOpen}><BranchIcon /></button>
+        </span>
       </div>
     </article>
   );
@@ -199,7 +213,7 @@ export function VocabularyWindow({
         <p className="study-rail__privacy">Your wordbook and practice activity stay on this device.</p>
       </aside>
 
-      <section className="study-content">
+      <section className="study-content"><div className="study-scroll-region" data-scroll-owner="study-content">
         {view === "library" && (
           <>
             <header className="study-header">
@@ -217,7 +231,7 @@ export function VocabularyWindow({
             ) : (
               <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} managed={managedEntry?.id === entry.id} onManage={(trigger) => { manageTrigger.current = trigger; setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
             )}
-            {managedEntry && studyApi && <section id={`word-manage-${managedEntry.id}`} className="word-manage word-manage--drawer" role="dialog" data-placement="drawer" aria-labelledby={`word-manage-title-${managedEntry.id}`} onKeyDown={(event) => { if (event.key === "Escape") closeManage(); }}><header><strong id={`word-manage-title-${managedEntry.id}`}>Manage {managedEntry.sourceText}</strong><button ref={manageCloseButton} className="text-button" type="button" onClick={closeManage}>Close</button></header>{manageError && <p className="study-notice study-notice--error" role="alert">{manageError}</p>}<label className="field">Source language<select value={correction} onChange={(event) => setCorrection(event.target.value)}>{["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "fr", "de", "es"].map((language) => <option key={language} value={language}>{language.toUpperCase()}</option>)}</select></label><div className="word-manage__actions"><button className="button button--secondary" type="button" onClick={() => { void studyApi.correctVocabularySourceLanguage(managedEntry.id, correction).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError("The language correction could not be saved.")); }}>Save language</button>{confirmDelete ? <><span>Delete this word?</span><button className="button button--danger" type="button" onClick={() => { void studyApi.deleteVocabularyEntry(managedEntry.id).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError("This word could not be deleted.")); }}>Confirm delete</button></> : <button className="text-button is-danger" type="button" onClick={() => setConfirmDelete(true)}>Delete word</button>}</div></section>}
+            {managedEntry && studyApi && <section id={`word-manage-${managedEntry.id}`} className="word-manage word-manage--drawer" role="dialog" aria-modal="true" data-placement="drawer" aria-labelledby={`word-manage-title-${managedEntry.id}`} onKeyDown={(event) => { if (event.key === "Escape") closeManage(); }}><header className="word-manage__header"><strong id={`word-manage-title-${managedEntry.id}`}>Manage {managedEntry.sourceText}</strong><button ref={manageCloseButton} className="text-button" type="button" onClick={closeManage}>Close</button></header><div className="word-manage__body">{manageError && <p className="study-notice study-notice--error" role="alert">{manageError}</p>}<label className="field">Source language<select value={correction} onChange={(event) => setCorrection(event.target.value)}>{["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "fr", "de", "es"].map((language) => <option key={language} value={language}>{language.toUpperCase()}</option>)}</select></label></div><footer className="word-manage__footer"><button className="button button--secondary" type="button" onClick={() => { void studyApi.correctVocabularySourceLanguage(managedEntry.id, correction).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError("The language correction could not be saved.")); }}>Save language</button><span className="word-manage__delete-slot">{confirmDelete ? <span className="word-manage__confirm" role="status"><span>Delete this word?</span><button className="button button--danger" type="button" onClick={() => { void studyApi.deleteVocabularyEntry(managedEntry.id).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError("This word could not be deleted.")); }}>Confirm</button><button className="text-button" type="button" onClick={() => setConfirmDelete(false)}>Cancel</button></span> : <button className="text-button is-danger" type="button" aria-label={`Delete ${managedEntry.sourceText}`} onClick={() => setConfirmDelete(true)}>Delete word</button>}</span></footer></section>}
           </>
         )}
 
@@ -268,7 +282,7 @@ export function VocabularyWindow({
         )}
 
         {view === "textbooks" && (studyApi ? <TextbooksView api={studyApi} /> : <div className="study-empty"><strong>Textbooks are unavailable.</strong><span>Restart the desktop app to reconnect the local textbook service.</span></div>)}
-      </section>
+      </div></section>
     </main>
   );
 }
