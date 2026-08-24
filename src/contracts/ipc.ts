@@ -236,7 +236,7 @@ export interface StudyPracticeQuestion {
   prompt: string;
   promptLanguage: LanguageCode;
   answerLanguage: LanguageCode;
-  promptPartOfSpeech?: string;
+  promptPartOfSpeech?: PartOfSpeech;
   choices: StudyPracticeChoice[];
 }
 

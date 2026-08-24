@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import fixtures from "./fixtures.json";
+import type { StudyPracticeQuestion } from "./ipc";
 import {
   isAppError,
   isSelectionSnapshot,
@@ -125,5 +126,18 @@ describe("IPC contracts", () => {
         choices: [{ text: "短暂的", partOfSpeech: "adjective" }],
       }),
     ).toBe(false);
+    expect(
+      isStudyPracticeQuestion({
+        ...fixtures.studyPracticeQuestion,
+        promptPartOfSpeech: "oracle",
+      }),
+    ).toBe(false);
   });
 });
+
+const fixturePromptCategory: StudyPracticeQuestion["promptPartOfSpeech"] =
+  fixtures.studyPracticeQuestion.promptPartOfSpeech as "adjective";
+void fixturePromptCategory;
+// @ts-expect-error unknown prompt categories must be represented by absence
+const invalidPromptCategory: StudyPracticeQuestion["promptPartOfSpeech"] = "oracle";
+void invalidPromptCategory;
