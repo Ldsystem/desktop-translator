@@ -11,7 +11,7 @@ use rusqlite::{params, Connection};
 use crate::{
     contracts::{
         AppError, AppErrorCode, PracticeDirection, PracticePreferences, RelatedOrigin, RelatedWord,
-        StudyPracticeOutcome, StudyPracticeQuestion,
+        StudyPracticeOutcome, StudyPracticeQuestion, TextbookEntry,
     },
     services::{textbooks::TextbookStore, vocabulary::VocabularyStore},
 };
@@ -102,6 +102,17 @@ impl StudyService {
         let mut combined = HashMap::<String, RelatedWord>::new();
 
         for item in self.vocabulary.related(entry_id, now_ms)? {
+            if !item
+                .entry
+                .effective_source_language
+                .eq_ignore_ascii_case(&source_language)
+                || !item
+                    .entry
+                    .target_language
+                    .eq_ignore_ascii_case(&target_language)
+            {
+                continue;
+            }
             let pair = pair_key(
                 &item.entry.source_text,
                 &item.entry.translated_text,
@@ -290,11 +301,6 @@ impl StudyService {
             })
             .unwrap_or_default();
         entries.rotate_left(candidate_rotation);
-        let mut installed_entries = Vec::new();
-        for book in self.textbooks.list_installed()? {
-            installed_entries.extend(self.textbooks.list_entries(&book.id, None, 0, 500)?.entries);
-        }
-
         for candidate in &entries {
             let (prompt, prompt_language, answer_language, correct_answer) = match direction {
                 PracticeDirection::SourceToTarget => (
@@ -338,17 +344,11 @@ impl StudyService {
                 }
             }
 
-            let mut textbook_fallback = installed_entries
-                .iter()
-                .filter(|entry| {
-                    entry
-                        .source_language
-                        .eq_ignore_ascii_case(&candidate.effective_source_language)
-                        && entry
-                            .target_language
-                            .eq_ignore_ascii_case(&candidate.target_language)
-                })
-                .collect::<Vec<_>>();
+            let mut textbook_fallback = self.sample_textbook_fallback(
+                &candidate.effective_source_language,
+                &candidate.target_language,
+                seed,
+            )?;
             textbook_fallback.sort_by_key(|entry| {
                 seeded_hash(
                     seed ^ 0x7478_7462,
@@ -421,6 +421,45 @@ impl StudyService {
             }));
         }
         Ok(None)
+    }
+
+    fn sample_textbook_fallback(
+        &self,
+        source_language: &str,
+        target_language: &str,
+        seed: u64,
+    ) -> Result<Vec<TextbookEntry>, AppError> {
+        const SAMPLE_PAGE_SIZE: u64 = 8;
+        const MAX_SAMPLED_ENTRIES: usize = 64;
+
+        let mut sampled = Vec::<(u64, TextbookEntry)>::new();
+        for book in self.textbooks.list_installed()?.into_iter().filter(|book| {
+            book.entry_count > 0
+                && book.source_language.eq_ignore_ascii_case(source_language)
+                && book.target_language.eq_ignore_ascii_case(target_language)
+        }) {
+            let offset = seeded_hash(seed ^ 0x7478_7462, &book.id) % book.entry_count;
+            let limit = SAMPLE_PAGE_SIZE.min(book.entry_count - offset);
+            for entry in self
+                .textbooks
+                .list_entries(&book.id, None, offset, limit)?
+                .entries
+            {
+                let rank = seeded_hash(
+                    seed ^ 0x7361_6d70,
+                    &pair_key(
+                        &entry.source_text,
+                        &entry.translated_text,
+                        &entry.source_language,
+                        &entry.target_language,
+                    ),
+                );
+                sampled.push((rank, entry));
+                sampled.sort_by_key(|(rank, _)| *rank);
+                sampled.truncate(MAX_SAMPLED_ENTRIES);
+            }
+        }
+        Ok(sampled.into_iter().map(|(_, entry)| entry).collect())
     }
 
     pub fn submit(
@@ -766,6 +805,29 @@ mod tests {
     }
 
     #[test]
+    fn related_excludes_personal_entries_with_an_incompatible_language_pair() {
+        let (_file, service) = seeded_service();
+        service.preferences.lock().expect("connection").execute_batch(
+            "INSERT INTO vocabulary_entries (normalized_text, source_text, requested_source_language, target_language, translated_text, detected_source_language, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms) VALUES ('ephemerally-fr', 'ephemerally', 'auto', 'zh-CN', '短暂地', 'fr', 'fr', 40, 40);
+             INSERT INTO vocabulary_entries (normalized_text, source_text, requested_source_language, target_language, translated_text, detected_source_language, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms) VALUES ('ephemeralness-es', 'ephemeralness', 'auto', 'es', 'brevedad', 'en', 'en', 41, 41);",
+        ).expect("incompatible related entries");
+        let anchor = service
+            .vocabulary
+            .list(None, 100)
+            .expect("entries")
+            .into_iter()
+            .find(|entry| entry.source_text == "ephemeral")
+            .expect("anchor");
+
+        let related = service.related(anchor.id, 7, 100).expect("related");
+
+        assert!(!related.iter().any(|item| item.source_text == "ephemerally"));
+        assert!(!related
+            .iter()
+            .any(|item| item.source_text == "ephemeralness"));
+    }
+
+    #[test]
     fn skips_an_incompatible_top_ranked_candidate_for_a_later_practicable_pair() {
         let (_file, service) = seeded_service();
         {
@@ -933,5 +995,67 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn practice_textbook_fallback_can_sample_beyond_the_first_page() {
+        let (_file, service) = seeded_service();
+        let fixture = NamedTempFile::new().expect("fixture");
+        let connection = Connection::open(fixture.path()).expect("fixture db");
+        connection.execute_batch("CREATE TABLE simple_translation (written_rep TEXT NOT NULL, trans_list TEXT NOT NULL);").expect("schema");
+        for index in 0..510 {
+            let source = format!("word{index:04}");
+            let translation = if index < 500 {
+                "短暂的".to_owned()
+            } else {
+                format!("页外选项{index}")
+            };
+            connection
+                .execute(
+                    "INSERT INTO simple_translation VALUES (?1, ?2)",
+                    params![source, translation],
+                )
+                .expect("fixture entry");
+        }
+        drop(connection);
+        let bytes = std::fs::read(fixture.path()).expect("bytes");
+        let catalog = TextbookCatalogItem {
+            id: "large-en-zh".into(),
+            title: "Large test book".into(),
+            source_language: "en".into(),
+            target_language: "zh-CN".into(),
+            version: "1".into(),
+            download_url: "https://download.wikdict.com/large-test.sqlite3".into(),
+            expected_bytes: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            license: "CC BY-SA 4.0".into(),
+            attribution: "Test".into(),
+            source_url: "https://www.wikdict.com/page/download".into(),
+        };
+        service
+            .textbooks
+            .install_sqlite(&catalog, fixture.path(), 1)
+            .expect("install");
+        service.preferences.lock().expect("connection").execute_batch(
+            "UPDATE vocabulary_entries SET recall_score = 100 WHERE source_text != 'ephemeral';",
+        ).expect("single candidate");
+        service
+            .save_preferences(PracticePreferences {
+                direction: PracticeDirection::SourceToTarget,
+            })
+            .expect("forward");
+        let seed = (0..10_000)
+            .find(|seed| seeded_hash(*seed ^ 0x7478_7462, "large-en-zh") % 510 >= 500)
+            .expect("seed beyond first page");
+
+        let question = service
+            .question(100, seed)
+            .expect("question")
+            .expect("candidate");
+
+        assert!(question
+            .choices
+            .iter()
+            .any(|choice| choice.starts_with("页外选项")));
     }
 }
