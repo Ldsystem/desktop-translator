@@ -37,6 +37,8 @@
 
 ## 安装
 
+### macOS
+
 从 [最新 Release](https://github.com/Ldsystem/desktop-translator/releases/latest) 下载 `.dmg`，
 将应用拖入“应用程序”文件夹。安装包为通用版本，同时支持 Apple 芯片和 Intel Mac，
 并已包含界面、数据库运行库和离线入门词书，不需要安装 Node.js、Python 或 SQLite。
@@ -46,6 +48,17 @@
 ```sh
 xattr -dr com.apple.quarantine "/Applications/Desktop Translator.app"
 ```
+
+### Windows 10/11 x64
+
+从同一 Releases 页面下载 `Desktop Translator_*_x64-setup.exe`（NSIS，当前用户安装）。
+若本机没有 WebView2，安装程序会通过微软官方 bootstrapper 下载。不需要 Node.js、Rust、
+Python 或管理员权限。构建**未经 Authenticode 签名**，SmartScreen 可能提示
+“更多信息 → 仍要运行”。
+
+本机 Windows 11 25H2 x64 已完成编译、CI 门禁和静默安装/启动/卸载；针对第二个应用的
+划词叠加层、SAPI、凭据提示等交互夹具仍待手动执行。详见英文
+[README.md](README.md) 与 [平台矩阵](docs/platform-test-matrix.md)。
 
 ## 初次设置
 
@@ -75,5 +88,6 @@ pnpm tauri dev
 | `pnpm check` | TypeScript 检查、前端测试和构建 |
 | `pnpm test:platform` | Rust 单元与集成测试 |
 | `pnpm tauri build` | 生成自包含的 `.app` 和 `.dmg` |
+| `pnpm tauri build --bundles nsis` | 生成 Windows x64 NSIS 安装包 |
 
 详细的架构、平台支持和权限说明请参阅 [英文 README](README.md)。
