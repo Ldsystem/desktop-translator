@@ -38,7 +38,8 @@ tab.
 - **Quick translate panel.** Click the menu-bar icon to type or paste text
   directly, without selecting anything.
 - **Local vocabulary study.** Eligible translated words and short phrases build
-  a private on-device wordbook with related words and multiple-choice practice.
+  a private on-device wordbook with pronunciation, recall tracking, related-word
+  discovery, downloaded textbooks, and bidirectional practice.
 - **Stays out of the way.** Lives in the menu bar with no Dock icon, and can
   start at login.
 - **Bring your own key.** Your Google Cloud Translation API key is stored in the
@@ -46,6 +47,45 @@ tab.
 
 Languages: English, Chinese (Simplified), Japanese, Korean, French, German and
 Spanish, in any direction, plus automatic detection of the source.
+
+## Vocabulary Study
+
+Every eligible word or short phrase you translate can become part of a private,
+on-device learning loop. Repeated lookups measure demand; submitted practice
+answers measure recall. Sentence-like selections are translated normally but
+are never added to the wordbook.
+
+![Personal wordbook with recall scores, pronunciation, part-of-speech badges, and card actions](docs/screenshots/vocabulary-study-wordbook.png)
+
+The study window brings four tools together:
+
+- **My wordbook** keeps the source and translation, language direction, lookup
+  demand, recall score, pronunciation controls, and provenance-backed
+  part-of-speech metadata. Entries can be corrected or removed.
+- **Downloaded textbooks** provide five Simplified Chinese learning paths,
+  including everyday, academic, TOEIC, business, and general-reference
+  vocabulary. A textbook hit is copied into your personal wordbook.
+- **Related words** combines roots and shared meanings across your wordbook and
+  compatible downloaded textbooks, shows where every result came from, and lets
+  you add useful connections with one click.
+- **Practice** tests word-to-meaning, meaning-to-word, or a random mix. Related
+  words and the active textbook supply more challenging distractors, while
+  mastered words leave the active queue until their recall fades.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/vocabulary-study-textbooks.png" alt="Simplified Chinese textbook shelf" /></td>
+    <td width="50%"><img src="docs/screenshots/vocabulary-study-related.png" alt="Related words with source and part-of-speech badges" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Choose a focused Simplified Chinese textbook.</sub></td>
+    <td align="center"><sub>Explore connections across personal and downloaded vocabulary.</sub></td>
+  </tr>
+</table>
+
+> [!NOTE]
+> Translation lookup follows a local-first order: personal wordbook → active
+> downloaded textbook → configured online translation provider.
 
 ## Platform support
 
@@ -120,6 +160,7 @@ settings file, and is sent only in the `x-goog-api-key` header over HTTPS.
 | Change the source language on the result | Retranslates with the language you chose |
 | Click the speaker icon | Speaks the text with a system voice |
 | Click the menu-bar icon | Opens the quick translate panel for typed text |
+| Open Vocabulary Study from the menu-bar menu | Reviews your wordbook, textbooks, connections, and practice queue |
 | Menu-bar right-click | Settings, enable/disable, start at login, quit |
 
 Nothing is sent anywhere until you click the translate button. Selections in
@@ -129,10 +170,11 @@ results are stored locally in the application's SQLite database. Sentence-like
 text is never added to the wordbook. The database is not exposed to the
 interface and is not synchronized to a cloud service.
 
-Related-word suggestions also remain local: root matches use a conservative
-Latin suffix heuristic, while meaning matches require overlapping normalized
-terms in translations already stored in the wordbook. They do not use an LLM,
-embeddings, or an external dictionary.
+Downloaded textbook files and related-word discovery stay on this device.
+Connections combine conservative root matching with shared meanings from the
+personal wordbook and compatible downloaded textbooks. The feature does not use
+an LLM or embeddings. Textbook attribution and source links remain visible in
+the interface.
 
 ## 隐私与本地学习记录
 
@@ -140,7 +182,8 @@ embeddings, or an external dictionary.
 符合条件的单词和短词组、成功的翻译结果、查询次数以及已提交的练习结果会保存在本机的
 SQLite 数据库中，用于词汇本和复习排序；句子式文本不会写入词汇本。数据库不会暴露给
 界面层，也不会同步到云端。只有主动提交练习答案才会改变记忆分数，重复查询只会记录
-查询需求。
+查询需求。下载的简体中文词书与相关词检索都保留在本机；翻译查询会依次使用个人词汇本、
+当前启用的下载词书和在线翻译服务。
 
 ## Development
 

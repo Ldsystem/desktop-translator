@@ -16,7 +16,11 @@ WebView, and is not synchronized to a cloud service. A repeated lookup increases
 lookup demand but does not claim that the word was remembered. Recall state
 changes only after the user explicitly submits a practice answer.
 
-Related words are derived locally as well. Root matches use a conservative
-Latin suffix heuristic; meaning matches use overlapping normalized terms from
-translations already in the wordbook. No embeddings, LLM analysis, or external
-dictionary is involved.
+Downloaded textbook files and related-word discovery remain local. Connections
+combine conservative root matching with shared meanings from the personal
+wordbook and compatible downloaded textbooks. No embeddings or LLM analysis is
+involved. Textbook attribution and source links remain visible in the study UI.
+
+Translation lookup follows this order: personal wordbook, active downloaded
+textbook, then the configured online translation provider. A textbook hit is
+promoted into the personal wordbook for later study.
