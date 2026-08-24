@@ -333,6 +333,10 @@ impl ApplicationCoordinator {
         !language.trim().is_empty() && self.speech.is_available(&language).await
     }
 
+    pub async fn supported_translation_languages(&self) -> Result<Vec<String>, AppError> {
+        self.translation.supported_languages().await
+    }
+
     /// Invalidates work and stops native side effects before application exit.
     pub async fn shutdown(&self) -> Result<(), AppError> {
         self.set_enabled(false).await
@@ -649,15 +653,17 @@ pub fn delete_vocabulary_entry(
 }
 
 #[tauri::command]
-pub fn correct_vocabulary_source_language(
+pub async fn correct_vocabulary_source_language(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     entry_id: i64,
     effective_source_language: String,
 ) -> Result<VocabularyEntry, AppError> {
+    let supported_languages = state.coordinator.supported_translation_languages().await?;
     let entry = state.vocabulary.correct_effective_source_language(
         entry_id,
         &effective_source_language,
+        &supported_languages,
         now_epoch_ms(),
     )?;
     state.emit_vocabulary_revision(

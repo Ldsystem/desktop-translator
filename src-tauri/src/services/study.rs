@@ -244,6 +244,15 @@ impl StudyService {
             fixed => fixed,
         };
         let all_personal_entries = self.vocabulary.list(None, now_ms)?;
+        let most_recent_reviewed = all_personal_entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .last_reviewed_epoch_ms
+                    .map(|reviewed| (reviewed, entry.id))
+            })
+            .max()
+            .map(|(_, id)| id);
         let mut entries = all_personal_entries.clone();
         entries.retain(|entry| entry.effective_recall < 100.0);
         if entries.is_empty() {
@@ -256,16 +265,7 @@ impl StudyService {
                 .then_with(|| left.id.cmp(&right.id))
         });
         if entries.len() > 1 {
-            let most_recent = entries
-                .iter()
-                .filter_map(|entry| {
-                    entry
-                        .last_reviewed_epoch_ms
-                        .map(|reviewed| (reviewed, entry.id))
-                })
-                .max()
-                .map(|(_, id)| id);
-            if let Some(most_recent) = most_recent {
+            if let Some(most_recent) = most_recent_reviewed {
                 entries.retain(|entry| entry.id != most_recent);
             }
         }
@@ -809,6 +809,27 @@ mod tests {
             first.entry_id, second.entry_id,
             "seeds should vary candidate selection when the pool permits"
         );
+    }
+
+    #[test]
+    fn mastered_latest_review_does_not_exclude_the_next_eligible_entry() {
+        let (_file, service) = seeded_service();
+        service
+            .save_preferences(PracticePreferences {
+                direction: PracticeDirection::SourceToTarget,
+            })
+            .expect("forward");
+        service.preferences.lock().expect("connection").execute_batch(
+            "UPDATE vocabulary_entries SET recall_score = 0, last_reviewed_epoch_ms = 90 WHERE source_text = 'ephemeral';
+             UPDATE vocabulary_entries SET recall_score = 10, last_reviewed_epoch_ms = NULL WHERE source_text = 'supersede';
+             UPDATE vocabulary_entries SET recall_score = 100, last_reviewed_epoch_ms = 100 WHERE source_text = 'predeclare';",
+        ).expect("review state");
+
+        let question = service
+            .question(100, 0)
+            .expect("question")
+            .expect("eligible candidate");
+        assert_eq!(question.prompt, "ephemeral");
     }
 
     #[test]

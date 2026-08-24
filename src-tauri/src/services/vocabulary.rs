@@ -210,10 +210,16 @@ impl VocabularyStore {
         &self,
         entry_id: i64,
         language: &str,
+        supported_languages: &[String],
         now_ms: u64,
     ) -> Result<VocabularyEntry, AppError> {
         let language = language.trim();
-        if !is_supported_language_code(language) || language.eq_ignore_ascii_case("auto") {
+        if !is_supported_language_code(language)
+            || language.eq_ignore_ascii_case("auto")
+            || !supported_languages
+                .iter()
+                .any(|supported| supported.trim().eq_ignore_ascii_case(language))
+        {
             return Err(AppError::new(
                 AppErrorCode::InvalidLanguagePair,
                 "A supported non-auto source language is required",
@@ -1224,7 +1230,9 @@ mod tests {
 
     #[test]
     fn deletion_is_id_based_cascades_events_and_rejects_missing_entries() {
-        let store = VocabularyStore::in_memory().expect("store");
+        let file = NamedTempFile::new().expect("database");
+        let store = VocabularyStore::open(file.path()).expect("store");
+        let _textbooks = TextbookStore::open(file.path()).expect("textbook schema");
         {
             let connection = store.connection.lock().expect("connection");
             connection.execute(
@@ -1235,6 +1243,10 @@ mod tests {
                 "INSERT INTO vocabulary_events (entry_id, kind, created_at_epoch_ms) VALUES (1, 'lookup-miss', 1)",
                 [],
             ).expect("event");
+            connection.execute(
+                "INSERT INTO vocabulary_textbook_provenance (vocabulary_entry_id, textbook_id, textbook_title, textbook_version, license, attribution, source_url, source_text, translated_text, original_translations, promoted_at_epoch_ms) VALUES (1, 'book', 'Book', '1', 'CC', 'Author', 'https://example.com', 'hello', '你好', '你好', 1)",
+                [],
+            ).expect("provenance");
         }
 
         store.delete(1).expect("delete");
@@ -1250,6 +1262,17 @@ mod tests {
             )
             .expect("event count");
         assert_eq!(event_count, 0);
+        let provenance_count: i64 = store
+            .connection
+            .lock()
+            .expect("connection")
+            .query_row(
+                "SELECT count(*) FROM vocabulary_textbook_provenance WHERE vocabulary_entry_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("provenance count");
+        assert_eq!(provenance_count, 0);
         assert!(store.delete(1).is_err());
     }
 
@@ -1265,7 +1288,7 @@ mod tests {
         }
 
         let corrected = store
-            .correct_effective_source_language(1, "fr", 2)
+            .correct_effective_source_language(1, "fr", &["en".into(), "fr".into()], 2)
             .expect("correct");
         assert_eq!(corrected.requested_source_language, "en");
         assert_eq!(corrected.effective_source_language, "fr");
@@ -1296,8 +1319,12 @@ mod tests {
             )
             .expect("detected");
         assert_eq!(detected.as_deref(), Some("en"));
+        drop(connection);
         assert!(store
-            .correct_effective_source_language(1, "auto", 4)
+            .correct_effective_source_language(1, "auto", &["en".into(), "fr".into()], 4)
+            .is_err());
+        assert!(store
+            .correct_effective_source_language(1, "zz", &["en".into(), "fr".into()], 4)
             .is_err());
     }
 
