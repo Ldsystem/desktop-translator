@@ -27,7 +27,7 @@ export function PartOfSpeechBadge({ value }: { value?: PartOfSpeech }) {
 }
 
 function lexicalTextClass(value: string) {
-  return value.length > 28 ? "lexical-text lexical-text--long" : "lexical-text";
+  return value.length >= 11 ? "lexical-text lexical-text--long" : "lexical-text";
 }
 
 export function PracticeView({ api, revision }: PracticeViewProps) {
@@ -100,7 +100,7 @@ export function PracticeView({ api, revision }: PracticeViewProps) {
       });
   };
 
-  return <section aria-labelledby="practice-title">
+  return <section className="practice-view" aria-labelledby="practice-title">
     <header className="study-header"><div><p className="eyebrow">Practice</p><h2 id="practice-title">Choose the answer</h2><p>Questions come from your wordbook. Related words and downloaded textbooks make the choices more challenging.</p></div></header>
     <fieldset className="direction-selector" disabled={saving || submitting}><legend>Practice direction</legend>{directions.map((item) => <label key={item.value} className={direction === item.value ? "is-active" : ""}><input type="radio" name="practice-direction" value={item.value} checked={direction === item.value} onChange={() => chooseDirection(item.value)} /><span><strong>{item.label}</strong><small>{item.note}</small></span></label>)}</fieldset>
     {error && <div className="study-notice study-notice--error" role="alert">{error} <button className="text-button" type="button" onClick={() => failedDirection ? chooseDirection(failedDirection) : loadQuestion()}>{failedDirection ? "Try saving again" : "Try again"}</button></div>}

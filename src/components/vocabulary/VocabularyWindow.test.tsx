@@ -152,6 +152,23 @@ describe("VocabularyWindow", () => {
     expect(scroller?.getAttribute("data-scroll-owner")).toBe("study-content");
   });
 
+  it("contains document scrolling and gives the content scroller a quiet visual treatment", () => {
+    expect(appCss).toMatch(/\.app-surface\.app-surface--study\s*\{[^}]*position:\s*fixed[^}]*inset:\s*0[^}]*overflow:\s*hidden/s);
+    expect(appCss).not.toMatch(/html,\s*body,\s*#root\s*\{[^}]*overflow:\s*hidden/s);
+    expect(appCss).toMatch(/\.study-scroll-region\s*\{[^}]*scrollbar-width:\s*thin/s);
+    expect(appCss).toMatch(/\.study-scroll-region::-webkit-scrollbar\s*\{[^}]*width:\s*8px/s);
+    expect(appCss).toMatch(/\.study-scroll-region::-webkit-scrollbar-track\s*\{[^}]*background:\s*transparent/s);
+  });
+
+  it("keeps speaker hit targets accessible while rendering a smaller visible control", () => {
+    expect(appCss).toMatch(/\.vocabulary-card__speak::before\s*\{[^}]*width:\s*30px[^}]*height:\s*30px/s);
+    expect(appCss).toMatch(/\.vocabulary-card__speak\s*\{[^}]*background:\s*transparent/s);
+  });
+
+  it("reserves the full card action width so controls cannot overlap the word column", () => {
+    expect(appCss).toMatch(/\.vocabulary-card\s*\{[^}]*grid-template-columns:\s*30px\s+minmax\(0,\s*1fr\)\s+90px/s);
+  });
+
   it("keeps two word-oriented pronunciation controls separate from opening the card", () => {
     const pronounce = vi.fn();
     const open = vi.fn();
@@ -329,6 +346,23 @@ describe("VocabularyWindow", () => {
     expect(firstCard.querySelector(".lexical-text--long")?.textContent).toBe(long);
     expect(firstCard.querySelector(".part-of-speech")?.textContent).toBe("n.");
     expect(container.querySelectorAll(".vocabulary-card")[1].querySelector(".part-of-speech")).toBeNull();
+  });
+
+  it("adapts ordinary long words before they are forced into ugly mid-word breaks", () => {
+    act(() => root.render(<VocabularyWindow entries={[{ ...entry, sourceText: "notarization", translatedText: "公证" }]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
+
+    expect(container.querySelector(".vocabulary-card__lexeme .lexical-text--long")?.textContent).toBe("notarization");
+    expect(appCss).toMatch(/\.lexical-text\s*\{[^}]*word-break:\s*normal/s);
+  });
+
+  it("uses a compact in-flow practice panel instead of a tall absolute-action card", async () => {
+    const api = makeStudyApi();
+    await act(async () => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
+
+    expect(container.querySelector(".practice-view")).not.toBeNull();
+    expect(appCss).toMatch(/\.practice-card\s*\{[^}]*max-width:\s*620px/s);
+    expect(appCss).toMatch(/\.practice-actions\s*\{[^}]*position:\s*static/s);
   });
 
   it("does not reveal correctness until an answer is submitted", () => {

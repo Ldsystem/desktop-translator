@@ -90,7 +90,7 @@ function BranchIcon() {
 }
 
 function lexicalTextClass(value: string) {
-  return value.length > 28 ? "lexical-text lexical-text--long" : "lexical-text";
+  return value.length >= 11 ? "lexical-text lexical-text--long" : "lexical-text";
 }
 
 function EntryCard({
