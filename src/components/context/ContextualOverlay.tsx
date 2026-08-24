@@ -196,7 +196,7 @@ export function ContextualOverlay({
           <span className="error-state__mark" aria-hidden="true">!</span>
           <div>
             <h2>{errors[state.error.code].title}</h2>
-            <p>{state.error.message}</p>
+            {!zh && <p>{state.error.message}</p>}
             <p className="error-state__guidance">{errors[state.error.code].guidance}</p>
           </div>
           {state.error.retryable && (

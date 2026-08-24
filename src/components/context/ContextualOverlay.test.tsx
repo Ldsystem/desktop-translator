@@ -179,5 +179,6 @@ describe("ContextualOverlay", () => {
     expect(alert?.textContent).toContain("当前处于离线状态");
     expect(alert?.textContent).toContain("请重新连接网络后重试。");
     expect(alert?.textContent).not.toContain("You’re Offline");
+    expect(alert?.textContent).not.toContain("You are offline");
   });
 });
