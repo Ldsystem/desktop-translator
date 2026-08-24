@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use opencc_fmmseg::{OpenCC, OpenccConfig};
 use reqwest::Url;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -214,8 +215,15 @@ impl TextbookStore {
                 .prepare(
                     "INSERT INTO textbook_entries (
                        textbook_id, normalized_source, source_text, translated_text,
-                       source_language, target_language
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                       original_translations, source_language, target_language
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )
+                .map_err(storage_error)?;
+            let mut insert_alias = tx
+                .prepare(
+                    "INSERT OR IGNORE INTO textbook_entry_aliases (
+                       textbook_entry_id, alias, normalized_alias
+                     ) VALUES (?1, ?2, ?3)",
                 )
                 .map_err(storage_error)?;
             for entry in imported {
@@ -225,10 +233,17 @@ impl TextbookStore {
                         entry.normalized_source,
                         entry.source_text,
                         entry.translated_text,
+                        entry.original_translations.join(" | "),
                         catalog.source_language,
                         catalog.target_language,
                     ])
                     .map_err(storage_error)?;
+                let textbook_entry_id = tx.last_insert_rowid();
+                for alias in entry.aliases {
+                    insert_alias
+                        .execute(params![textbook_entry_id, alias, normalize(&alias)])
+                        .map_err(storage_error)?;
+                }
             }
         }
         tx.commit().map_err(storage_error)?;
@@ -322,9 +337,15 @@ impl TextbookStore {
             .map_err(|_| internal("Textbook database lock failed"))?;
         let total = connection
             .query_row(
-                "SELECT count(*) FROM textbook_entries
+                "SELECT count(*) FROM textbook_entries e
                  WHERE textbook_id = ?1 AND
-                       (?2 IS NULL OR normalized_source LIKE ?2 ESCAPE '\\' OR lower(translated_text) LIKE ?2 ESCAPE '\\')",
+                       (?2 IS NULL OR normalized_source LIKE ?2 ESCAPE '\\'
+                        OR lower(translated_text) LIKE ?2 ESCAPE '\\'
+                        OR EXISTS (
+                          SELECT 1 FROM textbook_entry_aliases a
+                          WHERE a.textbook_entry_id = e.id
+                            AND a.normalized_alias LIKE ?2 ESCAPE '\\'
+                        ))",
                 params![textbook_id, search],
                 |row| row.get::<_, i64>(0),
             )
@@ -335,7 +356,13 @@ impl TextbookStore {
                         source_language, target_language
                  FROM textbook_entries
                  WHERE textbook_id = ?1 AND
-                       (?2 IS NULL OR normalized_source LIKE ?2 ESCAPE '\\' OR lower(translated_text) LIKE ?2 ESCAPE '\\')
+                       (?2 IS NULL OR normalized_source LIKE ?2 ESCAPE '\\'
+                        OR lower(translated_text) LIKE ?2 ESCAPE '\\'
+                        OR EXISTS (
+                          SELECT 1 FROM textbook_entry_aliases a
+                          WHERE a.textbook_entry_id = textbook_entries.id
+                            AND a.normalized_alias LIKE ?2 ESCAPE '\\'
+                        ))
                  ORDER BY normalized_source, id LIMIT ?3 OFFSET ?4",
             )
             .map_err(storage_error)?;
@@ -381,8 +408,8 @@ impl TextbookStore {
         let entry = tx
             .query_row(
                 "SELECT e.textbook_id, e.normalized_source, e.source_text, e.translated_text,
-                        e.source_language, e.target_language, t.title, t.version, t.license,
-                        t.attribution, t.source_url
+                        e.original_translations, e.source_language, e.target_language, t.title,
+                        t.version, t.license, t.attribution, t.source_url
                  FROM textbook_entries e JOIN textbooks t ON t.id = e.textbook_id
                  WHERE e.id = ?1",
                 params![textbook_entry_id],
@@ -399,6 +426,7 @@ impl TextbookStore {
                         row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
                         row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
                     ))
                 },
             )
@@ -410,6 +438,7 @@ impl TextbookStore {
             normalized_source,
             source_text,
             translated_text,
+            original_translations,
             source_language,
             target_language,
             title,
@@ -465,8 +494,8 @@ impl TextbookStore {
             "INSERT OR IGNORE INTO vocabulary_textbook_provenance (
                    vocabulary_entry_id, textbook_id, textbook_title, textbook_version,
                    license, attribution, source_url, source_text, translated_text,
-                   promoted_at_epoch_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                   original_translations, promoted_at_epoch_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 vocabulary_entry_id,
                 book_id,
@@ -477,6 +506,7 @@ impl TextbookStore {
                 source_url,
                 source_text,
                 translated_text,
+                original_translations,
                 i64_from_u64(now_ms)?
             ],
         )
@@ -494,6 +524,8 @@ struct ImportedEntry {
     normalized_source: String,
     source_text: String,
     translated_text: String,
+    original_translations: Vec<String>,
+    aliases: Vec<String>,
 }
 
 fn validate_catalog(catalog: &TextbookCatalogItem) -> Result<(), AppError> {
@@ -514,6 +546,7 @@ fn validate_catalog(catalog: &TextbookCatalogItem) -> Result<(), AppError> {
 }
 
 fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
+    let converter = OpenCC::new();
     let source = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -563,9 +596,10 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
         {
             return Err(invalid_package());
         }
+        let (display, originals, aliases) = normalized_zh_cn(&converter, &translated_text)?;
         if let Some(existing) = imported.get_mut(&key) {
-            existing.translated_text =
-                merge_translations(&existing.translated_text, &translated_text);
+            append_unique(&mut existing.original_translations, originals);
+            append_unique(&mut existing.aliases, aliases);
             if source_text == key && existing.source_text != key {
                 existing.source_text = source_text;
             }
@@ -575,7 +609,9 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
                 ImportedEntry {
                     normalized_source: key,
                     source_text,
-                    translated_text,
+                    translated_text: display,
+                    original_translations: originals,
+                    aliases,
                 },
             );
         }
@@ -649,6 +685,87 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
         ).map_err(storage_error)?;
         tx.commit().map_err(storage_error)?;
     }
+    if version < 2 {
+        let tx = connection.unchecked_transaction().map_err(storage_error)?;
+        tx.execute_batch(
+            "ALTER TABLE textbook_entries
+               ADD COLUMN original_translations TEXT NOT NULL DEFAULT '';
+             ALTER TABLE vocabulary_textbook_provenance
+               ADD COLUMN original_translations TEXT NOT NULL DEFAULT '';
+             CREATE TABLE textbook_entry_aliases (
+               id INTEGER PRIMARY KEY,
+               textbook_entry_id INTEGER NOT NULL REFERENCES textbook_entries(id) ON DELETE CASCADE,
+               alias TEXT NOT NULL,
+               normalized_alias TEXT NOT NULL,
+               UNIQUE(textbook_entry_id, alias)
+             );
+             CREATE INDEX textbook_entry_aliases_search
+               ON textbook_entry_aliases(normalized_alias, textbook_entry_id);",
+        )
+        .map_err(storage_error)?;
+        let rows = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT id, translated_text FROM textbook_entries WHERE target_language = 'zh-CN'",
+                )
+                .map_err(storage_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            rows
+        };
+        let converter = OpenCC::new();
+        for (id, original) in rows {
+            let (display, originals, aliases) = normalized_zh_cn(&converter, &original)?;
+            tx.execute(
+                "UPDATE textbook_entries
+                 SET translated_text = ?1, original_translations = ?2 WHERE id = ?3",
+                params![display, originals.join(" | "), id],
+            )
+            .map_err(storage_error)?;
+            for alias in aliases {
+                tx.execute(
+                    "INSERT OR IGNORE INTO textbook_entry_aliases (
+                       textbook_entry_id, alias, normalized_alias
+                     ) VALUES (?1, ?2, ?3)",
+                    params![id, alias, normalize(&alias)],
+                )
+                .map_err(storage_error)?;
+            }
+        }
+        let provenance = {
+            let mut statement = tx
+                .prepare("SELECT id, translated_text FROM vocabulary_textbook_provenance")
+                .map_err(storage_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            rows
+        };
+        for (id, original) in provenance {
+            let (display, originals, _) = normalized_zh_cn(&converter, &original)?;
+            tx.execute(
+                "UPDATE vocabulary_textbook_provenance
+                 SET translated_text = ?1, original_translations = ?2 WHERE id = ?3",
+                params![display, originals.join(" | "), id],
+            )
+            .map_err(storage_error)?;
+        }
+        tx.execute(
+            "INSERT INTO textbook_schema_migrations(version) VALUES (2)",
+            [],
+        )
+        .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+    }
     Ok(())
 }
 
@@ -676,14 +793,40 @@ fn clean(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn merge_translations(left: &str, right: &str) -> String {
-    let mut seen = HashSet::new();
-    left.split('|')
-        .chain(right.split('|'))
-        .map(clean)
-        .filter(|value| !value.is_empty() && seen.insert(value.clone()))
-        .collect::<Vec<_>>()
-        .join(" | ")
+fn normalized_zh_cn(
+    converter: &OpenCC,
+    translated_text: &str,
+) -> Result<(String, Vec<String>, Vec<String>), AppError> {
+    let mut originals = Vec::new();
+    let mut aliases = Vec::new();
+    for original in translated_text.split('|').map(clean) {
+        if original.is_empty() {
+            continue;
+        }
+        if !originals.contains(&original) {
+            originals.push(original.clone());
+        }
+        let simplified = clean(&converter.convert_with_config(&original, OpenccConfig::T2s, false));
+        for alias in [original, simplified] {
+            if !alias.is_empty() && !aliases.contains(&alias) {
+                aliases.push(alias);
+            }
+        }
+    }
+    let display = originals
+        .first()
+        .map(|value| clean(&converter.convert_with_config(value, OpenccConfig::T2s, false)))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(invalid_package)?;
+    Ok((display, originals, aliases))
+}
+
+fn append_unique(target: &mut Vec<String>, values: Vec<String>) {
+    for value in values {
+        if !target.contains(&value) {
+            target.push(value);
+        }
+    }
 }
 
 fn escape_like(value: &str) -> String {
@@ -886,7 +1029,105 @@ mod tests {
             .expect("page");
         assert_eq!(page.total, 1);
         assert_eq!(page.entries[0].source_text, "aborigine");
-        assert_eq!(page.entries[0].translated_text, "土著 | 土着");
+        assert_eq!(page.entries[0].translated_text, "土著");
+        let variant = store
+            .list_entries("case-variants", Some("土着"), 0, 50)
+            .expect("variant search");
+        assert_eq!(variant.total, 1);
+        assert_eq!(variant.entries[0].id, page.entries[0].id);
+    }
+
+    #[test]
+    fn zh_cn_import_uses_one_simplified_display_and_searches_original_variants() {
+        let app_db = NamedTempFile::new().expect("app db");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let fixture = wikdict_fixture(&[("abacus", "算盘 | 算盤"), ("abalone", "鮑魚")]);
+        let catalog = test_catalog(fixture.path(), "mixed-script", "1");
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("install");
+
+        let page = store
+            .list_entries("mixed-script", None, 0, 50)
+            .expect("browse");
+        assert_eq!(page.entries[0].translated_text, "算盘");
+        assert_eq!(page.entries[1].translated_text, "鲍鱼");
+        for search in ["算盘", "算盤", "鲍鱼", "鮑魚"] {
+            assert_eq!(
+                store
+                    .list_entries("mixed-script", Some(search), 0, 50)
+                    .expect("search")
+                    .total,
+                1,
+                "search alias {search}"
+            );
+        }
+    }
+
+    #[test]
+    fn v1_rows_migrate_to_simplified_display_without_redownload() {
+        let app_db = NamedTempFile::new().expect("app db");
+        crate::services::vocabulary::VocabularyStore::open(app_db.path())
+            .expect("vocabulary migrations");
+        let connection = Connection::open(app_db.path()).expect("seed v1");
+        connection
+            .execute_batch(
+                "CREATE TABLE textbook_schema_migrations (
+                   version INTEGER PRIMARY KEY,
+                   applied_at_epoch_ms INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO textbook_schema_migrations(version) VALUES (1);
+                 CREATE TABLE textbooks (
+                   id TEXT PRIMARY KEY, title TEXT NOT NULL, source_language TEXT NOT NULL,
+                   target_language TEXT NOT NULL, version TEXT NOT NULL, download_url TEXT NOT NULL,
+                   expected_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, license TEXT NOT NULL,
+                   attribution TEXT NOT NULL, source_url TEXT NOT NULL,
+                   installed_at_epoch_ms INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 0,
+                   entry_count INTEGER NOT NULL
+                 );
+                 CREATE TABLE textbook_entries (
+                   id INTEGER PRIMARY KEY,
+                   textbook_id TEXT NOT NULL REFERENCES textbooks(id) ON DELETE CASCADE,
+                   normalized_source TEXT NOT NULL, source_text TEXT NOT NULL,
+                   translated_text TEXT NOT NULL, phonetic_symbols TEXT,
+                   source_language TEXT NOT NULL, target_language TEXT NOT NULL,
+                   UNIQUE(textbook_id, normalized_source)
+                 );
+                 CREATE TABLE vocabulary_textbook_provenance (
+                   id INTEGER PRIMARY KEY,
+                   vocabulary_entry_id INTEGER NOT NULL REFERENCES vocabulary_entries(id) ON DELETE CASCADE,
+                   textbook_id TEXT NOT NULL, textbook_title TEXT NOT NULL,
+                   textbook_version TEXT NOT NULL, license TEXT NOT NULL,
+                   attribution TEXT NOT NULL, source_url TEXT NOT NULL,
+                   source_text TEXT NOT NULL, translated_text TEXT NOT NULL,
+                   promoted_at_epoch_ms INTEGER NOT NULL,
+                   UNIQUE(vocabulary_entry_id, textbook_id, source_text, translated_text)
+                 );
+                 INSERT INTO textbooks VALUES (
+                   'legacy', 'Legacy', 'en', 'zh-CN', '1', 'https://download.wikdict.com/legacy',
+                   1, 'digest', 'CC BY-SA 4.0', 'WikDict', 'https://www.wikdict.com', 1, 1, 2
+                 );
+                 INSERT INTO textbook_entries (
+                   textbook_id, normalized_source, source_text, translated_text,
+                   source_language, target_language
+                 ) VALUES
+                   ('legacy', 'abacus', 'abacus', '算盘 | 算盤', 'en', 'zh-CN'),
+                   ('legacy', 'abalone', 'abalone', '鮑魚', 'en', 'zh-CN');",
+            )
+            .expect("v1 schema and rows");
+        drop(connection);
+
+        let store = TextbookStore::open(app_db.path()).expect("migrate v1");
+        let page = store.list_entries("legacy", None, 0, 50).expect("browse");
+        assert_eq!(page.entries[0].translated_text, "算盘");
+        assert_eq!(page.entries[1].translated_text, "鲍鱼");
+        assert_eq!(
+            store
+                .list_entries("legacy", Some("鮑魚"), 0, 50)
+                .expect("traditional alias")
+                .total,
+            1
+        );
     }
 
     #[tokio::test]

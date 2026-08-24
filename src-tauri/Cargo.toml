@@ -17,6 +17,7 @@ async-trait = "0.1.92"
 crossbeam-channel = "0.5.16"
 html-escape = "0.2.15"
 keyring = { version = "4.1.6", default-features = false, features = ["apple-native-keyring-store", "v1", "windows-native-keyring-store"] }
+opencc-fmmseg = "0.11.3"
 # `system-proxy` and `socks` are part of reqwest's defaults and must be kept
 # explicitly: without them the client only honours HTTP_PROXY-style variables,
 # which a GUI app launched from Finder never inherits. Users who reach Google
