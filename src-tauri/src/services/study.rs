@@ -10,8 +10,9 @@ use rusqlite::{params, Connection};
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, PracticeDirection, PracticePreferences, RelatedOrigin, RelatedWord,
-        StudyPracticeChoice, StudyPracticeOutcome, StudyPracticeQuestion, TextbookEntry,
+        AppError, AppErrorCode, PartOfSpeech, PracticeDirection, PracticePreferences,
+        RelatedOrigin, RelatedWord, StudyPracticeChoice, StudyPracticeOutcome,
+        StudyPracticeQuestion, TextbookEntry,
     },
     services::{textbooks::TextbookStore, vocabulary::VocabularyStore},
 };
@@ -100,7 +101,7 @@ impl StudyService {
         let source_language = anchor.effective_source_language.clone();
         let target_language = anchor.target_language.clone();
         let mut combined = HashMap::<String, RelatedWord>::new();
-        let mut categories = HashMap::<String, HashSet<String>>::new();
+        let mut categories = HashMap::<String, HashSet<PartOfSpeech>>::new();
 
         for item in self.vocabulary.related(entry_id, now_ms)? {
             if !item
@@ -135,7 +136,7 @@ impl StudyService {
                     },
                 );
             }
-            if let Some(category) = item.entry.part_of_speech.clone() {
+            if let Some(category) = item.entry.part_of_speech {
                 categories.entry(pair.clone()).or_default().insert(category);
             }
             combined.insert(
@@ -201,7 +202,7 @@ impl StudyService {
                         textbook_id: Some(book.id.clone()),
                         textbook_title: Some(book.title.clone()),
                     };
-                    if let Some(category) = entry.part_of_speech.clone() {
+                    if let Some(category) = entry.part_of_speech {
                         categories.entry(pair.clone()).or_default().insert(category);
                     }
                     if let Some(existing) = combined.get_mut(&pair) {
@@ -332,8 +333,8 @@ impl StudyService {
                 PracticeDirection::Random => unreachable!(),
             };
             let mut choices = vec![StudyPracticeChoice {
-                text: display(&correct_answer),
-                part_of_speech: candidate.part_of_speech.clone(),
+                value: display(&correct_answer),
+                part_of_speech: candidate.part_of_speech,
             }];
             let mut choice_keys = HashSet::from([key(&correct_answer)]);
 
@@ -355,7 +356,7 @@ impl StudyService {
                 };
                 if choice_keys.insert(key(&answer)) {
                     choices.push(StudyPracticeChoice {
-                        text: display(&answer),
+                        value: display(&answer),
                         part_of_speech: related.part_of_speech,
                     });
                 }
@@ -391,7 +392,7 @@ impl StudyService {
                 };
                 if choice_keys.insert(key(answer)) {
                     choices.push(StudyPracticeChoice {
-                        text: display(answer),
+                        value: display(answer),
                         part_of_speech: textbook_entry.part_of_speech,
                     });
                 }
@@ -426,8 +427,8 @@ impl StudyService {
                 };
                 if choice_keys.insert(key(answer)) {
                     choices.push(StudyPracticeChoice {
-                        text: display(answer),
-                        part_of_speech: entry.part_of_speech.clone(),
+                        value: display(answer),
+                        part_of_speech: entry.part_of_speech,
                     });
                 }
             }
@@ -443,7 +444,7 @@ impl StudyService {
                 prompt,
                 prompt_language,
                 answer_language,
-                prompt_part_of_speech: candidate.part_of_speech.clone(),
+                prompt_part_of_speech: candidate.part_of_speech,
                 choices,
             }));
         }
@@ -727,10 +728,13 @@ mod tests {
             .expect("forward question");
         assert_eq!(forward.direction, PracticeDirection::SourceToTarget);
         assert_eq!(forward.prompt, "ephemeral");
-        assert_eq!(forward.prompt_part_of_speech.as_deref(), Some("adjective"));
-        assert!(forward.choices.iter().any(|choice| choice.text == "短暂的"));
+        assert_eq!(forward.prompt_part_of_speech, Some(PartOfSpeech::Adjective));
+        assert!(forward
+            .choices
+            .iter()
+            .any(|choice| choice.value == "短暂的"));
         assert!(forward.choices.iter().any(|choice| {
-            choice.text == "短暂的" && choice.part_of_speech.as_deref() == Some("adjective")
+            choice.value == "短暂的" && choice.part_of_speech == Some(PartOfSpeech::Adjective)
         }));
 
         service
@@ -744,11 +748,11 @@ mod tests {
             .expect("reverse question");
         assert_eq!(reverse.direction, PracticeDirection::TargetToSource);
         assert_eq!(reverse.prompt, "短暂的");
-        assert_eq!(reverse.prompt_part_of_speech.as_deref(), Some("adjective"));
+        assert_eq!(reverse.prompt_part_of_speech, Some(PartOfSpeech::Adjective));
         assert!(reverse
             .choices
             .iter()
-            .any(|choice| choice.text == "ephemeral"));
+            .any(|choice| choice.value == "ephemeral"));
         assert_eq!(before, service.vocabulary.list(None, 100).expect("after"));
     }
 
@@ -780,7 +784,7 @@ mod tests {
             forward
                 .choices
                 .iter()
-                .map(|choice| key(&choice.text))
+                .map(|choice| key(&choice.value))
                 .collect::<HashSet<_>>()
                 .len(),
             forward.choices.len()
@@ -834,7 +838,7 @@ mod tests {
             .find(|item| item.source_text == "ephemerally")
             .expect("merged pair");
         assert_eq!(merged.kind, "personal");
-        assert_eq!(merged.part_of_speech.as_deref(), Some("adverb"));
+        assert_eq!(merged.part_of_speech, Some(PartOfSpeech::Adverb));
         assert!(merged.vocabulary_entry_id.is_some());
         assert!(merged
             .origins
@@ -1023,13 +1027,13 @@ mod tests {
         assert!(question
             .choices
             .iter()
-            .any(|choice| choice.text == "短暂地"));
+            .any(|choice| choice.value == "短暂地"));
         assert!(question
             .choices
             .iter()
-            .any(|choice| choice.text == "短暂性"));
+            .any(|choice| choice.value == "短暂性"));
         assert!(question.choices.iter().any(|choice| {
-            choice.text == "短暂地" && choice.part_of_speech.as_deref() == Some("adverb")
+            choice.value == "短暂地" && choice.part_of_speech == Some(PartOfSpeech::Adverb)
         }));
         assert_eq!(
             question,
@@ -1042,7 +1046,7 @@ mod tests {
             question
                 .choices
                 .iter()
-                .map(|choice| key(&choice.text))
+                .map(|choice| key(&choice.value))
                 .collect::<HashSet<_>>()
                 .len(),
             question.choices.len()
@@ -1051,7 +1055,7 @@ mod tests {
             question
                 .choices
                 .iter()
-                .filter(|choice| key(&choice.text) == key("短暂的"))
+                .filter(|choice| key(&choice.value) == key("短暂的"))
                 .count(),
             1
         );
@@ -1116,6 +1120,6 @@ mod tests {
         assert!(question
             .choices
             .iter()
-            .any(|choice| choice.text.starts_with("页外选项")));
+            .any(|choice| choice.value.starts_with("页外选项")));
     }
 }

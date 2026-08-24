@@ -15,7 +15,7 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::contracts::{
-    AppError, AppErrorCode, InstalledTextbook, TextbookCatalogItem, TextbookEntry,
+    AppError, AppErrorCode, InstalledTextbook, PartOfSpeech, TextbookCatalogItem, TextbookEntry,
     TextbookEntryPage, TextbookPromotionResult, ValidateContract,
 };
 
@@ -367,7 +367,7 @@ impl TextbookStore {
                         entry.original_translations.join(" | "),
                         catalog.source_language,
                         catalog.target_language,
-                        entry.part_of_speech,
+                        entry.part_of_speech.map(PartOfSpeech::as_str),
                     ])
                     .map_err(storage_error)?;
                 let textbook_entry_id = tx.last_insert_rowid();
@@ -379,34 +379,86 @@ impl TextbookStore {
             }
         }
         if table_has_column(&tx, "vocabulary_entries", "part_of_speech")? {
-            tx.execute(
-                "UPDATE vocabulary_entries
-                 SET part_of_speech = (
-                   SELECT CASE WHEN count(DISTINCT e.part_of_speech) = 1
-                               THEN min(e.part_of_speech) ELSE NULL END
-                   FROM vocabulary_textbook_provenance p
-                   JOIN textbook_entries e
-                     ON e.textbook_id = p.textbook_id
-                    AND e.source_text = p.source_text
-                    AND e.translated_text = p.translated_text
-                   WHERE p.vocabulary_entry_id = vocabulary_entries.id
-                     AND p.textbook_id = ?1
-                     AND e.part_of_speech IS NOT NULL
-                 )
-                 WHERE part_of_speech IS NULL
-                   AND EXISTS (
-                     SELECT 1 FROM vocabulary_textbook_provenance p
-                     JOIN textbook_entries e
-                       ON e.textbook_id = p.textbook_id
-                      AND e.source_text = p.source_text
-                      AND e.translated_text = p.translated_text
-                     WHERE p.vocabulary_entry_id = vocabulary_entries.id
-                       AND p.textbook_id = ?1
-                       AND e.part_of_speech IS NOT NULL
-                   )",
-                params![catalog.id],
-            )
-            .map_err(storage_error)?;
+            let candidates = {
+                let mut statement = tx
+                    .prepare(
+                        "SELECT v.id, v.source_text, v.translated_text,
+                                v.effective_source_language, v.target_language,
+                                e.source_text, e.translated_text, e.source_language,
+                                e.target_language, e.part_of_speech
+                         FROM vocabulary_entries v
+                         JOIN vocabulary_textbook_provenance p
+                           ON p.vocabulary_entry_id = v.id
+                         JOIN textbook_entries e
+                           ON e.textbook_id = p.textbook_id
+                          AND e.source_text = p.source_text
+                          AND e.translated_text = p.translated_text
+                         WHERE v.part_of_speech IS NULL
+                           AND p.textbook_id = ?1
+                           AND e.part_of_speech IS NOT NULL",
+                    )
+                    .map_err(storage_error)?;
+                let rows = statement
+                    .query_map(params![catalog.id], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, String>(7)?,
+                            row.get::<_, String>(8)?,
+                            row.get::<_, String>(9)?,
+                        ))
+                    })
+                    .map_err(storage_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(storage_error)?;
+                rows
+            };
+            let mut verified = HashMap::<i64, HashSet<PartOfSpeech>>::new();
+            for (
+                vocabulary_entry_id,
+                personal_source,
+                personal_translation,
+                personal_source_language,
+                personal_target_language,
+                textbook_source,
+                textbook_translation,
+                textbook_source_language,
+                textbook_target_language,
+                stored_category,
+            ) in candidates
+            {
+                let category = PartOfSpeech::from_normalized(&stored_category);
+                if normalize(&personal_source) == normalize(&textbook_source)
+                    && normalize(&personal_translation) == normalize(&textbook_translation)
+                    && personal_source_language.eq_ignore_ascii_case(&textbook_source_language)
+                    && personal_target_language.eq_ignore_ascii_case(&textbook_target_language)
+                {
+                    if let Some(category) = category {
+                        verified
+                            .entry(vocabulary_entry_id)
+                            .or_default()
+                            .insert(category);
+                    }
+                }
+            }
+            for (vocabulary_entry_id, categories) in verified {
+                if categories.len() == 1 {
+                    tx.execute(
+                        "UPDATE vocabulary_entries SET part_of_speech = ?1
+                         WHERE id = ?2 AND part_of_speech IS NULL",
+                        params![
+                            categories.iter().next().expect("one category").as_str(),
+                            vocabulary_entry_id
+                        ],
+                    )
+                    .map_err(storage_error)?;
+                }
+            }
         }
         tx.commit().map_err(storage_error)?;
         drop(connection);
@@ -545,7 +597,9 @@ impl TextbookStore {
                         phonetic_symbols: row.get(4)?,
                         source_language: row.get(5)?,
                         target_language: row.get(6)?,
-                        part_of_speech: row.get(7)?,
+                        part_of_speech: row
+                            .get::<_, Option<String>>(7)?
+                            .and_then(|value| PartOfSpeech::from_normalized(&value)),
                     })
                 },
             )
@@ -585,7 +639,8 @@ impl TextbookStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
-                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(7)?
+                            .and_then(|value| PartOfSpeech::from_normalized(&value)),
                         row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
                         row.get::<_, String>(10)?,
@@ -619,19 +674,27 @@ impl TextbookStore {
                 false,
             ));
         }
-        let existing_id = tx
+        let existing = tx
             .query_row(
-                "SELECT id FROM vocabulary_entries
+                "SELECT id, translated_text, effective_source_language, target_language
+                 FROM vocabulary_entries
              WHERE normalized_text = ?1 AND target_language = ?2
                AND requested_source_language IN ('auto', ?3)
              ORDER BY CASE requested_source_language WHEN 'auto' THEN 0 ELSE 1 END, id
              LIMIT 1",
                 params![normalized_source, target_language, source_language],
-                |row| row.get::<_, i64>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
             )
             .optional()
             .map_err(storage_error)?;
-        let changed = if existing_id.is_none() {
+        let changed = if existing.is_none() {
             tx.execute(
                 "INSERT INTO vocabulary_entries (
                normalized_text, source_text, requested_source_language, target_language,
@@ -646,15 +709,15 @@ impl TextbookStore {
                     translated_text,
                     source_language,
                     i64_from_u64(now_ms)?,
-                    part_of_speech,
+                    part_of_speech.map(PartOfSpeech::as_str),
                 ],
             )
             .map_err(storage_error)?
         } else {
             0
         };
-        let vocabulary_entry_id = if let Some(id) = existing_id {
-            id
+        let vocabulary_entry_id = if let Some((id, _, _, _)) = &existing {
+            *id
         } else {
             tx.query_row(
                 "SELECT id FROM vocabulary_entries
@@ -663,14 +726,23 @@ impl TextbookStore {
                 |row| row.get::<_, i64>(0),
             ).map_err(storage_error)?
         };
-        if let Some(part_of_speech) = part_of_speech.as_deref() {
-            tx.execute(
-                "UPDATE vocabulary_entries
-                 SET part_of_speech = coalesce(part_of_speech, ?1)
-                 WHERE id = ?2",
-                params![part_of_speech, vocabulary_entry_id],
-            )
-            .map_err(storage_error)?;
+        let exact_existing_pair = existing.as_ref().is_some_and(
+            |(_, personal_translation, personal_source_language, personal_target_language)| {
+                normalize(personal_translation) == normalize(&translated_text)
+                    && personal_source_language.eq_ignore_ascii_case(&source_language)
+                    && personal_target_language.eq_ignore_ascii_case(&target_language)
+            },
+        );
+        if exact_existing_pair {
+            if let Some(part_of_speech) = part_of_speech {
+                tx.execute(
+                    "UPDATE vocabulary_entries
+                     SET part_of_speech = coalesce(part_of_speech, ?1)
+                     WHERE id = ?2",
+                    params![part_of_speech.as_str(), vocabulary_entry_id],
+                )
+                .map_err(storage_error)?;
+            }
         }
         tx.execute(
             "INSERT INTO vocabulary_textbook_provenance (
@@ -717,13 +789,13 @@ struct ImportedEntry {
     translated_text: String,
     original_translations: Vec<String>,
     aliases: Vec<String>,
-    part_of_speech: Option<String>,
+    part_of_speech: Option<PartOfSpeech>,
     part_of_speech_conflicted: bool,
 }
 
 #[derive(Debug)]
 struct LexicalCandidate {
-    part_of_speech: String,
+    part_of_speech: PartOfSpeech,
     score: f64,
     is_good: i64,
     importance: f64,
@@ -976,7 +1048,9 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
     Ok(imported.into_values().collect())
 }
 
-fn read_lexical_parts(source: &Connection) -> Result<HashMap<(String, String), String>, AppError> {
+fn read_lexical_parts(
+    source: &Connection,
+) -> Result<HashMap<(String, String), PartOfSpeech>, AppError> {
     let columns = source
         .prepare("PRAGMA table_info(translation)")
         .and_then(|mut statement| {
@@ -1062,7 +1136,7 @@ fn lexical_candidate_precedes(left: &LexicalCandidate, right: &LexicalCandidate)
         .is_gt()
 }
 
-fn parse_part_of_speech(lexentry: &str) -> Option<String> {
+fn parse_part_of_speech(lexentry: &str) -> Option<PartOfSpeech> {
     let (head, sense) = lexentry.rsplit_once("__")?;
     if sense.is_empty() || !sense.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -1071,36 +1145,11 @@ fn parse_part_of_speech(lexentry: &str) -> Option<String> {
     canonical_part_of_speech(category)
 }
 
-fn canonical_part_of_speech(category: &str) -> Option<String> {
-    let normalized = category.trim().replace('_', " ").to_lowercase();
-    matches!(
-        normalized.as_str(),
-        "adjective"
-            | "adverb"
-            | "article"
-            | "conjunction"
-            | "determiner"
-            | "interjection"
-            | "noun"
-            | "number"
-            | "numeral"
-            | "particle"
-            | "phrase"
-            | "postposition"
-            | "prefix"
-            | "preposition"
-            | "prepositional phrase"
-            | "pronoun"
-            | "proper noun"
-            | "proverb"
-            | "suffix"
-            | "symbol"
-            | "verb"
-    )
-    .then_some(normalized)
+fn canonical_part_of_speech(category: &str) -> Option<PartOfSpeech> {
+    PartOfSpeech::from_normalized(category)
 }
 
-fn merge_part_of_speech(entry: &mut ImportedEntry, candidate: Option<String>) {
+fn merge_part_of_speech(entry: &mut ImportedEntry, candidate: Option<PartOfSpeech>) {
     if entry.part_of_speech_conflicted {
         return;
     }
@@ -1643,14 +1692,14 @@ mod tests {
             entries
                 .iter()
                 .find(|entry| entry.source_text == "essential")
-                .and_then(|entry| entry.part_of_speech.as_deref()),
-            Some("adjective")
+                .and_then(|entry| entry.part_of_speech),
+            Some(PartOfSpeech::Adjective)
         );
         assert_eq!(
             entries
                 .iter()
                 .find(|entry| entry.source_text == "fallback")
-                .and_then(|entry| entry.part_of_speech.as_deref()),
+                .and_then(|entry| entry.part_of_speech),
             None
         );
     }
@@ -1985,7 +2034,10 @@ mod tests {
         crate::services::vocabulary::VocabularyStore::open(app_db.path())
             .expect("vocabulary migrations");
         let store = TextbookStore::open(app_db.path()).expect("store");
-        let fixture = wikdict_fixture(&[("ephemeral", "蜉蝣"), ("supersede", "代替")]);
+        let fixture = wikdict_fixture_with_lexical_rows(
+            &[("ephemeral", "蜉蝣"), ("supersede", "代替")],
+            &[("supersede", "代替", "eng/supersede__Verb__1", 1.0, 1, 1.0)],
+        );
         let catalog = test_catalog(fixture.path(), "test-en-zh", "1");
         store
             .install_sqlite(&catalog, fixture.path(), 10)
@@ -2049,16 +2101,17 @@ mod tests {
             .promote_entry(supersede.id, 50)
             .expect("promote existing personal");
         assert!(!existing.inserted);
-        let (translation, provenance_count): (String, i64) = connection
+        let (translation, part_of_speech, provenance_count): (String, Option<String>, i64) = connection
             .query_row(
-                "SELECT v.translated_text,
+                "SELECT v.translated_text, v.part_of_speech,
                         (SELECT count(*) FROM vocabulary_textbook_provenance p WHERE p.vocabulary_entry_id = v.id)
                  FROM vocabulary_entries v WHERE v.id = ?1",
                 params![existing.vocabulary_entry_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("existing personal provenance");
         assert_eq!(translation, "个人译文");
+        assert_eq!(part_of_speech, None);
         assert_eq!(provenance_count, 1);
         store.remove("test-en-zh").expect("remove");
         let surviving: i64 = connection
@@ -2077,7 +2130,7 @@ mod tests {
         crate::services::vocabulary::VocabularyStore::open(app_db.path())
             .expect("vocabulary migrations");
         let store = TextbookStore::open(app_db.path()).expect("store");
-        let original = wikdict_fixture(&[("essential", "本质")]);
+        let original = wikdict_fixture(&[("essential", "本质"), ("core", "核心")]);
         store
             .install_sqlite(
                 &test_catalog(original.path(), "test-en-zh", "1"),
@@ -2085,12 +2138,20 @@ mod tests {
                 10,
             )
             .expect("install metadata-free version");
-        let entry = store
+        let entries = store
             .list_entries("test-en-zh", None, 0, 10)
             .expect("entries")
-            .entries
-            .remove(0);
-        let promoted = store.promote_entry(entry.id, 20).expect("promote");
+            .entries;
+        let essential = entries
+            .iter()
+            .find(|entry| entry.source_text == "essential")
+            .expect("essential");
+        let core = entries
+            .iter()
+            .find(|entry| entry.source_text == "core")
+            .expect("core");
+        let promoted = store.promote_entry(essential.id, 20).expect("promote");
+        let promoted_core = store.promote_entry(core.id, 20).expect("promote core");
         let connection = Connection::open(app_db.path()).expect("inspect");
         let before: Option<String> = connection
             .query_row(
@@ -2100,17 +2161,40 @@ mod tests {
             )
             .expect("before reinstall");
         assert_eq!(before, None);
+        connection.execute_batch(
+            "INSERT INTO vocabulary_entries (
+               id, normalized_text, source_text, requested_source_language, target_language,
+               translated_text, detected_source_language, effective_source_language,
+               first_seen_epoch_ms, last_seen_epoch_ms
+             ) VALUES
+               (100, 'essential-personal', 'essential', 'auto', 'zh-CN', '个人译文', 'en', 'en', 1, 1),
+               (101, 'essential-fr', 'essential', 'fr', 'zh-CN', '本质', 'fr', 'fr', 1, 1),
+               (102, 'essential-es', 'essential', 'en', 'es', '本质', 'en', 'en', 1, 1),
+               (103, 'essentials', 'essentials', 'en', 'zh-CN', '本质', 'en', 'en', 1, 1);
+             INSERT INTO vocabulary_textbook_provenance (
+               vocabulary_entry_id, textbook_id, textbook_title, textbook_version,
+               license, attribution, source_url, source_text, translated_text,
+               original_translations, promoted_at_epoch_ms
+             ) VALUES
+               (100, 'test-en-zh', 'Test WikDict', '1', 'CC BY-SA 4.0', 'WikDict contributors', 'https://www.wikdict.com/page/download', 'essential', '本质', '本质', 1),
+               (101, 'test-en-zh', 'Test WikDict', '1', 'CC BY-SA 4.0', 'WikDict contributors', 'https://www.wikdict.com/page/download', 'essential', '本质', '本质', 1),
+               (102, 'test-en-zh', 'Test WikDict', '1', 'CC BY-SA 4.0', 'WikDict contributors', 'https://www.wikdict.com/page/download', 'essential', '本质', '本质', 1),
+               (103, 'test-en-zh', 'Test WikDict', '1', 'CC BY-SA 4.0', 'WikDict contributors', 'https://www.wikdict.com/page/download', 'essential', '本质', '本质', 1);"
+        ).expect("mismatched personal rows");
 
         let enriched = wikdict_fixture_with_lexical_rows(
-            &[("essential", "本质")],
-            &[(
-                "essential",
-                "本质",
-                "eng/essential__Adjective__1",
-                1.0,
-                1,
-                1.0,
-            )],
+            &[("essential", "本质"), ("core", "核心")],
+            &[
+                (
+                    "essential",
+                    "本质",
+                    "eng/essential__Adjective__1",
+                    1.0,
+                    1,
+                    1.0,
+                ),
+                ("core", "核心", "eng/core__Noun__1", 1.0, 1, 1.0),
+            ],
         );
         store
             .install_sqlite(
@@ -2128,6 +2212,23 @@ mod tests {
             )
             .expect("after reinstall");
         assert_eq!(after.as_deref(), Some("adjective"));
+        let core_after: Option<String> = connection
+            .query_row(
+                "SELECT part_of_speech FROM vocabulary_entries WHERE id = ?1",
+                params![promoted_core.vocabulary_entry_id],
+                |row| row.get(0),
+            )
+            .expect("core after reinstall");
+        assert_eq!(core_after.as_deref(), Some("noun"));
+        let mismatched_non_null: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM vocabulary_entries
+                 WHERE id IN (100, 101, 102, 103) AND part_of_speech IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("mismatched rows remain unknown");
+        assert_eq!(mismatched_non_null, 0);
     }
 
     #[test]

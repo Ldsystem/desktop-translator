@@ -1,5 +1,29 @@
 /** BCP-47-style language identifier accepted by the translation provider. */
 export type LanguageCode = string;
+export const partOfSpeechValues = [
+  "adjective",
+  "adverb",
+  "article",
+  "conjunction",
+  "determiner",
+  "interjection",
+  "noun",
+  "number",
+  "numeral",
+  "particle",
+  "phrase",
+  "postposition",
+  "prefix",
+  "preposition",
+  "prepositional phrase",
+  "pronoun",
+  "proper noun",
+  "proverb",
+  "suffix",
+  "symbol",
+  "verb",
+] as const;
+export type PartOfSpeech = (typeof partOfSpeechValues)[number];
 /** User-selectable application color theme. */
 export type Theme = "system" | "light" | "dark";
 
@@ -47,7 +71,7 @@ export interface TranslationResult {
   detectedSourceLanguage?: LanguageCode;
   effectiveSourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
-  partOfSpeech?: string;
+  partOfSpeech?: PartOfSpeech;
 }
 
 export interface VocabularyEntry {
@@ -57,7 +81,7 @@ export interface VocabularyEntry {
   requestedSourceLanguage: LanguageCode;
   effectiveSourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
-  partOfSpeech?: string;
+  partOfSpeech?: PartOfSpeech;
   lookupCount: number;
   recallScore: number;
   effectiveRecall: number;
@@ -145,7 +169,7 @@ export interface TextbookEntry {
   sourceText: string;
   translatedText: string;
   phoneticSymbols?: string;
-  partOfSpeech?: string;
+  partOfSpeech?: PartOfSpeech;
   sourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
 }
@@ -185,7 +209,7 @@ export interface RelatedWord {
   translatedText: string;
   sourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
-  partOfSpeech?: string;
+  partOfSpeech?: PartOfSpeech;
   reason: "root" | "meaning";
   promoted: boolean;
   origins: RelatedOrigin[];
@@ -217,8 +241,8 @@ export interface StudyPracticeQuestion {
 }
 
 export interface StudyPracticeChoice {
-  text: string;
-  partOfSpeech?: string;
+  value: string;
+  partOfSpeech?: PartOfSpeech;
 }
 
 export interface StudyPracticeOutcome {
@@ -264,6 +288,13 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+export function isPartOfSpeech(value: unknown): value is PartOfSpeech {
+  return (
+    typeof value === "string" &&
+    (partOfSpeechValues as readonly string[]).includes(value)
+  );
 }
 
 function isPhysicalRect(value: unknown): value is PhysicalRect {
@@ -354,7 +385,7 @@ export function isTranslationResult(value: unknown): value is TranslationResult 
     isNonEmptyString(value.targetLanguage) &&
     (value.detectedSourceLanguage === undefined ||
       isNonEmptyString(value.detectedSourceLanguage)) &&
-    (value.partOfSpeech === undefined || isNonEmptyString(value.partOfSpeech))
+    (value.partOfSpeech === undefined || isPartOfSpeech(value.partOfSpeech))
   );
 }
 
@@ -418,7 +449,32 @@ export function isTextbookEntry(value: unknown): value is TextbookEntry {
       value.targetLanguage,
     ].every(isNonEmptyString) &&
     (value.phoneticSymbols === undefined || isNonEmptyString(value.phoneticSymbols)) &&
-    (value.partOfSpeech === undefined || isNonEmptyString(value.partOfSpeech))
+    (value.partOfSpeech === undefined || isPartOfSpeech(value.partOfSpeech))
+  );
+}
+
+export function isStudyPracticeQuestion(
+  value: unknown,
+): value is StudyPracticeQuestion {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.entryId) &&
+    (value.direction === "source-to-target" ||
+      value.direction === "target-to-source") &&
+    isNonEmptyString(value.prompt) &&
+    isNonEmptyString(value.promptLanguage) &&
+    isNonEmptyString(value.answerLanguage) &&
+    (value.promptPartOfSpeech === undefined ||
+      isPartOfSpeech(value.promptPartOfSpeech)) &&
+    Array.isArray(value.choices) &&
+    value.choices.length >= 2 &&
+    value.choices.every(
+      (choice) =>
+        isRecord(choice) &&
+        isNonEmptyString(choice.value) &&
+        (choice.partOfSpeech === undefined ||
+          isPartOfSpeech(choice.partOfSpeech)),
+    )
   );
 }
 

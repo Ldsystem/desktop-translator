@@ -5,6 +5,95 @@ use serde::{Deserialize, Serialize};
 /// BCP-47-style language identifier.
 pub type LanguageCode = String;
 
+/// Bounded normalized lexical categories accepted from verified sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PartOfSpeech {
+    Adjective,
+    Adverb,
+    Article,
+    Conjunction,
+    Determiner,
+    Interjection,
+    Noun,
+    Number,
+    Numeral,
+    Particle,
+    Phrase,
+    Postposition,
+    Prefix,
+    Preposition,
+    #[serde(rename = "prepositional phrase")]
+    PrepositionalPhrase,
+    Pronoun,
+    #[serde(rename = "proper noun")]
+    ProperNoun,
+    Proverb,
+    Suffix,
+    Symbol,
+    Verb,
+}
+
+impl PartOfSpeech {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Adjective => "adjective",
+            Self::Adverb => "adverb",
+            Self::Article => "article",
+            Self::Conjunction => "conjunction",
+            Self::Determiner => "determiner",
+            Self::Interjection => "interjection",
+            Self::Noun => "noun",
+            Self::Number => "number",
+            Self::Numeral => "numeral",
+            Self::Particle => "particle",
+            Self::Phrase => "phrase",
+            Self::Postposition => "postposition",
+            Self::Prefix => "prefix",
+            Self::Preposition => "preposition",
+            Self::PrepositionalPhrase => "prepositional phrase",
+            Self::Pronoun => "pronoun",
+            Self::ProperNoun => "proper noun",
+            Self::Proverb => "proverb",
+            Self::Suffix => "suffix",
+            Self::Symbol => "symbol",
+            Self::Verb => "verb",
+        }
+    }
+
+    pub fn from_normalized(value: &str) -> Option<Self> {
+        match value
+            .trim()
+            .replace(['_', '-'], " ")
+            .to_lowercase()
+            .as_str()
+        {
+            "adjective" => Some(Self::Adjective),
+            "adverb" => Some(Self::Adverb),
+            "article" => Some(Self::Article),
+            "conjunction" => Some(Self::Conjunction),
+            "determiner" => Some(Self::Determiner),
+            "interjection" => Some(Self::Interjection),
+            "noun" => Some(Self::Noun),
+            "number" => Some(Self::Number),
+            "numeral" => Some(Self::Numeral),
+            "particle" => Some(Self::Particle),
+            "phrase" => Some(Self::Phrase),
+            "postposition" => Some(Self::Postposition),
+            "prefix" => Some(Self::Prefix),
+            "preposition" => Some(Self::Preposition),
+            "prepositional phrase" => Some(Self::PrepositionalPhrase),
+            "pronoun" => Some(Self::Pronoun),
+            "proper noun" => Some(Self::ProperNoun),
+            "proverb" => Some(Self::Proverb),
+            "suffix" => Some(Self::Suffix),
+            "symbol" => Some(Self::Symbol),
+            "verb" => Some(Self::Verb),
+            _ => None,
+        }
+    }
+}
+
 /// Rectangle in global physical screen pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +160,7 @@ pub struct TranslationResult {
     pub effective_source_language: LanguageCode,
     pub target_language: LanguageCode,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub part_of_speech: Option<String>,
+    pub part_of_speech: Option<PartOfSpeech>,
 }
 
 /// One locally stored lexical item with independent demand and recall signals.
@@ -85,7 +174,7 @@ pub struct VocabularyEntry {
     pub effective_source_language: LanguageCode,
     pub target_language: LanguageCode,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub part_of_speech: Option<String>,
+    pub part_of_speech: Option<PartOfSpeech>,
     pub lookup_count: u64,
     pub recall_score: f64,
     pub effective_recall: f64,
@@ -194,7 +283,7 @@ pub struct TextbookEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phonetic_symbols: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub part_of_speech: Option<String>,
+    pub part_of_speech: Option<PartOfSpeech>,
     pub source_language: LanguageCode,
     pub target_language: LanguageCode,
 }
@@ -248,7 +337,7 @@ pub struct RelatedWord {
     pub source_language: LanguageCode,
     pub target_language: LanguageCode,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub part_of_speech: Option<String>,
+    pub part_of_speech: Option<PartOfSpeech>,
     pub reason: String,
     pub promoted: bool,
     pub origins: Vec<RelatedOrigin>,
@@ -291,7 +380,7 @@ pub struct StudyPracticeQuestion {
     pub prompt_language: LanguageCode,
     pub answer_language: LanguageCode,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_part_of_speech: Option<String>,
+    pub prompt_part_of_speech: Option<PartOfSpeech>,
     pub choices: Vec<StudyPracticeChoice>,
 }
 
@@ -299,9 +388,9 @@ pub struct StudyPracticeQuestion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudyPracticeChoice {
-    pub text: String,
+    pub value: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub part_of_speech: Option<String>,
+    pub part_of_speech: Option<PartOfSpeech>,
 }
 
 /// Direction-aware result returned only after one explicit submission.
@@ -436,10 +525,6 @@ impl ValidateContract for TranslationResult {
                 .detected_source_language
                 .as_ref()
                 .is_some_and(|language| language.trim().is_empty())
-            || self
-                .part_of_speech
-                .as_ref()
-                .is_some_and(|category| category.trim().is_empty())
         {
             return Err(validation_error(
                 "translation result contains an empty field",
@@ -500,8 +585,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_validated, AppError, SelectionSnapshot, TranslationRequest, TranslationResult,
-        UserSettings, VocabularyRevision,
+        decode_validated, AppError, SelectionSnapshot, StudyPracticeQuestion, TranslationRequest,
+        TranslationResult, UserSettings, VocabularyRevision,
     };
 
     #[derive(serde::Deserialize)]
@@ -511,6 +596,7 @@ mod tests {
         settings: UserSettings,
         translation_request: TranslationRequest,
         translation_result: TranslationResult,
+        study_practice_question: StudyPracticeQuestion,
         vocabulary_revision: VocabularyRevision,
         error: AppError,
         errors: Vec<AppError>,
@@ -525,6 +611,7 @@ mod tests {
         assert_eq!(fixtures.settings.schema_version, 1);
         assert_eq!(fixtures.translation_request.selection_id, 42);
         assert_eq!(fixtures.translation_result.selection_id, 42);
+        assert_eq!(fixtures.study_practice_question.choices[0].value, "短暂的");
         assert!(fixtures.error.retryable);
         assert_eq!(fixtures.vocabulary_revision.revision, 1);
 
@@ -534,6 +621,8 @@ mod tests {
             serde_json::to_value(&fixtures.settings).expect("settings serialize"),
             serde_json::to_value(&fixtures.translation_request).expect("request serializes"),
             serde_json::to_value(&fixtures.translation_result).expect("result serializes"),
+            serde_json::to_value(&fixtures.study_practice_question)
+                .expect("study question serializes"),
             serde_json::to_value(&fixtures.vocabulary_revision).expect("revision serializes"),
             serde_json::to_value(&fixtures.error).expect("error serializes"),
             serde_json::to_value(&fixtures.errors).expect("errors serialize"),
@@ -542,9 +631,10 @@ mod tests {
         assert_eq!(round_trips[1], original["settings"]);
         assert_eq!(round_trips[2], original["translationRequest"]);
         assert_eq!(round_trips[3], original["translationResult"]);
-        assert_eq!(round_trips[4], original["vocabularyRevision"]);
-        assert_eq!(round_trips[5], original["error"]);
-        assert_eq!(round_trips[6], original["errors"]);
+        assert_eq!(round_trips[4], original["studyPracticeQuestion"]);
+        assert_eq!(round_trips[5], original["vocabularyRevision"]);
+        assert_eq!(round_trips[6], original["error"]);
+        assert_eq!(round_trips[7], original["errors"]);
     }
 
     #[test]
@@ -567,5 +657,14 @@ mod tests {
           "targetLanguage": "es"
         }"#;
         assert!(decode_validated::<TranslationResult>(invalid_result).is_err());
+
+        let unknown_part_of_speech = r#"{
+          "selectionId": 1,
+          "translatedText": "hola",
+          "effectiveSourceLanguage": "en",
+          "targetLanguage": "es",
+          "partOfSpeech": "oracle"
+        }"#;
+        assert!(serde_json::from_str::<TranslationResult>(unknown_part_of_speech).is_err());
     }
 }

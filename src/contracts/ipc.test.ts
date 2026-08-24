@@ -6,6 +6,7 @@ import {
   isSelectionSnapshot,
   isTranslationRequest,
   isTranslationResult,
+  isStudyPracticeQuestion,
   isTextbookCatalogItem,
   isTextbookEntryPage,
   isInstalledTextbook,
@@ -18,6 +19,10 @@ describe("IPC contracts", () => {
     expect(isUserSettings(fixtures.settings)).toBe(true);
     expect(isTranslationRequest(fixtures.translationRequest)).toBe(true);
     expect(isTranslationResult(fixtures.translationResult)).toBe(true);
+    expect(isStudyPracticeQuestion(fixtures.studyPracticeQuestion)).toBe(true);
+    expect(
+      JSON.parse(JSON.stringify(fixtures.studyPracticeQuestion)),
+    ).toEqual(fixtures.studyPracticeQuestion);
     expect(isAppError(fixtures.error)).toBe(true);
     expect(fixtures.errors.every(isAppError)).toBe(true);
   });
@@ -111,5 +116,14 @@ describe("IPC contracts", () => {
       }),
     ).toBe(false);
     expect(isAppError({ ...fixtures.error, code: "raw-provider-error" })).toBe(false);
+    expect(
+      isTranslationResult({ ...fixtures.translationResult, partOfSpeech: "oracle" }),
+    ).toBe(false);
+    expect(
+      isStudyPracticeQuestion({
+        ...fixtures.studyPracticeQuestion,
+        choices: [{ text: "短暂的", partOfSpeech: "adjective" }],
+      }),
+    ).toBe(false);
   });
 });

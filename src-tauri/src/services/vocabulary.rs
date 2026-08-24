@@ -12,7 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, PracticeDirection, PracticeOutcome, PracticeQuestion,
+        AppError, AppErrorCode, PartOfSpeech, PracticeDirection, PracticeOutcome, PracticeQuestion,
         RelatedVocabulary, StudyPracticeOutcome, TranslationRequest, TranslationResult,
         VocabularyEntry, VocabularyProvenance,
     },
@@ -135,7 +135,7 @@ impl VocabularyStore {
             detected_source_language,
             effective_source_language,
             target_language,
-            part_of_speech,
+            part_of_speech: part_of_speech.and_then(|value| PartOfSpeech::from_normalized(&value)),
         }))
     }
 
@@ -163,7 +163,7 @@ impl VocabularyStore {
              DO UPDATE SET lookup_count = lookup_count + 1,
                            last_seen_epoch_ms = excluded.last_seen_epoch_ms,
                            part_of_speech = coalesce(excluded.part_of_speech, vocabulary_entries.part_of_speech)",
-            params![normalize_text(&request.text), request.text.trim(), request.source_language.trim(), request.target_language.trim(), result.translated_text, result.detected_source_language, result.effective_source_language, to_i64(now_ms), result.part_of_speech],
+            params![normalize_text(&request.text), request.text.trim(), request.source_language.trim(), request.target_language.trim(), result.translated_text, result.detected_source_language, result.effective_source_language, to_i64(now_ms), result.part_of_speech.map(PartOfSpeech::as_str)],
         ).map_err(storage_error)?;
         let entry_id = transaction.query_row(
             "SELECT id FROM vocabulary_entries WHERE normalized_text = ?1 AND requested_source_language = ?2 AND target_language = ?3",
@@ -612,7 +612,7 @@ impl TextbookTranslationProvider {
         request: &TranslationRequest,
         translated_text: &str,
         effective_source_language: &str,
-    ) -> Result<Option<String>, AppError> {
+    ) -> Result<Option<PartOfSpeech>, AppError> {
         let normalized = normalize_text(&request.text);
         let normalized_translation = translation_key(translated_text);
         let mut categories = HashSet::new();
@@ -766,7 +766,9 @@ fn row_to_entry(row: &Row<'_>, now_ms: u64) -> rusqlite::Result<VocabularyEntry>
         requested_source_language: row.get(3)?,
         effective_source_language: row.get(4)?,
         target_language: row.get(5)?,
-        part_of_speech: row.get(15)?,
+        part_of_speech: row
+            .get::<_, Option<String>>(15)?
+            .and_then(|value| PartOfSpeech::from_normalized(&value)),
         lookup_count: row.get::<_, i64>(6)? as u64,
         recall_score,
         effective_recall,
@@ -887,7 +889,7 @@ mod tests {
                 effective_source_language: "en".into(),
                 target_language: request.target_language.clone(),
                 part_of_speech: (request.text.trim().eq_ignore_ascii_case("hello"))
-                    .then(|| "interjection".into()),
+                    .then_some(PartOfSpeech::Interjection),
             })
         }
 
@@ -972,11 +974,11 @@ mod tests {
             .await
             .expect("textbook hit");
         assert_eq!(first.translated_text, "短暂的");
-        assert_eq!(first.part_of_speech.as_deref(), Some("adjective"));
+        assert_eq!(first.part_of_speech, Some(PartOfSpeech::Adjective));
         assert_eq!(api.calls.load(Ordering::SeqCst), 0);
         let promoted = personal.list(None, 2).expect("personal");
         assert_eq!(promoted.len(), 1);
-        assert_eq!(promoted[0].part_of_speech.as_deref(), Some("adjective"));
+        assert_eq!(promoted[0].part_of_speech, Some(PartOfSpeech::Adjective));
         assert_eq!(
             personal
                 .provenance(promoted[0].id)
@@ -1131,12 +1133,12 @@ mod tests {
 
         assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
         assert_eq!(hit.selection_id, 9);
-        assert_eq!(hit.part_of_speech.as_deref(), Some("interjection"));
+        assert_eq!(hit.part_of_speech, Some(PartOfSpeech::Interjection));
         let entries = store.list(None, 1).expect("list");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].lookup_count, 2);
         assert_eq!(entries[0].recall_score, 20.0);
-        assert_eq!(entries[0].part_of_speech.as_deref(), Some("interjection"));
+        assert_eq!(entries[0].part_of_speech, Some(PartOfSpeech::Interjection));
     }
 
     #[tokio::test]
@@ -1177,7 +1179,7 @@ mod tests {
             .expect("online translation");
 
         assert_eq!(result.translated_text, "短暂的");
-        assert_eq!(result.part_of_speech.as_deref(), Some("adjective"));
+        assert_eq!(result.part_of_speech, Some(PartOfSpeech::Adjective));
         assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
 
         let unmatched = TextbookTranslationProvider::new(
