@@ -94,8 +94,8 @@ impl VocabularyStore {
              FROM vocabulary_entries
              WHERE normalized_text = ?1 AND target_language = ?3
                AND (
-                 requested_source_language = ?2 COLLATE NOCASE
-                 OR (lower(?2) <> 'auto' AND requested_source_language = 'auto'
+                (lower(?2) = 'auto' AND requested_source_language = 'auto')
+                 OR (lower(?2) <> 'auto'
                      AND effective_source_language = ?2 COLLATE NOCASE)
                )
              ORDER BY CASE WHEN requested_source_language = ?2 COLLATE NOCASE THEN 0 ELSE 1 END, id
@@ -134,6 +134,9 @@ impl VocabularyStore {
         result: &TranslationResult,
         now_ms: u64,
     ) -> Result<(), AppError> {
+        if normalize_text(&request.text) == normalize_text(&result.translated_text) {
+            return Ok(());
+        }
         let mut connection = self
             .connection
             .lock()
@@ -183,6 +186,68 @@ impl VocabularyStore {
             .query_map(params![query], |row| row_to_entry(row, now_ms))
             .map_err(storage_error)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+    }
+
+    pub fn delete(&self, entry_id: i64) -> Result<(), AppError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| internal("Vocabulary database lock failed"))?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let changed = transaction
+            .execute(
+                "DELETE FROM vocabulary_entries WHERE id = ?1",
+                params![entry_id],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(internal("Vocabulary entry was not found"));
+        }
+        transaction.commit().map_err(storage_error)
+    }
+
+    pub fn correct_effective_source_language(
+        &self,
+        entry_id: i64,
+        language: &str,
+        now_ms: u64,
+    ) -> Result<VocabularyEntry, AppError> {
+        let language = language.trim();
+        if !is_supported_language_code(language) || language.eq_ignore_ascii_case("auto") {
+            return Err(AppError::new(
+                AppErrorCode::InvalidLanguagePair,
+                "A supported non-auto source language is required",
+                false,
+            ));
+        }
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| internal("Vocabulary database lock failed"))?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let changed = transaction
+            .execute(
+                "UPDATE vocabulary_entries SET effective_source_language = ?1 WHERE id = ?2",
+                params![language, entry_id],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(internal("Vocabulary entry was not found"));
+        }
+        insert_event(
+            &transaction,
+            entry_id,
+            "effective-source-language-corrected",
+            now_ms,
+            None,
+            None,
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        drop(connection);
+        self.list(None, now_ms)?
+            .into_iter()
+            .find(|entry| entry.id == entry_id)
+            .ok_or_else(|| internal("Vocabulary entry was not found"))
     }
 
     pub fn provenance(&self, entry_id: i64) -> Result<Vec<VocabularyProvenance>, AppError> {
@@ -586,6 +651,18 @@ fn normalize_text(text: &str) -> String {
         .map(str::to_lowercase)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn is_supported_language_code(value: &str) -> bool {
+    let mut parts = value.split('-');
+    let Some(primary) = parts.next() else {
+        return false;
+    };
+    (2..=3).contains(&primary.len())
+        && primary.bytes().all(|byte| byte.is_ascii_alphabetic())
+        && parts.all(|part| {
+            (2..=8).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
 }
 
 fn translation_key(text: &str) -> String {
@@ -1143,5 +1220,116 @@ mod tests {
         let related = store.related(runner.id, 1).expect("related");
         assert!(related.iter().any(|item| item.reason == "root"));
         assert!(related.iter().any(|item| item.reason == "meaning"));
+    }
+
+    #[test]
+    fn deletion_is_id_based_cascades_events_and_rejects_missing_entries() {
+        let store = VocabularyStore::in_memory().expect("store");
+        {
+            let connection = store.connection.lock().expect("connection");
+            connection.execute(
+                "INSERT INTO vocabulary_entries (normalized_text, source_text, requested_source_language, target_language, translated_text, detected_source_language, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms) VALUES ('hello', 'hello', 'auto', 'zh-CN', '你好', 'en', 'en', 1, 1)",
+                [],
+            ).expect("entry");
+            connection.execute(
+                "INSERT INTO vocabulary_events (entry_id, kind, created_at_epoch_ms) VALUES (1, 'lookup-miss', 1)",
+                [],
+            ).expect("event");
+        }
+
+        store.delete(1).expect("delete");
+        assert!(store.list(None, 2).expect("list").is_empty());
+        let event_count: i64 = store
+            .connection
+            .lock()
+            .expect("connection")
+            .query_row(
+                "SELECT count(*) FROM vocabulary_events WHERE entry_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event count");
+        assert_eq!(event_count, 0);
+        assert!(store.delete(1).is_err());
+    }
+
+    #[test]
+    fn language_correction_preserves_detection_and_changes_explicit_cache_matching() {
+        let store = VocabularyStore::in_memory().expect("store");
+        {
+            let connection = store.connection.lock().expect("connection");
+            connection.execute(
+                "INSERT INTO vocabulary_entries (normalized_text, source_text, requested_source_language, target_language, translated_text, detected_source_language, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms) VALUES ('bonjour', 'bonjour', 'en', 'zh-CN', '你好', 'en', 'en', 1, 1)",
+                [],
+            ).expect("entry");
+        }
+
+        let corrected = store
+            .correct_effective_source_language(1, "fr", 2)
+            .expect("correct");
+        assert_eq!(corrected.requested_source_language, "en");
+        assert_eq!(corrected.effective_source_language, "fr");
+        let explicit = TranslationRequest {
+            selection_id: 9,
+            text: "bonjour".into(),
+            source_language: "fr".into(),
+            target_language: "zh-CN".into(),
+        };
+        assert!(store
+            .lookup_and_touch(&explicit, 3)
+            .expect("lookup")
+            .is_some());
+        let stale = TranslationRequest {
+            source_language: "en".into(),
+            ..explicit.clone()
+        };
+        assert!(store
+            .lookup_and_touch(&stale, 3)
+            .expect("stale lookup")
+            .is_none());
+        let connection = store.connection.lock().expect("connection");
+        let detected: Option<String> = connection
+            .query_row(
+                "SELECT detected_source_language FROM vocabulary_entries WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("detected");
+        assert_eq!(detected.as_deref(), Some("en"));
+        assert!(store
+            .correct_effective_source_language(1, "auto", 4)
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn eligible_source_equal_translation_is_not_persisted() {
+        struct EchoProvider;
+        #[async_trait]
+        impl TranslationProvider for EchoProvider {
+            async fn translate(
+                &self,
+                request: &TranslationRequest,
+            ) -> Result<TranslationResult, AppError> {
+                Ok(TranslationResult {
+                    selection_id: request.selection_id,
+                    translated_text: request.text.clone(),
+                    detected_source_language: Some("en".into()),
+                    effective_source_language: "en".into(),
+                    target_language: request.target_language.clone(),
+                })
+            }
+            async fn supported_languages(&self) -> Result<Vec<String>, AppError> {
+                Ok(vec!["en".into()])
+            }
+        }
+
+        let store = Arc::new(VocabularyStore::in_memory().expect("store"));
+        let provider = VocabularyTranslationProvider::new(Arc::new(EchoProvider), store.clone());
+        let result = provider
+            .translate(&request(1, "same"))
+            .await
+            .expect("translation");
+        assert_eq!(result.translated_text, "same");
+        assert!(store.list(None, 1).expect("list").is_empty());
     }
 }

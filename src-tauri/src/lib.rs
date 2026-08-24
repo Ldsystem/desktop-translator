@@ -25,7 +25,8 @@ mod integration_tests;
 
 fn builder() -> tauri::Builder<tauri::Wry> {
     use commands::{
-        add_textbook_entry_to_personal, dismiss_overlay, download_textbook, get_credential_status,
+        add_textbook_entry_to_personal, correct_vocabulary_source_language,
+        delete_vocabulary_entry, dismiss_overlay, download_textbook, get_credential_status,
         get_permission_status, get_practice_preferences, get_practice_question,
         get_related_vocabulary, get_settings, get_speech_availability, list_downloaded_textbooks,
         list_textbook_catalog, list_textbook_entries, list_vocabulary, list_vocabulary_provenance,
@@ -52,6 +53,8 @@ fn builder() -> tauri::Builder<tauri::Wry> {
             translate_input,
             list_vocabulary,
             list_vocabulary_provenance,
+            delete_vocabulary_entry,
+            correct_vocabulary_source_language,
             list_textbook_catalog,
             list_downloaded_textbooks,
             download_textbook,
@@ -100,6 +103,13 @@ fn builder() -> tauri::Builder<tauri::Wry> {
                 if window.label() == crate::quick_translate::QUICK_LABEL =>
             {
                 let _ = window.hide();
+            }
+            tauri::WindowEvent::Focused(true) if window.label() == "vocabulary" => {
+                window.state::<RuntimeState>().emit_vocabulary_revision(
+                    &window.app_handle(),
+                    crate::contracts::VocabularyRevisionKind::Activated,
+                    None,
+                );
             }
             #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             tauri::WindowEvent::ScaleFactorChanged { .. } if window.label() == "overlay" => {

@@ -69,6 +69,20 @@ export interface VocabularyEntry {
   lastReviewedEpochMs?: number;
 }
 
+export type VocabularyRevisionKind =
+  | "added"
+  | "updated"
+  | "deleted"
+  | "language-corrected"
+  | "practice-reviewed"
+  | "activated";
+
+export interface VocabularyRevision {
+  revision: number;
+  kind: VocabularyRevisionKind;
+  entryId?: number;
+}
+
 export interface RelatedVocabulary {
   entry: VocabularyEntry;
   reason: "root" | "meaning";
@@ -159,10 +173,6 @@ export interface VocabularyProvenance {
   promotedAtEpochMs: number;
 }
 
-export type RelatedSource =
-  | { kind: "personal" }
-  | { kind: "textbook"; textbookId: string };
-
 export interface RelatedWord {
   kind: "personal" | "textbook";
   vocabularyEntryId?: number;
@@ -174,6 +184,13 @@ export interface RelatedWord {
   targetLanguage: LanguageCode;
   reason: "root" | "meaning";
   promoted: boolean;
+  origins: RelatedOrigin[];
+}
+
+export interface RelatedOrigin {
+  kind: "personal" | "textbook";
+  textbookId?: string;
+  textbookTitle?: string;
 }
 
 export type PracticeDirection =
@@ -261,6 +278,19 @@ function isHttpsUrl(value: unknown): value is string {
 
 function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+/** Validates the native invalidation signal used by all open study windows. */
+export function isVocabularyRevision(value: unknown): value is VocabularyRevision {
+  return (
+    isRecord(value) &&
+    Number.isSafeInteger(value.revision) &&
+    Number(value.revision) > 0 &&
+    ["added", "updated", "deleted", "language-corrected", "practice-reviewed", "activated"].includes(
+      String(value.kind),
+    ) &&
+    (value.entryId === undefined || Number.isSafeInteger(value.entryId))
+  );
 }
 
 /** Validates an unknown value as a selection snapshot at the IPC boundary. */

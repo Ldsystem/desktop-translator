@@ -578,6 +578,13 @@ impl TextbookStore {
             attribution,
             source_url,
         ) = entry;
+        if normalize(&source_text) == normalize(&translated_text) {
+            return Err(AppError::new(
+                AppErrorCode::InvalidLanguagePair,
+                "Source-equals-translation entries cannot be added to personal vocabulary",
+                false,
+            ));
+        }
         let existing_id = tx
             .query_row(
                 "SELECT id FROM vocabulary_entries
@@ -1756,5 +1763,31 @@ mod tests {
             )
             .expect("surviving provenance");
         assert_eq!(surviving, 2);
+    }
+
+    #[test]
+    fn promotion_rejects_source_equal_translation_without_persisting_junk() {
+        let app_db = NamedTempFile::new().expect("app db");
+        crate::services::vocabulary::VocabularyStore::open(app_db.path()).expect("vocabulary");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let fixture = wikdict_fixture(&[("same", "same")]);
+        let catalog = test_catalog(fixture.path(), "same-pair", "1");
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("install");
+        let entry = store
+            .list_entries("same-pair", None, 0, 50)
+            .expect("entries")
+            .entries
+            .remove(0);
+
+        assert!(store.promote_entry(entry.id, 20).is_err());
+        let count: i64 = Connection::open(app_db.path())
+            .expect("inspect")
+            .query_row("SELECT count(*) FROM vocabulary_entries", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(count, 0);
     }
 }

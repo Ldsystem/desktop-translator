@@ -1,7 +1,7 @@
 //! Cross-store related-word and bidirectional-practice behavior.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -10,7 +10,7 @@ use rusqlite::{params, Connection};
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, PracticeDirection, PracticePreferences, RelatedSource, RelatedWord,
+        AppError, AppErrorCode, PracticeDirection, PracticePreferences, RelatedOrigin, RelatedWord,
         StudyPracticeOutcome, StudyPracticeQuestion,
     },
     services::{textbooks::TextbookStore, vocabulary::VocabularyStore},
@@ -87,74 +87,147 @@ impl StudyService {
     pub fn related(
         &self,
         entry_id: i64,
-        source: RelatedSource,
+        seed: u64,
         now_ms: u64,
     ) -> Result<Vec<RelatedWord>, AppError> {
-        match source {
-            RelatedSource::Personal => self.vocabulary.related(entry_id, now_ms).map(|items| {
-                items
-                    .into_iter()
-                    .map(|item| RelatedWord {
-                        kind: "personal".into(),
-                        vocabulary_entry_id: Some(item.entry.id),
-                        textbook_entry_id: None,
-                        textbook_id: None,
-                        source_text: item.entry.source_text,
-                        translated_text: item.entry.translated_text,
-                        source_language: item.entry.effective_source_language,
-                        target_language: item.entry.target_language,
-                        reason: item.reason,
-                        promoted: true,
-                    })
-                    .collect()
-            }),
-            RelatedSource::Textbook { textbook_id } => {
-                let active = self
+        let personal_entries = self.vocabulary.list(None, now_ms)?;
+        let anchor = personal_entries
+            .iter()
+            .find(|entry| entry.id == entry_id)
+            .ok_or_else(|| internal("Vocabulary entry was not found"))?;
+        let anchor_source = anchor.source_text.clone();
+        let anchor_translation = anchor.translated_text.clone();
+        let source_language = anchor.effective_source_language.clone();
+        let target_language = anchor.target_language.clone();
+        let mut combined = HashMap::<String, RelatedWord>::new();
+
+        for item in self.vocabulary.related(entry_id, now_ms)? {
+            let pair = pair_key(
+                &item.entry.source_text,
+                &item.entry.translated_text,
+                &item.entry.effective_source_language,
+                &item.entry.target_language,
+            );
+            let mut origins = vec![RelatedOrigin {
+                kind: "personal".into(),
+                textbook_id: None,
+                textbook_title: None,
+            }];
+            for provenance in self.vocabulary.provenance(item.entry.id)? {
+                push_origin(
+                    &mut origins,
+                    RelatedOrigin {
+                        kind: "textbook".into(),
+                        textbook_id: Some(provenance.textbook_id),
+                        textbook_title: Some(provenance.textbook_title),
+                    },
+                );
+            }
+            combined.insert(
+                pair,
+                RelatedWord {
+                    kind: "personal".into(),
+                    vocabulary_entry_id: Some(item.entry.id),
+                    textbook_entry_id: None,
+                    textbook_id: None,
+                    source_text: item.entry.source_text,
+                    translated_text: item.entry.translated_text,
+                    source_language: item.entry.effective_source_language,
+                    target_language: item.entry.target_language,
+                    reason: item.reason,
+                    promoted: true,
+                    origins,
+                },
+            );
+        }
+
+        let mut searches = Vec::new();
+        if let Some(root) = conservative_root(&anchor_source) {
+            searches.push(root);
+        }
+        searches.extend(meaning_terms(&anchor_translation));
+        searches.sort();
+        searches.dedup();
+
+        for book in self.textbooks.list_installed()?.into_iter().filter(|book| {
+            book.source_language.eq_ignore_ascii_case(&source_language)
+                && book.target_language.eq_ignore_ascii_case(&target_language)
+        }) {
+            let mut seen = HashSet::new();
+            for search in &searches {
+                for entry in self
                     .textbooks
-                    .list_installed()?
-                    .into_iter()
-                    .find(|book| book.active && book.id == textbook_id)
-                    .ok_or_else(|| internal("The selected textbook is not active"))?;
-                let entries = self.vocabulary.list(None, now_ms)?;
-                let anchor = entries
-                    .iter()
-                    .find(|entry| entry.id == entry_id)
-                    .ok_or_else(|| internal("Vocabulary entry was not found"))?;
-                let root = conservative_root(&anchor.source_text);
-                let page = self.textbooks.list_entries(
-                    &active.id,
-                    root.as_deref().or(Some(anchor.source_text.as_str())),
-                    0,
-                    100,
-                )?;
-                let personal = entries
-                    .iter()
-                    .map(|entry| (key(&entry.source_text), entry.target_language.as_str()))
-                    .collect::<HashSet<_>>();
-                Ok(page
+                    .list_entries(&book.id, Some(search), 0, 100)?
                     .entries
-                    .into_iter()
-                    .filter(|entry| key(&entry.source_text) != key(&anchor.source_text))
-                    .take(12)
-                    .map(|entry| {
-                        let promoted = personal
-                            .contains(&(key(&entry.source_text), entry.target_language.as_str()));
-                        RelatedWord {
-                            kind: "textbook".into(),
-                            vocabulary_entry_id: None,
-                            textbook_entry_id: Some(entry.id),
-                            textbook_id: Some(entry.textbook_id),
-                            source_text: entry.source_text,
-                            translated_text: entry.translated_text,
-                            source_language: entry.source_language,
-                            target_language: entry.target_language,
-                            reason: "root".into(),
-                            promoted,
-                        }
-                    })
-                    .collect())
+                {
+                    if !seen.insert(entry.id)
+                        || (key(&entry.source_text) == key(&anchor_source)
+                            && key(&entry.translated_text) == key(&anchor_translation))
+                    {
+                        continue;
+                    }
+                    let Some(reason) = relation_reason(
+                        &anchor_source,
+                        &anchor_translation,
+                        &entry.source_text,
+                        &entry.translated_text,
+                    ) else {
+                        continue;
+                    };
+                    let pair = pair_key(
+                        &entry.source_text,
+                        &entry.translated_text,
+                        &entry.source_language,
+                        &entry.target_language,
+                    );
+                    let origin = RelatedOrigin {
+                        kind: "textbook".into(),
+                        textbook_id: Some(book.id.clone()),
+                        textbook_title: Some(book.title.clone()),
+                    };
+                    if let Some(existing) = combined.get_mut(&pair) {
+                        push_origin(&mut existing.origins, origin);
+                        existing.textbook_entry_id.get_or_insert(entry.id);
+                        existing.textbook_id.get_or_insert(book.id.clone());
+                    } else {
+                        combined.insert(
+                            pair,
+                            RelatedWord {
+                                kind: "textbook".into(),
+                                vocabulary_entry_id: None,
+                                textbook_entry_id: Some(entry.id),
+                                textbook_id: Some(book.id.clone()),
+                                source_text: entry.source_text,
+                                translated_text: entry.translated_text,
+                                source_language: entry.source_language,
+                                target_language: entry.target_language,
+                                reason: reason.into(),
+                                promoted: false,
+                                origins: vec![origin],
+                            },
+                        );
+                    }
+                }
             }
         }
+
+        let mut result = combined.into_values().collect::<Vec<_>>();
+        result.sort_by_key(|item| {
+            (
+                if item.reason == "root" { 0 } else { 1 },
+                seeded_hash(
+                    seed,
+                    &pair_key(
+                        &item.source_text,
+                        &item.translated_text,
+                        &item.source_language,
+                        &item.target_language,
+                    ),
+                ),
+            )
+        });
+        result.truncate(48);
+        Ok(result)
     }
 
     pub fn question(
@@ -170,7 +243,9 @@ impl StudyService {
             PracticeDirection::Random => PracticeDirection::TargetToSource,
             fixed => fixed,
         };
-        let mut entries = self.vocabulary.list(None, now_ms)?;
+        let all_personal_entries = self.vocabulary.list(None, now_ms)?;
+        let mut entries = all_personal_entries.clone();
+        entries.retain(|entry| entry.effective_recall < 100.0);
         if entries.is_empty() {
             return Ok(None);
         }
@@ -180,18 +255,29 @@ impl StudyService {
                 .then_with(|| right.lookup_count.cmp(&left.lookup_count))
                 .then_with(|| left.id.cmp(&right.id))
         });
-        let active_textbook = self
-            .textbooks
-            .list_installed()?
-            .into_iter()
-            .find(|book| book.active);
-        let active_entries = if let Some(active) = &active_textbook {
-            self.textbooks
-                .list_entries(&active.id, None, 0, 500)?
-                .entries
-        } else {
-            Vec::new()
-        };
+        if entries.len() > 1 {
+            let most_recent = entries
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .last_reviewed_epoch_ms
+                        .map(|reviewed| (reviewed, entry.id))
+                })
+                .max()
+                .map(|(_, id)| id);
+            if let Some(most_recent) = most_recent {
+                entries.retain(|entry| entry.id != most_recent);
+            }
+        }
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let candidate_rotation = seed as usize % entries.len();
+        entries.rotate_left(candidate_rotation);
+        let mut installed_entries = Vec::new();
+        for book in self.textbooks.list_installed()? {
+            installed_entries.extend(self.textbooks.list_entries(&book.id, None, 0, 500)?.entries);
+        }
 
         for candidate in &entries {
             let (prompt, prompt_language, answer_language, correct_answer) = match direction {
@@ -211,25 +297,80 @@ impl StudyService {
             };
             let mut choices = vec![display(&correct_answer)];
             let mut choice_keys = HashSet::from([key(&correct_answer)]);
-            if active_textbook.as_ref().is_some_and(|active| {
-                active.source_language == candidate.effective_source_language
-                    && active.target_language == candidate.target_language
-            }) {
-                for textbook_entry in &active_entries {
-                    let answer = match direction {
-                        PracticeDirection::SourceToTarget => &textbook_entry.translated_text,
-                        PracticeDirection::TargetToSource => &textbook_entry.source_text,
-                        PracticeDirection::Random => unreachable!(),
-                    };
-                    if choice_keys.insert(key(answer)) {
-                        choices.push(display(answer));
-                    }
-                    if choices.len() == 4 {
-                        break;
-                    }
+
+            for related in self
+                .related(candidate.id, seed, now_ms)?
+                .into_iter()
+                .filter(|item| {
+                    item.source_language
+                        .eq_ignore_ascii_case(&candidate.effective_source_language)
+                        && item
+                            .target_language
+                            .eq_ignore_ascii_case(&candidate.target_language)
+                })
+            {
+                let answer = match direction {
+                    PracticeDirection::SourceToTarget => related.translated_text,
+                    PracticeDirection::TargetToSource => related.source_text,
+                    PracticeDirection::Random => unreachable!(),
+                };
+                if choice_keys.insert(key(&answer)) {
+                    choices.push(display(&answer));
+                }
+                if choices.len() == 4 {
+                    break;
                 }
             }
-            for entry in &entries {
+
+            let mut textbook_fallback = installed_entries
+                .iter()
+                .filter(|entry| {
+                    entry
+                        .source_language
+                        .eq_ignore_ascii_case(&candidate.effective_source_language)
+                        && entry
+                            .target_language
+                            .eq_ignore_ascii_case(&candidate.target_language)
+                })
+                .collect::<Vec<_>>();
+            textbook_fallback.sort_by_key(|entry| {
+                seeded_hash(
+                    seed ^ 0x7478_7462,
+                    &pair_key(
+                        &entry.source_text,
+                        &entry.translated_text,
+                        &entry.source_language,
+                        &entry.target_language,
+                    ),
+                )
+            });
+            for textbook_entry in textbook_fallback {
+                if choices.len() >= 4 {
+                    break;
+                }
+                let answer = match direction {
+                    PracticeDirection::SourceToTarget => &textbook_entry.translated_text,
+                    PracticeDirection::TargetToSource => &textbook_entry.source_text,
+                    PracticeDirection::Random => unreachable!(),
+                };
+                if choice_keys.insert(key(answer)) {
+                    choices.push(display(answer));
+                }
+            }
+
+            let mut personal_fallback = all_personal_entries.iter().collect::<Vec<_>>();
+            personal_fallback.sort_by_key(|entry| {
+                seeded_hash(
+                    seed ^ 0x7065_7273,
+                    &pair_key(
+                        &entry.source_text,
+                        &entry.translated_text,
+                        &entry.effective_source_language,
+                        &entry.target_language,
+                    ),
+                )
+            });
+            for entry in personal_fallback {
                 if choices.len() >= 4 {
                     break;
                 }
@@ -251,7 +392,8 @@ impl StudyService {
             if choices.len() < 2 {
                 continue;
             }
-            let rotation = seed as usize % choices.len();
+            let rotation =
+                seeded_hash(seed ^ 0x6368_6f69, &correct_answer) as usize % choices.len();
             choices.rotate_left(rotation);
             return Ok(Some(StudyPracticeQuestion {
                 entry_id: candidate.id,
@@ -319,6 +461,57 @@ fn conservative_root(value: &str) -> Option<String> {
     Some(normalized)
 }
 
+fn meaning_terms(value: &str) -> HashSet<String> {
+    value
+        .split(|character: char| !character.is_alphabetic())
+        .filter(|term| term.chars().count() >= 2)
+        .map(|term| conservative_root(term).unwrap_or_else(|| key(term)))
+        .collect()
+}
+
+fn relation_reason(
+    anchor_source: &str,
+    anchor_translation: &str,
+    source: &str,
+    translation: &str,
+) -> Option<&'static str> {
+    let anchor_root = conservative_root(anchor_source);
+    if anchor_root.is_some() && conservative_root(source) == anchor_root {
+        return Some("root");
+    }
+    let anchor_meaning = meaning_terms(anchor_translation);
+    (!anchor_meaning.is_disjoint(&meaning_terms(translation))).then_some("meaning")
+}
+
+fn pair_key(
+    source: &str,
+    translation: &str,
+    source_language: &str,
+    target_language: &str,
+) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        key(source),
+        key(translation),
+        source_language.to_lowercase(),
+        target_language.to_lowercase()
+    )
+}
+
+fn push_origin(origins: &mut Vec<RelatedOrigin>, origin: RelatedOrigin) {
+    if !origins.contains(&origin) {
+        origins.push(origin);
+    }
+}
+
+fn seeded_hash(seed: u64, value: &str) -> u64 {
+    value
+        .bytes()
+        .fold(seed ^ 0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x1000_0000_01b3)
+        })
+}
+
 fn storage_error(_: rusqlite::Error) -> AppError {
     internal("The local study database could not complete the request")
 }
@@ -361,6 +554,8 @@ mod tests {
         connection.execute_batch("CREATE TABLE simple_translation (written_rep TEXT NOT NULL, trans_list TEXT NOT NULL);").expect("schema");
         for (source, translation) in [
             ("ephemeral", "短暂的"),
+            ("ephemerally", "短暂地"),
+            ("ephemeralness", "短暂性"),
             ("replacement", "替代"),
             ("temporary", "临时的"),
             ("lasting", "持久的"),
@@ -448,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn random_direction_is_seeded_and_textbook_choices_precede_personal_fallback() {
+    fn random_direction_candidate_and_choices_are_seeded() {
         let (_file, service) = seeded_service();
         install_book(&service);
         service
@@ -467,9 +662,19 @@ mod tests {
         assert_eq!(forward.direction, PracticeDirection::SourceToTarget);
         assert_eq!(reverse.direction, PracticeDirection::TargetToSource);
         assert_eq!(forward.choices.len(), 4);
-        assert!(forward.choices.contains(&"替代".to_owned()));
-        assert!(forward.choices.contains(&"临时的".to_owned()));
-        assert!(forward.choices.contains(&"持久的".to_owned()));
+        assert_eq!(
+            forward,
+            service.question(100, 2).expect("repeat").expect("forward")
+        );
+        assert_eq!(
+            forward
+                .choices
+                .iter()
+                .map(|choice| key(choice))
+                .collect::<HashSet<_>>()
+                .len(),
+            forward.choices.len()
+        );
     }
 
     #[test]
@@ -499,9 +704,13 @@ mod tests {
     }
 
     #[test]
-    fn related_source_returns_only_the_selected_corpus() {
+    fn related_combines_personal_and_installed_textbooks_with_personal_precedence() {
         let (_file, service) = seeded_service();
         install_book(&service);
+        service.preferences.lock().expect("connection").execute(
+            "INSERT INTO vocabulary_entries (normalized_text, source_text, requested_source_language, target_language, translated_text, detected_source_language, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms) VALUES ('ephemerally', 'ephemerally', 'auto', 'zh-CN', '短暂地', 'en', 'en', 40, 40)",
+            [],
+        ).expect("personal duplicate");
         let anchor = service
             .vocabulary
             .list(None, 100)
@@ -509,30 +718,30 @@ mod tests {
             .into_iter()
             .find(|entry| entry.source_text == "ephemeral")
             .expect("anchor");
-        let personal = service
-            .related(anchor.id, RelatedSource::Personal, 100)
-            .expect("personal");
-        assert!(personal.iter().all(|item| item.kind == "personal"));
-        let textbook = service
-            .related(
-                anchor.id,
-                RelatedSource::Textbook {
-                    textbook_id: "test-en-zh".into(),
-                },
-                100,
-            )
-            .expect("textbook");
-        assert!(textbook.iter().all(|item| item.kind == "textbook"));
+        let related = service.related(anchor.id, 7, 100).expect("combined");
+        let merged = related
+            .iter()
+            .find(|item| item.source_text == "ephemerally")
+            .expect("merged pair");
+        assert_eq!(merged.kind, "personal");
+        assert!(merged.vocabulary_entry_id.is_some());
+        assert!(merged
+            .origins
+            .iter()
+            .any(|origin| origin.kind == "personal"));
+        assert!(merged
+            .origins
+            .iter()
+            .any(|origin| origin.kind == "textbook"));
+        assert!(related
+            .iter()
+            .any(|item| item.source_text == "ephemeralness" && item.kind == "textbook"));
         service.textbooks.set_active(None).expect("deactivate");
         assert!(service
-            .related(
-                anchor.id,
-                RelatedSource::Textbook {
-                    textbook_id: "test-en-zh".into(),
-                },
-                100,
-            )
-            .is_err());
+            .related(anchor.id, 7, 100)
+            .expect("all installed")
+            .iter()
+            .any(|item| item.origins.iter().any(|origin| origin.kind == "textbook")));
     }
 
     #[test]
@@ -558,5 +767,94 @@ mod tests {
             .expect("later compatible candidate");
         assert_ne!(question.prompt, "ephemeral");
         assert!(question.choices.len() >= 2);
+    }
+
+    #[test]
+    fn practice_uses_seeded_full_pool_excludes_mastered_and_avoids_immediate_repeat() {
+        let (_file, service) = seeded_service();
+        service
+            .save_preferences(PracticePreferences {
+                direction: PracticeDirection::SourceToTarget,
+            })
+            .expect("forward");
+        {
+            let connection = service.preferences.lock().expect("connection");
+            connection.execute(
+                "INSERT INTO vocabulary_entries (normalized_text, source_text, requested_source_language, target_language, translated_text, detected_source_language, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms) VALUES ('transient', 'transient', 'auto', 'zh-CN', '短期的', 'en', 'en', 40, 40)",
+                [],
+            ).expect("extra candidate");
+            connection.execute(
+                "UPDATE vocabulary_entries SET recall_score = 100, last_reviewed_epoch_ms = 90 WHERE source_text = 'predeclare'",
+                [],
+            ).expect("mastered");
+            connection.execute(
+                "UPDATE vocabulary_entries SET last_reviewed_epoch_ms = 95 WHERE source_text = 'ephemeral'",
+                [],
+            ).expect("recent");
+        }
+
+        let first = service
+            .question(100, 0)
+            .expect("question")
+            .expect("candidate");
+        let second = service
+            .question(100, 1)
+            .expect("question")
+            .expect("candidate");
+        for question in [&first, &second] {
+            assert_ne!(question.prompt, "predeclare");
+            assert_ne!(question.prompt, "ephemeral");
+        }
+        assert_ne!(
+            first.entry_id, second.entry_id,
+            "seeds should vary candidate selection when the pool permits"
+        );
+    }
+
+    #[test]
+    fn practice_uses_related_distractors_from_installed_books_before_fallbacks() {
+        let (_file, service) = seeded_service();
+        install_book(&service);
+        service
+            .textbooks
+            .set_active(None)
+            .expect("inactive but installed");
+        service
+            .save_preferences(PracticePreferences {
+                direction: PracticeDirection::SourceToTarget,
+            })
+            .expect("forward");
+
+        let question = service
+            .question(100, 0)
+            .expect("question")
+            .expect("candidate");
+        assert_eq!(question.prompt, "ephemeral");
+        assert!(question.choices.contains(&"短暂地".to_owned()));
+        assert!(question.choices.contains(&"短暂性".to_owned()));
+        assert_eq!(
+            question,
+            service
+                .question(100, 0)
+                .expect("repeat")
+                .expect("candidate")
+        );
+        assert_eq!(
+            question
+                .choices
+                .iter()
+                .map(|choice| key(choice))
+                .collect::<HashSet<_>>()
+                .len(),
+            question.choices.len()
+        );
+        assert_eq!(
+            question
+                .choices
+                .iter()
+                .filter(|choice| key(choice) == key("短暂的"))
+                .count(),
+            1
+        );
     }
 }

@@ -96,6 +96,27 @@ pub struct VocabularyEntry {
     pub last_reviewed_epoch_ms: Option<u64>,
 }
 
+/// Monotonic invalidation signal emitted after native vocabulary state changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VocabularyRevisionKind {
+    Added,
+    Updated,
+    Deleted,
+    LanguageCorrected,
+    PracticeReviewed,
+    Activated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyRevision {
+    pub revision: u64,
+    pub kind: VocabularyRevisionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<i64>,
+}
+
 /// Locally derived relationship between two vocabulary entries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -205,17 +226,6 @@ pub struct VocabularyProvenance {
     pub promoted_at_epoch_ms: u64,
 }
 
-/// Selects which local corpus supplies related-word results.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum RelatedSource {
-    Personal,
-    Textbook {
-        #[serde(rename = "textbookId")]
-        textbook_id: String,
-    },
-}
-
 /// A related lexical item with identities that cannot be confused across stores.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -233,6 +243,18 @@ pub struct RelatedWord {
     pub target_language: LanguageCode,
     pub reason: String,
     pub promoted: bool,
+    pub origins: Vec<RelatedOrigin>,
+}
+
+/// Display-safe origin metadata retained when identical related pairs are merged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedOrigin {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub textbook_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub textbook_title: Option<String>,
 }
 
 /// User-selectable prompt direction for local practice.
@@ -456,7 +478,7 @@ where
 mod tests {
     use super::{
         decode_validated, AppError, SelectionSnapshot, TranslationRequest, TranslationResult,
-        UserSettings,
+        UserSettings, VocabularyRevision,
     };
 
     #[derive(serde::Deserialize)]
@@ -466,6 +488,7 @@ mod tests {
         settings: UserSettings,
         translation_request: TranslationRequest,
         translation_result: TranslationResult,
+        vocabulary_revision: VocabularyRevision,
         error: AppError,
         errors: Vec<AppError>,
     }
@@ -480,6 +503,7 @@ mod tests {
         assert_eq!(fixtures.translation_request.selection_id, 42);
         assert_eq!(fixtures.translation_result.selection_id, 42);
         assert!(fixtures.error.retryable);
+        assert_eq!(fixtures.vocabulary_revision.revision, 1);
 
         let original: serde_json::Value = serde_json::from_str(raw).expect("valid JSON");
         let round_trips = [
@@ -487,6 +511,7 @@ mod tests {
             serde_json::to_value(&fixtures.settings).expect("settings serialize"),
             serde_json::to_value(&fixtures.translation_request).expect("request serializes"),
             serde_json::to_value(&fixtures.translation_result).expect("result serializes"),
+            serde_json::to_value(&fixtures.vocabulary_revision).expect("revision serializes"),
             serde_json::to_value(&fixtures.error).expect("error serializes"),
             serde_json::to_value(&fixtures.errors).expect("errors serialize"),
         ];
@@ -494,8 +519,9 @@ mod tests {
         assert_eq!(round_trips[1], original["settings"]);
         assert_eq!(round_trips[2], original["translationRequest"]);
         assert_eq!(round_trips[3], original["translationResult"]);
-        assert_eq!(round_trips[4], original["error"]);
-        assert_eq!(round_trips[5], original["errors"]);
+        assert_eq!(round_trips[4], original["vocabularyRevision"]);
+        assert_eq!(round_trips[5], original["error"]);
+        assert_eq!(round_trips[6], original["errors"]);
     }
 
     #[test]
