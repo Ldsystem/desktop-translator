@@ -29,7 +29,25 @@
     "translatedText": "你好",
     "detectedSourceLanguage": "en",
     "effectiveSourceLanguage": "en",
-    "targetLanguage": "zh-CN"
+    "targetLanguage": "zh-CN",
+    "partOfSpeech": "adjective"
+  },
+  "studyPracticeQuestion": {
+    "entryId": 7,
+    "direction": "source-to-target",
+    "prompt": "ephemeral",
+    "promptLanguage": "en",
+    "answerLanguage": "zh-CN",
+    "promptPartOfSpeech": "adjective",
+    "choices": [
+      { "value": "短暂的", "partOfSpeech": "adjective" },
+      { "value": "取代", "partOfSpeech": "verb" }
+    ]
+  },
+  "vocabularyRevision": {
+    "revision": 1,
+    "kind": "language-corrected",
+    "entryId": 7
   },
   "error": {
     "code": "offline",

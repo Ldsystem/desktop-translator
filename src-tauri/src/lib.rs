@@ -25,11 +25,15 @@ mod integration_tests;
 
 fn builder() -> tauri::Builder<tauri::Wry> {
     use commands::{
-        dismiss_overlay, get_credential_status, get_permission_status, get_settings,
-        get_speech_availability, open_accessibility_settings, overlay_ready,
-        prompt_and_save_credential, quit_application, remove_credential, save_settings, speak_text,
-        stop_speech, sync_permission, test_credential, translate_input, translate_selection,
-        RuntimeState,
+        add_textbook_entry_to_personal, correct_vocabulary_source_language,
+        delete_vocabulary_entry, dismiss_overlay, download_textbook, get_credential_status,
+        get_permission_status, get_practice_preferences, get_practice_question,
+        get_related_vocabulary, get_settings, get_speech_availability, list_downloaded_textbooks,
+        list_textbook_catalog, list_textbook_entries, list_vocabulary, list_vocabulary_provenance,
+        open_accessibility_settings, overlay_ready, prompt_and_save_credential, quit_application,
+        remove_credential, remove_downloaded_textbook, save_practice_preferences, save_settings,
+        set_active_textbook, speak_text, stop_speech, submit_practice_answer, sync_permission,
+        test_credential, translate_input, translate_selection, RuntimeState,
     };
     use tauri_plugin_autostart::MacosLauncher;
 
@@ -47,6 +51,22 @@ fn builder() -> tauri::Builder<tauri::Wry> {
             remove_credential,
             translate_selection,
             translate_input,
+            list_vocabulary,
+            list_vocabulary_provenance,
+            delete_vocabulary_entry,
+            correct_vocabulary_source_language,
+            list_textbook_catalog,
+            list_downloaded_textbooks,
+            download_textbook,
+            set_active_textbook,
+            remove_downloaded_textbook,
+            list_textbook_entries,
+            add_textbook_entry_to_personal,
+            get_related_vocabulary,
+            get_practice_preferences,
+            save_practice_preferences,
+            get_practice_question,
+            submit_practice_answer,
             get_speech_availability,
             speak_text,
             stop_speech,
@@ -83,6 +103,13 @@ fn builder() -> tauri::Builder<tauri::Wry> {
                 if window.label() == crate::quick_translate::QUICK_LABEL =>
             {
                 let _ = window.hide();
+            }
+            tauri::WindowEvent::Focused(true) if window.label() == "vocabulary" => {
+                window.state::<RuntimeState>().emit_vocabulary_revision(
+                    window.app_handle(),
+                    crate::contracts::VocabularyRevisionKind::Activated,
+                    None,
+                );
             }
             #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             tauri::WindowEvent::ScaleFactorChanged { .. } if window.label() == "overlay" => {

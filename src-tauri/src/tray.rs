@@ -14,9 +14,11 @@ use crate::{
 };
 
 const SETTINGS_LABEL: &str = "settings";
+const STUDY_LABEL: &str = "study";
 const ENABLED_ID: &str = "enabled";
 const START_AT_LOGIN_ID: &str = "start-at-login";
 const SETTINGS_ID: &str = "settings";
+const STUDY_ID: &str = "study";
 const QUIT_ID: &str = "quit";
 
 /// Builds the application tray and its stable command menu.
@@ -43,11 +45,19 @@ pub fn install(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         None::<&str>,
     )?;
     let open_settings = MenuItem::with_id(app, SETTINGS_ID, "Settings…", true, None::<&str>)?;
+    let open_study = MenuItem::with_id(app, STUDY_ID, "Vocabulary Study…", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, QUIT_ID, "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&enabled, &start_at_login, &open_settings, &separator, &quit],
+        &[
+            &enabled,
+            &start_at_login,
+            &open_study,
+            &open_settings,
+            &separator,
+            &quit,
+        ],
     )?;
 
     let enabled_item = enabled.clone();
@@ -74,6 +84,9 @@ pub fn install(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             }
             SETTINGS_ID => {
                 let _ = show_settings(app);
+            }
+            STUDY_ID => {
+                let _ = show_study(app);
             }
             QUIT_ID => {
                 let app = app.clone();
@@ -136,6 +149,31 @@ pub fn show_settings(app: &AppHandle) -> Result<(), AppError> {
         .show()
         .and_then(|_| window.set_focus())
         .map_err(|_| tray_error("Settings window could not be shown"))
+}
+
+/// Shows or lazily creates the reusable vocabulary library and practice window.
+pub fn show_study(app: &AppHandle) -> Result<(), AppError> {
+    let window = if let Some(window) = app.get_webview_window(STUDY_LABEL) {
+        window
+    } else {
+        WebviewWindowBuilder::new(
+            app,
+            STUDY_LABEL,
+            WebviewUrl::App("index.html?mode=study".into()),
+        )
+        .title("Vocabulary Study")
+        .inner_size(1040.0, 720.0)
+        .min_inner_size(760.0, 560.0)
+        .resizable(true)
+        .skip_taskbar(false)
+        .visible(false)
+        .build()
+        .map_err(|_| tray_error("Vocabulary study window could not be created"))?
+    };
+    window
+        .show()
+        .and_then(|_| window.set_focus())
+        .map_err(|_| tray_error("Vocabulary study window could not be shown"))
 }
 
 async fn toggle_enabled(app: &AppHandle) -> Result<(), AppError> {

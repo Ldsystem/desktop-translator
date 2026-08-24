@@ -1,5 +1,29 @@
 /** BCP-47-style language identifier accepted by the translation provider. */
 export type LanguageCode = string;
+export const partOfSpeechValues = [
+  "adjective",
+  "adverb",
+  "article",
+  "conjunction",
+  "determiner",
+  "interjection",
+  "noun",
+  "number",
+  "numeral",
+  "particle",
+  "phrase",
+  "postposition",
+  "prefix",
+  "preposition",
+  "prepositional phrase",
+  "pronoun",
+  "proper noun",
+  "proverb",
+  "suffix",
+  "symbol",
+  "verb",
+] as const;
+export type PartOfSpeech = (typeof partOfSpeechValues)[number];
 /** User-selectable application color theme. */
 export type Theme = "system" | "light" | "dark";
 
@@ -47,6 +71,186 @@ export interface TranslationResult {
   detectedSourceLanguage?: LanguageCode;
   effectiveSourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
+  partOfSpeech?: PartOfSpeech;
+}
+
+export interface VocabularyEntry {
+  id: number;
+  sourceText: string;
+  translatedText: string;
+  requestedSourceLanguage: LanguageCode;
+  effectiveSourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  partOfSpeech?: PartOfSpeech;
+  lookupCount: number;
+  recallScore: number;
+  effectiveRecall: number;
+  familiarityLevel: number;
+  reviewCount: number;
+  correctCount: number;
+  wrongCount: number;
+  correctStreak: number;
+  wrongStreak: number;
+  lastSeenEpochMs: number;
+  lastReviewedEpochMs?: number;
+}
+
+export type VocabularyRevisionKind =
+  | "added"
+  | "updated"
+  | "deleted"
+  | "language-corrected"
+  | "practice-reviewed"
+  | "activated";
+
+export interface VocabularyRevision {
+  revision: number;
+  kind: VocabularyRevisionKind;
+  entryId?: number;
+}
+
+export interface RelatedVocabulary {
+  entry: VocabularyEntry;
+  reason: "root" | "meaning";
+}
+
+export interface PracticeQuestion {
+  entryId: number;
+  sourceText: string;
+  effectiveSourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  choices: string[];
+}
+
+export interface PracticeOutcome {
+  correct: boolean;
+  correctTranslation: string;
+  entry: VocabularyEntry;
+}
+
+/** One pinned, app-curated textbook artifact offered for native installation. */
+export interface TextbookCatalogItem {
+  id: string;
+  title: string;
+  description?: string;
+  scope?: string;
+  script?: string;
+  estimatedEntryCount?: number;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  version: string;
+  downloadUrl: string;
+  expectedBytes: number;
+  sha256: string;
+  license: string;
+  attribution: string;
+  sourceUrl: string;
+}
+
+/** Installed textbook metadata safe to render without exposing local paths. */
+export interface InstalledTextbook {
+  id: string;
+  title: string;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  version: string;
+  license: string;
+  attribution: string;
+  sourceUrl: string;
+  entryCount: number;
+  installedAtEpochMs: number;
+  active: boolean;
+  metadataRefreshAvailable: boolean;
+}
+
+/** One normalized entry imported from a validated textbook artifact. */
+export interface TextbookEntry {
+  id: number;
+  textbookId: string;
+  sourceText: string;
+  translatedText: string;
+  phoneticSymbols?: string;
+  partOfSpeech?: PartOfSpeech;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+}
+
+/** Bounded result page for textbook browsing and search. */
+export interface TextbookEntryPage {
+  entries: TextbookEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface TextbookPromotionResult {
+  vocabularyEntryId: number;
+  inserted: boolean;
+}
+
+/** Attribution retained when a downloaded textbook entry joins the personal wordbook. */
+export interface VocabularyProvenance {
+  textbookId: string;
+  textbookTitle: string;
+  textbookVersion: string;
+  license: string;
+  attribution: string;
+  sourceUrl: string;
+  sourceText: string;
+  translatedText: string;
+  promotedAtEpochMs: number;
+}
+
+export interface RelatedWord {
+  kind: "personal" | "textbook";
+  vocabularyEntryId?: number;
+  textbookEntryId?: number;
+  textbookId?: string;
+  sourceText: string;
+  translatedText: string;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  partOfSpeech?: PartOfSpeech;
+  reason: "root" | "meaning";
+  promoted: boolean;
+  origins: RelatedOrigin[];
+}
+
+export interface RelatedOrigin {
+  kind: "personal" | "textbook";
+  textbookId?: string;
+  textbookTitle?: string;
+}
+
+export type PracticeDirection =
+  | "random"
+  | "source-to-target"
+  | "target-to-source";
+
+export interface PracticePreferences {
+  direction: PracticeDirection;
+}
+
+export interface StudyPracticeQuestion {
+  entryId: number;
+  direction: Exclude<PracticeDirection, "random">;
+  prompt: string;
+  promptLanguage: LanguageCode;
+  answerLanguage: LanguageCode;
+  promptPartOfSpeech?: PartOfSpeech;
+  choices: StudyPracticeChoice[];
+}
+
+export interface StudyPracticeChoice {
+  value: string;
+  partOfSpeech?: PartOfSpeech;
+}
+
+export interface StudyPracticeOutcome {
+  correct: boolean;
+  correctAnswer: string;
+  direction: Exclude<PracticeDirection, "random">;
+  entry: VocabularyEntry;
 }
 
 /** Stable error codes safe to expose across IPC without provider details. */
@@ -87,6 +291,13 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+export function isPartOfSpeech(value: unknown): value is PartOfSpeech {
+  return (
+    typeof value === "string" &&
+    (partOfSpeechValues as readonly string[]).includes(value)
+  );
+}
+
 function isPhysicalRect(value: unknown): value is PhysicalRect {
   return (
     isRecord(value) &&
@@ -95,6 +306,32 @@ function isPhysicalRect(value: unknown): value is PhysicalRect {
     ) &&
     Number(value.width) > 0 &&
     Number(value.height) > 0
+  );
+}
+
+function isHttpsUrl(value: unknown): value is string {
+  if (!isNonEmptyString(value)) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+/** Validates the native invalidation signal used by all open study windows. */
+export function isVocabularyRevision(value: unknown): value is VocabularyRevision {
+  return (
+    isRecord(value) &&
+    Number.isSafeInteger(value.revision) &&
+    Number(value.revision) > 0 &&
+    ["added", "updated", "deleted", "language-corrected", "practice-reviewed", "activated"].includes(
+      String(value.kind),
+    ) &&
+    (value.entryId === undefined || Number.isSafeInteger(value.entryId))
   );
 }
 
@@ -148,7 +385,113 @@ export function isTranslationResult(value: unknown): value is TranslationResult 
     isNonEmptyString(value.effectiveSourceLanguage) &&
     isNonEmptyString(value.targetLanguage) &&
     (value.detectedSourceLanguage === undefined ||
-      isNonEmptyString(value.detectedSourceLanguage))
+      isNonEmptyString(value.detectedSourceLanguage)) &&
+    (value.partOfSpeech === undefined || isPartOfSpeech(value.partOfSpeech))
+  );
+}
+
+/** Validates pinned textbook metadata before it is shown by the renderer. */
+export function isTextbookCatalogItem(value: unknown): value is TextbookCatalogItem {
+  return (
+    isRecord(value) &&
+    [
+      value.id,
+      value.title,
+      value.sourceLanguage,
+      value.targetLanguage,
+      value.version,
+      value.license,
+      value.attribution,
+    ].every(isNonEmptyString) &&
+    isHttpsUrl(value.downloadUrl) &&
+    isHttpsUrl(value.sourceUrl) &&
+    isNonNegativeInteger(value.expectedBytes) &&
+    Number(value.expectedBytes) > 0 &&
+    (value.description === undefined || isNonEmptyString(value.description)) &&
+    (value.scope === undefined || isNonEmptyString(value.scope)) &&
+    (value.script === undefined || isNonEmptyString(value.script)) &&
+    (value.estimatedEntryCount === undefined ||
+      (isNonNegativeInteger(value.estimatedEntryCount) &&
+        Number(value.estimatedEntryCount) > 0)) &&
+    isSha256(value.sha256)
+  );
+}
+
+/** Validates installed textbook metadata returned by native storage. */
+export function isInstalledTextbook(value: unknown): value is InstalledTextbook {
+  return (
+    isRecord(value) &&
+    [
+      value.id,
+      value.title,
+      value.sourceLanguage,
+      value.targetLanguage,
+      value.version,
+      value.license,
+      value.attribution,
+    ].every(isNonEmptyString) &&
+    isHttpsUrl(value.sourceUrl) &&
+    isNonNegativeInteger(value.entryCount) &&
+    isNonNegativeInteger(value.installedAtEpochMs) &&
+    typeof value.active === "boolean" &&
+    typeof value.metadataRefreshAvailable === "boolean"
+  );
+}
+
+/** Validates one normalized textbook entry returned by native storage. */
+export function isTextbookEntry(value: unknown): value is TextbookEntry {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.id) &&
+    [
+      value.textbookId,
+      value.sourceText,
+      value.translatedText,
+      value.sourceLanguage,
+      value.targetLanguage,
+    ].every(isNonEmptyString) &&
+    (value.phoneticSymbols === undefined || isNonEmptyString(value.phoneticSymbols)) &&
+    (value.partOfSpeech === undefined || isPartOfSpeech(value.partOfSpeech))
+  );
+}
+
+export function isStudyPracticeQuestion(
+  value: unknown,
+): value is StudyPracticeQuestion {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.entryId) &&
+    (value.direction === "source-to-target" ||
+      value.direction === "target-to-source") &&
+    isNonEmptyString(value.prompt) &&
+    isNonEmptyString(value.promptLanguage) &&
+    isNonEmptyString(value.answerLanguage) &&
+    (value.promptPartOfSpeech === undefined ||
+      isPartOfSpeech(value.promptPartOfSpeech)) &&
+    Array.isArray(value.choices) &&
+    value.choices.length >= 2 &&
+    value.choices.every(
+      (choice) =>
+        isRecord(choice) &&
+        isNonEmptyString(choice.value) &&
+        (choice.partOfSpeech === undefined ||
+          isPartOfSpeech(choice.partOfSpeech)),
+    )
+  );
+}
+
+/** Validates bounded textbook browse/search output. */
+export function isTextbookEntryPage(value: unknown): value is TextbookEntryPage {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.entries) &&
+    value.entries.every(isTextbookEntry) &&
+    isNonNegativeInteger(value.total) &&
+    isNonNegativeInteger(value.offset) &&
+    Number.isSafeInteger(value.limit) &&
+    Number(value.limit) > 0 &&
+    Number(value.limit) <= 500 &&
+    value.entries.length <= Number(value.limit)
   );
 }
 

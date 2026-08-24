@@ -318,6 +318,7 @@ fn parse_translation_response(
         detected_source_language: detected,
         effective_source_language,
         target_language: request.target_language.clone(),
+        part_of_speech: None,
     };
     result.validate()?;
     Ok(result)

@@ -1,17 +1,33 @@
-import { StrictMode, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import App from "./app/App";
+import { createPronouncer } from "./app/pronunciation";
 import { getWindowMode } from "./app/windowMode";
 import type { QuickTranslateStatus } from "./components/quick/QuickTranslatePanel";
+import type { StudyApi } from "./components/vocabulary/VocabularyWindow";
 import type {
   AppError,
+  InstalledTextbook,
+  PracticePreferences,
+  PracticeOutcome,
+  PracticeQuestion,
+  RelatedWord,
+  RelatedVocabulary,
   SelectionSnapshot,
+  StudyPracticeOutcome,
+  StudyPracticeQuestion,
+  TextbookCatalogItem,
+  TextbookEntryPage,
+  TextbookPromotionResult,
   TranslationRequest,
   TranslationResult,
   UserSettings,
+  VocabularyEntry,
+  VocabularyProvenance,
+  VocabularyRevision,
 } from "./contracts/ipc";
 import {
   initialOverlayState,
@@ -58,6 +74,27 @@ function normalizeAppError(error: unknown): AppError {
   };
 }
 
+export function createStudyApi(refreshPersonal: () => void): StudyApi {
+  return {
+    listCatalog: () => invoke<TextbookCatalogItem[]>("list_textbook_catalog"),
+    listDownloaded: () => invoke<InstalledTextbook[]>("list_downloaded_textbooks"),
+    downloadTextbook: (textbookId) => invoke<InstalledTextbook>("download_textbook", { textbookId }),
+    setActiveTextbook: (textbookId) => invoke<void>("set_active_textbook", { textbookId: textbookId ?? null }),
+    removeTextbook: (textbookId) => invoke<void>("remove_downloaded_textbook", { textbookId }),
+    listTextbookEntries: (textbookId, search, offset, limit) => invoke<TextbookEntryPage>("list_textbook_entries", { textbookId, search: search || null, offset, limit }),
+    addTextbookEntry: (textbookEntryId) => invoke<TextbookPromotionResult>("add_textbook_entry_to_personal", { textbookEntryId }),
+    listVocabularyProvenance: (entryId) => invoke<VocabularyProvenance[]>("list_vocabulary_provenance", { entryId }),
+    listRelated: (entryId, seed?: number) => invoke<RelatedWord[]>("get_related_vocabulary", { entryId, seed }),
+    deleteVocabularyEntry: (entryId) => invoke<void>("delete_vocabulary_entry", { entryId }),
+    correctVocabularySourceLanguage: (entryId, sourceLanguage) => invoke<VocabularyEntry>("correct_vocabulary_source_language", { entryId, effectiveSourceLanguage: sourceLanguage }),
+    getPracticePreferences: () => invoke<PracticePreferences>("get_practice_preferences"),
+    savePracticePreferences: (preferences) => invoke<void>("save_practice_preferences", { preferences }),
+    getPracticeQuestion: () => invoke<StudyPracticeQuestion | null>("get_practice_question"),
+    submitPracticeAnswer: (entryId, direction, selectedAnswer) => invoke<StudyPracticeOutcome>("submit_practice_answer", { entryId, direction, selectedAnswer }),
+    refreshPersonal,
+  };
+}
+
 export function Bootstrap() {
   const mode = getWindowMode();
   const [settings, setSettings] = useState<UserSettings>();
@@ -73,7 +110,21 @@ export function Bootstrap() {
   const [quickStatus, setQuickStatus] = useState<QuickTranslateStatus>({
     mode: "idle",
   });
+  const [vocabularyEntries, setVocabularyEntries] = useState<VocabularyEntry[]>([]);
+  const [vocabularyLoading, setVocabularyLoading] = useState(mode === "study");
+  const [vocabularyError, setVocabularyError] = useState<string>();
+  const [vocabularyRevision, setVocabularyRevision] = useState(0);
+  const vocabularySearch = useRef("");
+  const vocabularyRequest = useRef(0);
+  const [relatedVocabulary, setRelatedVocabulary] = useState<RelatedVocabulary[]>([]);
+  const [practiceQuestion, setPracticeQuestion] = useState<PracticeQuestion | null>();
+  const [practiceOutcome, setPracticeOutcome] = useState<PracticeOutcome>();
   const speaking = useRef(false);
+  const vocabularyPronouncer = useRef(createPronouncer({
+    stop: () => invoke("stop_speech"),
+    speak: (text, language) => invoke("speak_text", { text, language }),
+    onError: () => setVocabularyError("Pronunciation could not be played with the installed voice."),
+  }));
 
   useEffect(() => {
     if (!runningInTauri()) {
@@ -143,6 +194,69 @@ export function Bootstrap() {
       void subscription?.then((unlisten) => unlisten());
     };
   }, [mode]);
+
+  const loadVocabulary = useCallback((search?: string) => {
+    if (search !== undefined) vocabularySearch.current = search;
+    const request = ++vocabularyRequest.current;
+    if (!runningInTauri()) {
+      setVocabularyLoading(false);
+      return;
+    }
+    setVocabularyLoading(true);
+    setVocabularyError(undefined);
+    void invoke<VocabularyEntry[]>("list_vocabulary", { search: vocabularySearch.current || null })
+      .then((entries) => { if (request === vocabularyRequest.current) setVocabularyEntries(entries); })
+      .catch(() => { if (request === vocabularyRequest.current) setVocabularyError("Your local wordbook could not be opened."); })
+      .finally(() => { if (request === vocabularyRequest.current) setVocabularyLoading(false); });
+  }, []);
+
+  const studyApi = useMemo(() => createStudyApi(() => loadVocabulary()), [loadVocabulary]);
+
+  useEffect(() => {
+    if (mode === "study") loadVocabulary();
+  }, [mode]);
+
+  useEffect(() => {
+    if (!runningInTauri() || mode !== "study") return;
+    let disposed = false;
+    const refresh = () => { setVocabularyRevision((current) => current + 1); loadVocabulary(); };
+    const subscription = listen<VocabularyRevision>("vocabulary-revision", ({ payload }) => {
+      if (disposed) return;
+      setVocabularyRevision(payload.revision);
+      loadVocabulary();
+    });
+    const onFocus = () => refresh();
+    const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, [mode, loadVocabulary]);
+
+  useEffect(() => {
+    if (!runningInTauri() || mode !== "study" || vocabularyEntries.length === 0) {
+      return;
+    }
+
+    let disposed = false;
+    const languages = [...new Set(vocabularyEntries.flatMap((entry) => [entry.effectiveSourceLanguage, entry.targetLanguage]))];
+    void Promise.all(
+      languages.map(async (language) => [
+        language,
+        await invoke<boolean>("get_speech_availability", { language }).catch(() => false),
+      ] as const),
+    ).then((entries) => {
+      if (!disposed) {
+        setSpeechAvailability((current) => ({ ...current, ...Object.fromEntries(entries) }));
+      }
+    });
+
+    return () => { disposed = true; };
+  }, [mode, vocabularyEntries]);
 
   useEffect(() => {
     if (
@@ -256,7 +370,41 @@ export function Bootstrap() {
       permissionStatus={permissionStatus}
       speechAvailability={speechAvailability}
       quickStatus={quickStatus}
+      vocabularyEntries={vocabularyEntries}
+      vocabularyLoading={vocabularyLoading}
+      vocabularyError={vocabularyError}
+      vocabularyRevision={vocabularyRevision}
+      relatedVocabulary={relatedVocabulary}
+      practiceQuestion={practiceQuestion}
+      practiceOutcome={practiceOutcome}
+      studyApi={studyApi}
       onQuickTranslate={quickTranslate}
+      onVocabularySearch={loadVocabulary}
+      onSelectVocabulary={() => undefined}
+      onStartPractice={() => {
+        setPracticeQuestion(undefined);
+        setPracticeOutcome(undefined);
+        setVocabularyError(undefined);
+        void invoke<PracticeQuestion | null>("get_practice_question")
+          .then(setPracticeQuestion)
+          .catch(() => {
+            setPracticeQuestion(null);
+            setVocabularyError("A practice question could not be prepared.");
+          });
+      }}
+      onSubmitPracticeAnswer={(entryId, selectedTranslation) => {
+        setVocabularyError(undefined);
+        void invoke<PracticeOutcome>("submit_practice_answer", { entryId, selectedTranslation })
+          .then((outcome) => {
+            setPracticeOutcome(outcome);
+            setVocabularyEntries((entries) => entries.map((entry) => entry.id === outcome.entry.id ? outcome.entry : entry));
+          })
+          .catch(() => setVocabularyError("Your answer could not be saved."));
+      }}
+      onPronounceVocabulary={(text, language) => {
+        setVocabularyError(undefined);
+        vocabularyPronouncer.current(text, language);
+      }}
       onTranslate={translate}
       onCorrectSource={translate}
       onSpeak={(text, language) => {

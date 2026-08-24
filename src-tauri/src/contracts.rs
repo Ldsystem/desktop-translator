@@ -5,6 +5,95 @@ use serde::{Deserialize, Serialize};
 /// BCP-47-style language identifier.
 pub type LanguageCode = String;
 
+/// Bounded normalized lexical categories accepted from verified sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PartOfSpeech {
+    Adjective,
+    Adverb,
+    Article,
+    Conjunction,
+    Determiner,
+    Interjection,
+    Noun,
+    Number,
+    Numeral,
+    Particle,
+    Phrase,
+    Postposition,
+    Prefix,
+    Preposition,
+    #[serde(rename = "prepositional phrase")]
+    PrepositionalPhrase,
+    Pronoun,
+    #[serde(rename = "proper noun")]
+    ProperNoun,
+    Proverb,
+    Suffix,
+    Symbol,
+    Verb,
+}
+
+impl PartOfSpeech {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Adjective => "adjective",
+            Self::Adverb => "adverb",
+            Self::Article => "article",
+            Self::Conjunction => "conjunction",
+            Self::Determiner => "determiner",
+            Self::Interjection => "interjection",
+            Self::Noun => "noun",
+            Self::Number => "number",
+            Self::Numeral => "numeral",
+            Self::Particle => "particle",
+            Self::Phrase => "phrase",
+            Self::Postposition => "postposition",
+            Self::Prefix => "prefix",
+            Self::Preposition => "preposition",
+            Self::PrepositionalPhrase => "prepositional phrase",
+            Self::Pronoun => "pronoun",
+            Self::ProperNoun => "proper noun",
+            Self::Proverb => "proverb",
+            Self::Suffix => "suffix",
+            Self::Symbol => "symbol",
+            Self::Verb => "verb",
+        }
+    }
+
+    pub fn from_normalized(value: &str) -> Option<Self> {
+        match value
+            .trim()
+            .replace(['_', '-'], " ")
+            .to_lowercase()
+            .as_str()
+        {
+            "adjective" => Some(Self::Adjective),
+            "adverb" => Some(Self::Adverb),
+            "article" => Some(Self::Article),
+            "conjunction" => Some(Self::Conjunction),
+            "determiner" => Some(Self::Determiner),
+            "interjection" => Some(Self::Interjection),
+            "noun" => Some(Self::Noun),
+            "number" => Some(Self::Number),
+            "numeral" => Some(Self::Numeral),
+            "particle" => Some(Self::Particle),
+            "phrase" => Some(Self::Phrase),
+            "postposition" => Some(Self::Postposition),
+            "prefix" => Some(Self::Prefix),
+            "preposition" => Some(Self::Preposition),
+            "prepositional phrase" => Some(Self::PrepositionalPhrase),
+            "pronoun" => Some(Self::Pronoun),
+            "proper noun" => Some(Self::ProperNoun),
+            "proverb" => Some(Self::Proverb),
+            "suffix" => Some(Self::Suffix),
+            "symbol" => Some(Self::Symbol),
+            "verb" => Some(Self::Verb),
+            _ => None,
+        }
+    }
+}
+
 /// Rectangle in global physical screen pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +159,250 @@ pub struct TranslationResult {
     pub detected_source_language: Option<LanguageCode>,
     pub effective_source_language: LanguageCode,
     pub target_language: LanguageCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+}
+
+/// One locally stored lexical item with independent demand and recall signals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyEntry {
+    pub id: i64,
+    pub source_text: String,
+    pub translated_text: String,
+    pub requested_source_language: LanguageCode,
+    pub effective_source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+    pub lookup_count: u64,
+    pub recall_score: f64,
+    pub effective_recall: f64,
+    pub familiarity_level: u8,
+    pub review_count: u64,
+    pub correct_count: u64,
+    pub wrong_count: u64,
+    pub correct_streak: u64,
+    pub wrong_streak: u64,
+    pub last_seen_epoch_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reviewed_epoch_ms: Option<u64>,
+}
+
+/// Monotonic invalidation signal emitted after native vocabulary state changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VocabularyRevisionKind {
+    Added,
+    Updated,
+    Deleted,
+    LanguageCorrected,
+    PracticeReviewed,
+    Activated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyRevision {
+    pub revision: u64,
+    pub kind: VocabularyRevisionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<i64>,
+}
+
+/// Locally derived relationship between two vocabulary entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedVocabulary {
+    pub entry: VocabularyEntry,
+    pub reason: String,
+}
+
+/// Multiple-choice translation prompt selected entirely from local entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PracticeQuestion {
+    pub entry_id: i64,
+    pub source_text: String,
+    pub effective_source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    pub choices: Vec<String>,
+}
+
+/// Result returned only after a practice answer is submitted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PracticeOutcome {
+    pub correct: bool,
+    pub correct_translation: String,
+    pub entry: VocabularyEntry,
+}
+
+/// One pinned, app-curated textbook artifact offered for native installation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextbookCatalogItem {
+    pub id: String,
+    pub title: String,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    pub version: String,
+    pub download_url: String,
+    pub expected_bytes: u64,
+    pub sha256: String,
+    pub license: String,
+    pub attribution: String,
+    pub source_url: String,
+}
+
+/// Installed textbook metadata safe to expose without local file paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledTextbook {
+    pub id: String,
+    pub title: String,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    pub version: String,
+    pub license: String,
+    pub attribution: String,
+    pub source_url: String,
+    pub entry_count: u64,
+    pub installed_at_epoch_ms: u64,
+    pub active: bool,
+    /// True when this verified artifact predates the current lexical metadata importer.
+    pub metadata_refresh_available: bool,
+}
+
+/// One normalized dictionary entry imported from a validated textbook.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextbookEntry {
+    pub id: i64,
+    pub textbook_id: String,
+    pub source_text: String,
+    pub translated_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phonetic_symbols: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+}
+
+/// Bounded page used for textbook browsing and search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextbookEntryPage {
+    pub entries: Vec<TextbookEntry>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u64,
+}
+
+/// Outcome of idempotently adding a textbook entry to the personal wordbook.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextbookPromotionResult {
+    pub vocabulary_entry_id: i64,
+    pub inserted: bool,
+}
+
+/// Durable attribution retained by a personal entry after its textbook is removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyProvenance {
+    pub textbook_id: String,
+    pub textbook_title: String,
+    pub textbook_version: String,
+    pub license: String,
+    pub attribution: String,
+    pub source_url: String,
+    pub source_text: String,
+    pub translated_text: String,
+    pub promoted_at_epoch_ms: u64,
+}
+
+/// A related lexical item with identities that cannot be confused across stores.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedWord {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vocabulary_entry_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub textbook_entry_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub textbook_id: Option<String>,
+    pub source_text: String,
+    pub translated_text: String,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+    pub reason: String,
+    pub promoted: bool,
+    pub origins: Vec<RelatedOrigin>,
+}
+
+/// Display-safe origin metadata retained when identical related pairs are merged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedOrigin {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub textbook_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub textbook_title: Option<String>,
+}
+
+/// User-selectable prompt direction for local practice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PracticeDirection {
+    Random,
+    SourceToTarget,
+    TargetToSource,
+}
+
+/// Persisted study preferences, deliberately separate from application settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PracticePreferences {
+    pub direction: PracticeDirection,
+}
+
+/// Direction-neutral multiple-choice prompt selected from personal vocabulary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyPracticeQuestion {
+    pub entry_id: i64,
+    pub direction: PracticeDirection,
+    pub prompt: String,
+    pub prompt_language: LanguageCode,
+    pub answer_language: LanguageCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_part_of_speech: Option<PartOfSpeech>,
+    pub choices: Vec<StudyPracticeChoice>,
+}
+
+/// One undecorated answer identity plus optional source-backed lexical metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyPracticeChoice {
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+}
+
+/// Direction-aware result returned only after one explicit submission.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudyPracticeOutcome {
+    pub correct: bool,
+    pub correct_answer: String,
+    pub direction: PracticeDirection,
+    pub entry: VocabularyEntry,
 }
 
 /// Stable error categories safe to expose across IPC.
@@ -203,6 +536,34 @@ impl ValidateContract for TranslationResult {
     }
 }
 
+impl ValidateContract for TextbookCatalogItem {
+    fn validate(&self) -> Result<(), AppError> {
+        let required = [
+            self.id.as_str(),
+            self.title.as_str(),
+            self.source_language.as_str(),
+            self.target_language.as_str(),
+            self.version.as_str(),
+            self.license.as_str(),
+            self.attribution.as_str(),
+        ];
+        if required.iter().any(|value| value.trim().is_empty())
+            || !self.download_url.starts_with("https://")
+            || !self.source_url.starts_with("https://")
+            || self.expected_bytes == 0
+            || self.expected_bytes > JS_SAFE_INTEGER_MAX
+            || self.sha256.len() != 64
+            || !self
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(validation_error("textbook catalog item is unsafe"));
+        }
+        Ok(())
+    }
+}
+
 impl ValidateContract for AppError {
     fn validate(&self) -> Result<(), AppError> {
         if self.message.trim().is_empty() {
@@ -226,8 +587,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_validated, AppError, SelectionSnapshot, TranslationRequest, TranslationResult,
-        UserSettings,
+        decode_validated, AppError, SelectionSnapshot, StudyPracticeQuestion, TranslationRequest,
+        TranslationResult, UserSettings, VocabularyRevision,
     };
 
     #[derive(serde::Deserialize)]
@@ -237,6 +598,8 @@ mod tests {
         settings: UserSettings,
         translation_request: TranslationRequest,
         translation_result: TranslationResult,
+        study_practice_question: StudyPracticeQuestion,
+        vocabulary_revision: VocabularyRevision,
         error: AppError,
         errors: Vec<AppError>,
     }
@@ -250,7 +613,9 @@ mod tests {
         assert_eq!(fixtures.settings.schema_version, 1);
         assert_eq!(fixtures.translation_request.selection_id, 42);
         assert_eq!(fixtures.translation_result.selection_id, 42);
+        assert_eq!(fixtures.study_practice_question.choices[0].value, "短暂的");
         assert!(fixtures.error.retryable);
+        assert_eq!(fixtures.vocabulary_revision.revision, 1);
 
         let original: serde_json::Value = serde_json::from_str(raw).expect("valid JSON");
         let round_trips = [
@@ -258,6 +623,9 @@ mod tests {
             serde_json::to_value(&fixtures.settings).expect("settings serialize"),
             serde_json::to_value(&fixtures.translation_request).expect("request serializes"),
             serde_json::to_value(&fixtures.translation_result).expect("result serializes"),
+            serde_json::to_value(&fixtures.study_practice_question)
+                .expect("study question serializes"),
+            serde_json::to_value(&fixtures.vocabulary_revision).expect("revision serializes"),
             serde_json::to_value(&fixtures.error).expect("error serializes"),
             serde_json::to_value(&fixtures.errors).expect("errors serialize"),
         ];
@@ -265,8 +633,10 @@ mod tests {
         assert_eq!(round_trips[1], original["settings"]);
         assert_eq!(round_trips[2], original["translationRequest"]);
         assert_eq!(round_trips[3], original["translationResult"]);
-        assert_eq!(round_trips[4], original["error"]);
-        assert_eq!(round_trips[5], original["errors"]);
+        assert_eq!(round_trips[4], original["studyPracticeQuestion"]);
+        assert_eq!(round_trips[5], original["vocabularyRevision"]);
+        assert_eq!(round_trips[6], original["error"]);
+        assert_eq!(round_trips[7], original["errors"]);
     }
 
     #[test]
@@ -289,5 +659,14 @@ mod tests {
           "targetLanguage": "es"
         }"#;
         assert!(decode_validated::<TranslationResult>(invalid_result).is_err());
+
+        let unknown_part_of_speech = r#"{
+          "selectionId": 1,
+          "translatedText": "hola",
+          "effectiveSourceLanguage": "en",
+          "targetLanguage": "es",
+          "partOfSpeech": "oracle"
+        }"#;
+        assert!(serde_json::from_str::<TranslationResult>(unknown_part_of_speech).is_err());
     }
 }

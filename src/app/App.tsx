@@ -1,12 +1,22 @@
 import { useState } from "react";
 
-import type { LanguageCode, TranslationRequest, UserSettings } from "../contracts/ipc";
+import type {
+  LanguageCode,
+  PracticeOutcome,
+  PracticeQuestion,
+  RelatedVocabulary,
+  TranslationRequest,
+  UserSettings,
+  VocabularyEntry,
+} from "../contracts/ipc";
 import { ContextualOverlay } from "../components/context/ContextualOverlay";
 import {
   QuickTranslatePanel,
   type QuickTranslateStatus,
 } from "../components/quick/QuickTranslatePanel";
 import { SettingsPanel } from "../components/settings/SettingsPanel";
+import { VocabularyWindow } from "../components/vocabulary/VocabularyWindow";
+import type { StudyApi } from "../components/vocabulary/VocabularyWindow";
 import {
   initialOverlayState,
   type OverlayState,
@@ -35,7 +45,20 @@ export interface AppProps {
   permissionStatus?: "unknown" | "granted" | "denied";
   speechAvailability?: Readonly<Record<string, boolean>>;
   quickStatus?: QuickTranslateStatus;
+  vocabularyEntries?: readonly VocabularyEntry[];
+  vocabularyLoading?: boolean;
+  vocabularyError?: string;
+  vocabularyRevision?: number;
+  relatedVocabulary?: readonly RelatedVocabulary[];
+  practiceQuestion?: PracticeQuestion | null;
+  practiceOutcome?: PracticeOutcome;
+  studyApi?: StudyApi;
   onQuickTranslate?: (request: TranslationRequest) => void;
+  onVocabularySearch?: (search: string) => void;
+  onSelectVocabulary?: (entryId: number) => void;
+  onStartPractice?: () => void;
+  onSubmitPracticeAnswer?: (entryId: number, selectedTranslation: string) => void;
+  onPronounceVocabulary?: (text: string, language: LanguageCode) => void;
   onTranslate?: (request: TranslationRequest) => void;
   onCorrectSource?: (request: TranslationRequest) => void;
   onSpeak?: (text: string, language: LanguageCode) => void;
@@ -56,7 +79,20 @@ export default function App({
   permissionStatus = "unknown",
   speechAvailability = {},
   quickStatus = { mode: "idle" },
+  vocabularyEntries = [],
+  vocabularyLoading = false,
+  vocabularyError,
+  vocabularyRevision = 0,
+  relatedVocabulary = [],
+  practiceQuestion,
+  practiceOutcome,
+  studyApi,
   onQuickTranslate = ignore,
+  onVocabularySearch = ignore,
+  onSelectVocabulary = ignore,
+  onStartPractice = ignore,
+  onSubmitPracticeAnswer = ignore,
+  onPronounceVocabulary = ignore,
   onTranslate = ignore,
   onCorrectSource = ignore,
   onSpeak = ignore,
@@ -101,6 +137,29 @@ export default function App({
           speechAvailability={speechAvailability}
           onTranslate={onQuickTranslate}
           onSpeak={onSpeak}
+        />
+      </div>
+    );
+  }
+
+  if (mode === "study") {
+    return (
+      <div className="app-surface app-surface--study" data-theme={settings.theme}>
+        <VocabularyWindow
+          entries={vocabularyEntries}
+          loading={vocabularyLoading}
+          error={vocabularyError}
+          revision={vocabularyRevision}
+          related={relatedVocabulary}
+          question={practiceQuestion}
+          outcome={practiceOutcome}
+          studyApi={studyApi}
+          speechAvailability={speechAvailability}
+          onPronounce={onPronounceVocabulary}
+          onSearch={onVocabularySearch}
+          onSelectEntry={onSelectVocabulary}
+          onStartPractice={onStartPractice}
+          onSubmitAnswer={onSubmitPracticeAnswer}
         />
       </div>
     );

@@ -6,6 +6,7 @@ describe("getWindowMode", () => {
   it("resolves each native surface from the window URL", () => {
     expect(getWindowMode({ search: "?mode=overlay", pathname: "/" })).toBe("overlay");
     expect(getWindowMode({ search: "?mode=quick", pathname: "/" })).toBe("quick");
+    expect(getWindowMode({ search: "?mode=study", pathname: "/" })).toBe("study");
     expect(getWindowMode({ search: "?mode=settings", pathname: "/" })).toBe("settings");
   });
 

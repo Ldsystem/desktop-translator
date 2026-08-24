@@ -1,4 +1,4 @@
-export type WindowMode = "overlay" | "quick" | "settings";
+export type WindowMode = "overlay" | "quick" | "settings" | "study";
 
 /** Resolves the surface selected by the native window URL without native coupling. */
 export function getWindowMode(location: Pick<Location, "search" | "pathname"> = window.location): WindowMode {
@@ -8,6 +8,9 @@ export function getWindowMode(location: Pick<Location, "search" | "pathname"> = 
   }
   if (requestedMode === "quick" || location.pathname.endsWith("/quick")) {
     return "quick";
+  }
+  if (requestedMode === "study" || location.pathname.endsWith("/study")) {
+    return "study";
   }
   return "settings";
 }
