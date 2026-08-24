@@ -528,6 +528,20 @@ struct ImportedEntry {
     aliases: Vec<String>,
 }
 
+struct LegacyProvenance {
+    id: i64,
+    vocabulary_entry_id: i64,
+    textbook_id: String,
+    textbook_title: String,
+    textbook_version: String,
+    license: String,
+    attribution: String,
+    source_url: String,
+    source_text: String,
+    translated_text: String,
+    promoted_at_epoch_ms: i64,
+}
+
 fn validate_catalog(catalog: &TextbookCatalogItem) -> Result<(), AppError> {
     catalog.validate()?;
     if catalog.expected_bytes > MAX_ARTIFACT_BYTES {
@@ -690,8 +704,6 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
         tx.execute_batch(
             "ALTER TABLE textbook_entries
                ADD COLUMN original_translations TEXT NOT NULL DEFAULT '';
-             ALTER TABLE vocabulary_textbook_provenance
-               ADD COLUMN original_translations TEXT NOT NULL DEFAULT '';
              CREATE TABLE textbook_entry_aliases (
                id INTEGER PRIMARY KEY,
                textbook_entry_id INTEGER NOT NULL REFERENCES textbook_entries(id) ON DELETE CASCADE,
@@ -737,28 +749,86 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
                 .map_err(storage_error)?;
             }
         }
+        tx.execute_batch(
+            "ALTER TABLE vocabulary_textbook_provenance
+               RENAME TO vocabulary_textbook_provenance_v1;
+             CREATE TABLE vocabulary_textbook_provenance (
+               id INTEGER PRIMARY KEY,
+               vocabulary_entry_id INTEGER NOT NULL REFERENCES vocabulary_entries(id) ON DELETE CASCADE,
+               textbook_id TEXT NOT NULL,
+               textbook_title TEXT NOT NULL,
+               textbook_version TEXT NOT NULL,
+               license TEXT NOT NULL,
+               attribution TEXT NOT NULL,
+               source_url TEXT NOT NULL,
+               source_text TEXT NOT NULL,
+               translated_text TEXT NOT NULL,
+               original_translations TEXT NOT NULL DEFAULT '',
+               promoted_at_epoch_ms INTEGER NOT NULL,
+               UNIQUE(
+                 vocabulary_entry_id, textbook_id, source_text,
+                 translated_text, original_translations
+               )
+             );",
+        )
+        .map_err(storage_error)?;
         let provenance = {
             let mut statement = tx
-                .prepare("SELECT id, translated_text FROM vocabulary_textbook_provenance")
+                .prepare(
+                    "SELECT id, vocabulary_entry_id, textbook_id, textbook_title,
+                            textbook_version, license, attribution, source_url,
+                            source_text, translated_text, promoted_at_epoch_ms
+                     FROM vocabulary_textbook_provenance_v1 ORDER BY id",
+                )
                 .map_err(storage_error)?;
             let rows = statement
                 .query_map([], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    Ok(LegacyProvenance {
+                        id: row.get(0)?,
+                        vocabulary_entry_id: row.get(1)?,
+                        textbook_id: row.get(2)?,
+                        textbook_title: row.get(3)?,
+                        textbook_version: row.get(4)?,
+                        license: row.get(5)?,
+                        attribution: row.get(6)?,
+                        source_url: row.get(7)?,
+                        source_text: row.get(8)?,
+                        translated_text: row.get(9)?,
+                        promoted_at_epoch_ms: row.get(10)?,
+                    })
                 })
                 .map_err(storage_error)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(storage_error)?;
             rows
         };
-        for (id, original) in provenance {
-            let (display, originals, _) = normalized_zh_cn(&converter, &original)?;
+        for row in provenance {
+            let (display, originals, _) = normalized_zh_cn(&converter, &row.translated_text)?;
             tx.execute(
-                "UPDATE vocabulary_textbook_provenance
-                 SET translated_text = ?1, original_translations = ?2 WHERE id = ?3",
-                params![display, originals.join(" | "), id],
+                "INSERT INTO vocabulary_textbook_provenance (
+                   id, vocabulary_entry_id, textbook_id, textbook_title, textbook_version,
+                   license, attribution, source_url, source_text, translated_text,
+                   original_translations, promoted_at_epoch_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    row.id,
+                    row.vocabulary_entry_id,
+                    row.textbook_id,
+                    row.textbook_title,
+                    row.textbook_version,
+                    row.license,
+                    row.attribution,
+                    row.source_url,
+                    row.source_text,
+                    display,
+                    originals.join(" | "),
+                    row.promoted_at_epoch_ms,
+                ],
             )
             .map_err(storage_error)?;
         }
+        tx.execute_batch("DROP TABLE vocabulary_textbook_provenance_v1;")
+            .map_err(storage_error)?;
         tx.execute(
             "INSERT INTO textbook_schema_migrations(version) VALUES (2)",
             [],
@@ -1040,6 +1110,8 @@ mod tests {
     #[test]
     fn zh_cn_import_uses_one_simplified_display_and_searches_original_variants() {
         let app_db = NamedTempFile::new().expect("app db");
+        let vocabulary = crate::services::vocabulary::VocabularyStore::open(app_db.path())
+            .expect("vocabulary migrations");
         let store = TextbookStore::open(app_db.path()).expect("store");
         let fixture = wikdict_fixture(&[("abacus", "算盘 | 算盤"), ("abalone", "鮑魚")]);
         let catalog = test_catalog(fixture.path(), "mixed-script", "1");
@@ -1062,6 +1134,53 @@ mod tests {
                 "search alias {search}"
             );
         }
+
+        let promoted = page
+            .entries
+            .iter()
+            .map(|entry| store.promote_entry(entry.id, 20).expect("promote"))
+            .collect::<Vec<_>>();
+        let connection = Connection::open(app_db.path()).expect("inspect promotion");
+        let personal = promoted
+            .iter()
+            .map(|result| {
+                connection
+                    .query_row(
+                        "SELECT translated_text FROM vocabulary_entries WHERE id = ?1",
+                        params![result.vocabulary_entry_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .expect("personal translation")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(personal, vec!["算盘", "鲍鱼"]);
+        let question = vocabulary
+            .practice_question(30)
+            .expect("practice")
+            .expect("question");
+        assert!(question
+            .choices
+            .iter()
+            .all(|choice| !choice.contains('盤') && !choice.contains('鮑')));
+        assert!(question.choices.iter().any(|choice| choice == "算盘"));
+        assert!(question.choices.iter().any(|choice| choice == "鲍鱼"));
+
+        store.remove("mixed-script").expect("remove textbook");
+        let retained = connection
+            .prepare(
+                "SELECT translated_text, original_translations
+                 FROM vocabulary_textbook_provenance ORDER BY translated_text",
+            )
+            .expect("retained statement")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("retained rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("retained provenance");
+        assert_eq!(retained.len(), 2);
+        assert!(retained.contains(&("算盘".into(), "算盘 | 算盤".into())));
+        assert!(retained.contains(&("鲍鱼".into(), "鮑魚".into())));
     }
 
     #[test]
@@ -1112,7 +1231,20 @@ mod tests {
                    source_language, target_language
                  ) VALUES
                    ('legacy', 'abacus', 'abacus', '算盘 | 算盤', 'en', 'zh-CN'),
-                   ('legacy', 'abalone', 'abalone', '鮑魚', 'en', 'zh-CN');",
+                   ('legacy', 'abalone', 'abalone', '鮑魚', 'en', 'zh-CN');
+                 INSERT INTO vocabulary_entries (
+                   id, normalized_text, source_text, requested_source_language, target_language,
+                   translated_text, effective_source_language, first_seen_epoch_ms, last_seen_epoch_ms
+                 ) VALUES (1, 'abacus', 'abacus', 'en', 'zh-CN', '算盘', 'en', 1, 1);
+                 INSERT INTO vocabulary_textbook_provenance (
+                   vocabulary_entry_id, textbook_id, textbook_title, textbook_version,
+                   license, attribution, source_url, source_text, translated_text,
+                   promoted_at_epoch_ms
+                 ) VALUES
+                   (1, 'legacy', 'Legacy', '1', 'CC BY-SA 4.0', 'WikDict',
+                    'https://www.wikdict.com', 'abacus', '算盘', 2),
+                   (1, 'legacy', 'Legacy', '2', 'CC BY-SA 4.0', 'WikDict',
+                    'https://www.wikdict.com', 'abacus', '算盤', 3);",
             )
             .expect("v1 schema and rows");
         drop(connection);
@@ -1128,6 +1260,33 @@ mod tests {
                 .total,
             1
         );
+        let connection = Connection::open(app_db.path()).expect("inspect migration");
+        let provenance = connection
+            .prepare(
+                "SELECT textbook_version, translated_text, original_translations
+                 FROM vocabulary_textbook_provenance ORDER BY textbook_version",
+            )
+            .expect("provenance statement")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("provenance rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("provenance collect");
+        assert_eq!(
+            provenance,
+            vec![
+                ("1".into(), "算盘".into(), "算盘".into()),
+                ("2".into(), "算盘".into(), "算盤".into()),
+            ]
+        );
+        drop(connection);
+        drop(store);
+        TextbookStore::open(app_db.path()).expect("reopen migrated database");
     }
 
     #[tokio::test]
