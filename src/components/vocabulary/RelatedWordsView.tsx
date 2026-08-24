@@ -8,9 +8,10 @@ interface RelatedWordsViewProps {
   anchor?: VocabularyEntry;
   api: StudyApi;
   revision: number;
+  onBack: () => void;
 }
 
-export function RelatedWordsView({ anchor, api, revision }: RelatedWordsViewProps) {
+export function RelatedWordsView({ anchor, api, revision, onBack }: RelatedWordsViewProps) {
   const [items, setItems] = useState<RelatedWord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -43,7 +44,7 @@ export function RelatedWordsView({ anchor, api, revision }: RelatedWordsViewProp
   }, [anchor, api, revision]);
 
   return <section aria-labelledby="related-title">
-    <header className="study-header"><div><p className="eyebrow">Related words</p><h2 id="related-title">Connections for {anchor?.sourceText ?? "your next word"}</h2><p>Connections combine your wordbook and every compatible downloaded textbook.</p></div></header>
+    <header className="study-header"><div><button className="text-button textbook-back" type="button" onClick={onBack}>← Back to My wordbook</button><p className="eyebrow">Related words</p><h2 id="related-title">Connections for {anchor?.sourceText ?? "your next word"}</h2><p>Connections combine your wordbook and every compatible downloaded textbook.</p></div></header>
     {provenance.length > 0 && <details className="word-provenance">
       <summary>Textbook source details <span>{provenance.length}</span></summary>
       <div className="word-provenance__content">{provenance.map((item) => <div key={`${item.textbookId}-${item.sourceText}-${item.translatedText}`}>

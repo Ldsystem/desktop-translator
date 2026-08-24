@@ -294,7 +294,8 @@ input:focus-visible,
 .textbook-entry > div { display: grid; gap: 4px; }
 .textbook-entry strong { color: var(--study-ink); font-family: Georgia, serif; font-size: 1.12rem; font-weight: 500; }
 .textbook-entry small { color: var(--accent-strong); font-family: var(--font-utility); font-size: 0.68rem; }
-.textbook-pagination { position: sticky; z-index: 5; bottom: 0; display: flex; min-height: 66px; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--study-rule); padding: 10px 4px; background: var(--study-paper); box-shadow: 0 -14px 22px var(--study-paper); color: var(--ink-muted); font-size: 0.72rem; }
+.textbook-pagination { position: sticky; z-index: 5; bottom: 0; isolation: isolate; display: flex; min-height: 66px; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--study-rule); padding: 10px 4px; background: var(--study-paper); color: var(--ink-muted); font-size: 0.72rem; }
+.textbook-pagination::before { position: absolute; z-index: -1; top: -22px; right: 0; bottom: -40px; left: 0; background: var(--study-paper); box-shadow: 0 -12px 18px var(--study-paper); content: ""; pointer-events: none; }
 .textbook-pagination > div { display: flex; gap: 8px; }
 
 .practice-view { max-width: 760px; }

@@ -511,6 +511,26 @@ describe("VocabularyWindow", () => {
     expect(container.textContent).toContain("Added");
   });
 
+  it("returns from a card-scoped related view to My wordbook", async () => {
+    const api = makeStudyApi();
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello")?.click());
+    await flushEffects();
+
+    const back = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "← Back to My wordbook");
+    expect(back?.classList.contains("textbook-back")).toBe(true);
+    act(() => back?.click());
+
+    expect(container.textContent).toContain("Your working vocabulary");
+    expect(container.textContent).toContain("hello");
+    expect(container.textContent).not.toContain("Connections for hello");
+  });
+
+  it("masks textbook entries above and below the sticky pagination dock", () => {
+    expect(appCss).toMatch(/\.textbook-pagination\s*\{[^}]*isolation:\s*isolate/s);
+    expect(appCss).toMatch(/\.textbook-pagination::before\s*\{[^}]*bottom:\s*-40px[^}]*background:\s*var\(--study-paper\)/s);
+  });
+
   it("persists a practice direction and renders direction-neutral prompt fields", async () => {
     const savePracticePreferences = vi.fn().mockResolvedValue(undefined);
     const getPracticeQuestion = vi.fn().mockResolvedValue({ entryId: 1, direction: "target-to-source", prompt: "hola", promptLanguage: "es", answerLanguage: "en", choices: [{ value: "hello" }, { value: "world" }] });

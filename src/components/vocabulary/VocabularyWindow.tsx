@@ -283,11 +283,11 @@ export function VocabularyWindow({
           </>
         )}
 
-        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} revision={revision} />}
+        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} revision={revision} onBack={() => navigate("library")} />}
 
         {view === "related" && !studyApi && (
           <>
-            <header className="study-header"><div><p className="eyebrow">Related words</p><h2>Connections in your wordbook</h2><p>Roots use a conservative Latin suffix rule. Meanings share words in stored translations.</p></div></header>
+            <header className="study-header"><div><button className="text-button textbook-back" type="button" onClick={() => navigate("library")}>← Back to My wordbook</button><p className="eyebrow">Related words</p><h2>Connections in your wordbook</h2><p>Roots use a conservative Latin suffix rule. Meanings share words in stored translations.</p></div></header>
             {related.length === 0 ? (
               <div className="study-empty"><strong>No local connections yet.</strong><span>Open a word from the textbook as your collection grows.</span></div>
             ) : (
