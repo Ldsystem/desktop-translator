@@ -491,11 +491,20 @@ impl TextbookStore {
             ).map_err(storage_error)?
         };
         tx.execute(
-            "INSERT OR IGNORE INTO vocabulary_textbook_provenance (
+            "INSERT INTO vocabulary_textbook_provenance (
                    vocabulary_entry_id, textbook_id, textbook_title, textbook_version,
                    license, attribution, source_url, source_text, translated_text,
                    original_translations, promoted_at_epoch_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 )
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM vocabulary_textbook_provenance
+                   WHERE vocabulary_entry_id = ?1 AND textbook_id = ?2
+                     AND textbook_title = ?3 AND textbook_version = ?4
+                     AND license = ?5 AND attribution = ?6 AND source_url = ?7
+                     AND source_text = ?8 AND translated_text = ?9
+                     AND original_translations = ?10
+                 )",
             params![
                 vocabulary_entry_id,
                 book_id,
@@ -764,12 +773,12 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
                source_text TEXT NOT NULL,
                translated_text TEXT NOT NULL,
                original_translations TEXT NOT NULL DEFAULT '',
-               promoted_at_epoch_ms INTEGER NOT NULL,
-               UNIQUE(
-                 vocabulary_entry_id, textbook_id, source_text,
-                 translated_text, original_translations
-               )
-             );",
+               promoted_at_epoch_ms INTEGER NOT NULL
+             );
+             CREATE INDEX vocabulary_textbook_provenance_identity
+               ON vocabulary_textbook_provenance(
+                 vocabulary_entry_id, textbook_id, textbook_version, source_text
+               );",
         )
         .map_err(storage_error)?;
         let provenance = {
@@ -1242,9 +1251,9 @@ mod tests {
                    promoted_at_epoch_ms
                  ) VALUES
                    (1, 'legacy', 'Legacy', '1', 'CC BY-SA 4.0', 'WikDict',
-                    'https://www.wikdict.com', 'abacus', '算盘', 2),
+                    'https://www.wikdict.com', 'abacus', '算盘|算盤', 2),
                    (1, 'legacy', 'Legacy', '2', 'CC BY-SA 4.0', 'WikDict',
-                    'https://www.wikdict.com', 'abacus', '算盤', 3);",
+                    'https://www.wikdict.com', 'abacus', '算盘 | 算盤', 3);",
             )
             .expect("v1 schema and rows");
         drop(connection);
@@ -1280,8 +1289,8 @@ mod tests {
         assert_eq!(
             provenance,
             vec![
-                ("1".into(), "算盘".into(), "算盘".into()),
-                ("2".into(), "算盘".into(), "算盤".into()),
+                ("1".into(), "算盘".into(), "算盘 | 算盤".into()),
+                ("2".into(), "算盘".into(), "算盘 | 算盤".into()),
             ]
         );
         drop(connection);
