@@ -160,6 +160,7 @@ export interface InstalledTextbook {
   entryCount: number;
   installedAtEpochMs: number;
   active: boolean;
+  metadataRefreshAvailable: boolean;
 }
 
 /** One normalized entry imported from a validated textbook artifact. */
@@ -432,7 +433,8 @@ export function isInstalledTextbook(value: unknown): value is InstalledTextbook 
     isHttpsUrl(value.sourceUrl) &&
     isNonNegativeInteger(value.entryCount) &&
     isNonNegativeInteger(value.installedAtEpochMs) &&
-    typeof value.active === "boolean"
+    typeof value.active === "boolean" &&
+    typeof value.metadataRefreshAvailable === "boolean"
   );
 }
 

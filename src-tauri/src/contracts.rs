@@ -270,6 +270,8 @@ pub struct InstalledTextbook {
     pub entry_count: u64,
     pub installed_at_epoch_ms: u64,
     pub active: bool,
+    /// True when this verified artifact predates the current lexical metadata importer.
+    pub metadata_refresh_available: bool,
 }
 
 /// One normalized dictionary entry imported from a validated textbook.

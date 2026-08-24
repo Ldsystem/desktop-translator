@@ -72,6 +72,7 @@ const installedBook: InstalledTextbook = {
   entryCount: 8000,
   installedAtEpochMs: 1,
   active: true,
+  metadataRefreshAvailable: false,
 };
 
 function makeStudyApi(overrides: Partial<StudyApi> = {}): StudyApi {
@@ -415,7 +416,7 @@ describe("VocabularyWindow", () => {
     expect(container.textContent).toContain("Translate a word");
   });
 
-  it("offers a fourth Textbooks destination with stable Discover and Downloaded pages", async () => {
+  it("keeps related words card-scoped and offers stable Textbooks pages", async () => {
     const api = makeStudyApi({ listCatalog: vi.fn().mockResolvedValue(catalogChoices) });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
 
@@ -423,6 +424,8 @@ describe("VocabularyWindow", () => {
     act(() => textbooks?.click());
     await flushEffects();
 
+    expect([...container.querySelectorAll(".study-nav")].map((button) => button.textContent)).toEqual(["My wordbook", "Practice", "Textbooks"]);
+    expect([...container.querySelectorAll(".study-nav")].some((button) => button.textContent === "Related words")).toBe(false);
     expect(container.textContent).toContain("Textbook shelf");
     expect(container.textContent).toContain("Everyday English · Chinese");
     expect(container.textContent).toContain("Academic English");
@@ -435,6 +438,23 @@ describe("VocabularyWindow", () => {
     const downloaded = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Downloaded");
     act(() => downloaded?.click());
     expect(container.textContent).toContain("No downloaded textbooks yet");
+  });
+
+  it("offers a verified metadata refresh for a legacy same-version textbook", async () => {
+    const legacyBook = { ...installedBook, metadataRefreshAvailable: true };
+    const downloadTextbook = vi.fn().mockResolvedValue({ ...legacyBook, metadataRefreshAvailable: false });
+    const api = makeStudyApi({
+      listDownloaded: vi.fn().mockResolvedValue([legacyBook]),
+      downloadTextbook,
+    });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Textbooks")?.click());
+    await flushEffects();
+
+    const refresh = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Add parts of speech");
+    expect(refresh?.disabled).toBe(false);
+    await act(async () => refresh?.click());
+    expect(downloadTextbook).toHaveBeenCalledWith(catalogItem.id);
   });
 
   it("browses an installed textbook and keeps an idempotent Add state on the entry", async () => {
@@ -463,6 +483,8 @@ describe("VocabularyWindow", () => {
     expect(addTextbookEntry).toHaveBeenCalledWith(81);
     expect(container.textContent).toContain("Added");
     expect(add?.getAttribute("aria-disabled")).toBe("true");
+    expect(appCss).toMatch(/\.textbook-pagination\s*\{[^}]*z-index:\s*[1-9]/s);
+    expect(appCss).toMatch(/\.textbook-pagination\s*\{[^}]*background:\s*var\(--study-paper\)/s);
   });
 
   it("shows one combined related list with origin badges and promotes textbook results", async () => {

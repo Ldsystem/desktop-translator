@@ -59,6 +59,22 @@ describe("IPC contracts", () => {
         installedAtEpochMs: 42,
         active: true,
       }),
+    ).toBe(false);
+    expect(
+      isInstalledTextbook({
+        id: "legacy",
+        title: "Legacy",
+        sourceLanguage: "en",
+        targetLanguage: "zh-CN",
+        version: "1",
+        license: "CC BY-SA 4.0",
+        attribution: "WikDict",
+        sourceUrl: "https://www.wikdict.com/",
+        entryCount: 100,
+        installedAtEpochMs: 42,
+        active: false,
+        metadataRefreshAvailable: false,
+      }),
     ).toBe(true);
     expect(
       isTextbookEntryPage({

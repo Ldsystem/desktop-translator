@@ -120,17 +120,31 @@ export function TextbooksView({ api }: TextbooksViewProps) {
   const install = async (item: TextbookCatalogItem) => {
     setBusyBook(item.id);
     setCatalogError(undefined);
+    setDownloadedError(undefined);
+    if (openBook?.id === item.id) setEntryError(undefined);
     try {
       await api.downloadTextbook(item.id);
-      setDownloaded(await api.listDownloaded());
+      const next = await api.listDownloaded();
+      setDownloaded(next);
+      if (openBook?.id === item.id) {
+        const refreshed = next.find((book) => book.id === item.id);
+        setOpenBook(refreshed);
+        if (refreshed) loadEntries(refreshed, entrySearch, entryOffset);
+      }
     } catch (error) {
-      setCatalogError(message(error, "This textbook could not be downloaded."));
+      const failure = message(error, "This textbook could not be downloaded.");
+      setCatalogError(failure);
+      setDownloadedError(failure);
+      if (openBook?.id === item.id) setEntryError(failure);
     } finally {
       setBusyBook(undefined);
     }
   };
 
   if (openBook) {
+    const refreshItem = openBook.metadataRefreshAvailable
+      ? catalog.find((item) => item.id === openBook.id)
+      : undefined;
     const pageStart = entryTotal === 0 ? 0 : entryOffset + 1;
     const pageEnd = Math.min(entryTotal, entryOffset + entries.length);
     return (
@@ -149,6 +163,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
             </label>
           </form>
         </header>
+        {refreshItem && <div className="study-notice" role="status"><span>This download predates word details such as parts of speech.</span><button className="button button--secondary" type="button" disabled={busyBook === openBook.id} onClick={() => install(refreshItem)}>{busyBook === openBook.id ? "Refreshing…" : "Add parts of speech"}</button></div>}
         {entryError && <div className="study-notice study-notice--error" role="alert">{entryError} <button className="text-button" type="button" onClick={() => loadEntries(openBook, entrySearch, entryOffset)}>Try again</button></div>}
         {entryLoading ? (
           <div className="study-empty" role="status"><strong>Opening this textbook…</strong><span>Reading its local index.</span></div>
@@ -206,6 +221,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
             <div className="textbook-grid">{catalog.map((item) => {
               const installed = installedById.get(item.id);
               const update = installed && installed.version !== item.version;
+              const metadataRefresh = installed?.metadataRefreshAvailable === true;
               const details = presentation(item);
               return <article className="textbook-volume" key={item.id}>
                 <span className="textbook-volume__spine" aria-hidden="true">{details.scope}</span>
@@ -221,7 +237,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
                   <p className="textbook-volume__credit">{item.attribution}</p>
                   <div className="textbook-volume__source"><small>{item.license} · {item.version}</small><a href={item.sourceUrl} target="_blank" rel="noreferrer">View source</a></div>
                 </div>
-                <button className="button button--primary" type="button" disabled={busyBook === item.id || Boolean(installed && !update)} onClick={() => install(item)}>{busyBook === item.id ? "Downloading…" : update ? "Update" : installed ? "Downloaded" : "Download"}</button>
+                <button className="button button--primary" type="button" disabled={busyBook === item.id || Boolean(installed && !update && !metadataRefresh)} onClick={() => install(item)}>{busyBook === item.id ? "Downloading…" : metadataRefresh ? "Add parts of speech" : update ? "Update" : installed ? "Downloaded" : "Download"}</button>
               </article>;
             })}</div>
           )}
@@ -230,14 +246,17 @@ export function TextbooksView({ api }: TextbooksViewProps) {
         <div className="textbook-surface">
           {downloadedError && <div className="study-notice study-notice--error" role="alert">{downloadedError}</div>}
           {downloadedLoading ? <div className="study-empty" role="status"><strong>Reading your shelf…</strong></div> : downloaded.length === 0 ? <div className="study-empty"><strong>No downloaded textbooks yet.</strong><span>Open Discover to add a curated local reference.</span><button className="button button--secondary study-empty__action" type="button" onClick={() => setTab("discover")}>Browse Discover</button></div> : (
-            <div className="downloaded-list">{downloaded.map((book) => <article className={book.active ? "downloaded-book is-active" : "downloaded-book"} key={book.id}>
+            <div className="downloaded-list">{downloaded.map((book) => {
+              const refreshItem = book.metadataRefreshAvailable ? catalog.find((item) => item.id === book.id) : undefined;
+              return <article className={book.active ? "downloaded-book is-active" : "downloaded-book"} key={book.id}>
               <div className="downloaded-book__identity"><span aria-hidden="true">Aa</span><div><small>{book.active ? "Active textbook" : "Downloaded"}</small><h3>{book.title}</h3><p>{book.sourceLanguage.toUpperCase()} → {book.targetLanguage.toUpperCase()} · {book.entryCount.toLocaleString()} words</p></div></div>
               <div className="downloaded-book__actions">
                 <button className="button button--secondary" type="button" onClick={() => { setEntrySearch(""); loadEntries(book, "", 0); }}>Browse words</button>
+                {refreshItem && <button className="button button--secondary" type="button" disabled={busyBook === book.id} onClick={() => install(refreshItem)}>{busyBook === book.id ? "Refreshing…" : "Add parts of speech"}</button>}
                 <button className="button button--secondary" type="button" disabled={busyBook === book.id} onClick={() => updateShelf(() => api.setActiveTextbook(book.active ? undefined : book.id), book.id)}>{book.active ? "Deactivate" : "Make active"}</button>
                 {confirmRemove === book.id ? <span className="inline-confirm"><span>Remove local copy?</span><button className="text-button is-danger" type="button" onClick={() => updateShelf(() => api.removeTextbook(book.id), book.id).then((removed) => { if (removed) setConfirmRemove(undefined); })}>Remove</button><button className="text-button" type="button" onClick={() => setConfirmRemove(undefined)}>Cancel</button></span> : <button className="text-button is-danger" type="button" onClick={() => setConfirmRemove(book.id)}>Remove</button>}
               </div>
-            </article>)}</div>
+            </article>})}</div>
           )}
         </div>
       )}

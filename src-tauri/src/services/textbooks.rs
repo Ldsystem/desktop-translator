@@ -27,6 +27,7 @@ const MAX_PAGE_SIZE: u64 = 500;
 const WIKDICT_HOST: &str = "download.wikdict.com";
 const SCOPE_HOST: &str = "static1.squarespace.com";
 const MAX_SCOPE_BYTES: u64 = 512 * 1024;
+const CURRENT_IMPORT_REVISION: i64 = 1;
 const WIKDICT_URL: &str =
     "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-zh.sqlite3";
 const WIKDICT_SHA256: &str = "16cf69dc8037a8d4dc6bde260142bf0181f9ff0a008d457f26452f1d80ca5ecd";
@@ -303,8 +304,8 @@ impl TextbookStore {
             "INSERT INTO textbooks (
                id, title, source_language, target_language, version, download_url,
                expected_bytes, sha256, license, attribution, source_url,
-               installed_at_epoch_ms, active, entry_count
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+               installed_at_epoch_ms, active, entry_count, import_revision
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                title = excluded.title,
                source_language = excluded.source_language,
@@ -317,7 +318,8 @@ impl TextbookStore {
                attribution = excluded.attribution,
                source_url = excluded.source_url,
                installed_at_epoch_ms = excluded.installed_at_epoch_ms,
-               entry_count = excluded.entry_count",
+               entry_count = excluded.entry_count,
+               import_revision = excluded.import_revision",
             params![
                 catalog.id,
                 catalog.title,
@@ -333,6 +335,7 @@ impl TextbookStore {
                 i64_from_u64(now_ms)?,
                 was_active,
                 i64_from_u64(imported.len() as u64)?,
+                CURRENT_IMPORT_REVISION,
             ],
         )
         .map_err(storage_error)?;
@@ -474,12 +477,13 @@ impl TextbookStore {
         let mut statement = connection
             .prepare(
                 "SELECT id, title, source_language, target_language, version, license,
-                        attribution, source_url, entry_count, installed_at_epoch_ms, active
+                        attribution, source_url, entry_count, installed_at_epoch_ms, active,
+                        import_revision < ?1
                  FROM textbooks ORDER BY title COLLATE NOCASE, id",
             )
             .map_err(storage_error)?;
         let rows = statement
-            .query_map([], row_to_installed)
+            .query_map(params![CURRENT_IMPORT_REVISION], row_to_installed)
             .map_err(storage_error)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
     }
@@ -492,9 +496,10 @@ impl TextbookStore {
         connection
             .query_row(
                 "SELECT id, title, source_language, target_language, version, license,
-                        attribution, source_url, entry_count, installed_at_epoch_ms, active
+                        attribution, source_url, entry_count, installed_at_epoch_ms, active,
+                        import_revision < ?2
                  FROM textbooks WHERE id = ?1",
-                params![id],
+                params![id, CURRENT_IMPORT_REVISION],
                 row_to_installed,
             )
             .optional()
@@ -1375,6 +1380,15 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
         .map_err(storage_error)?;
         tx.commit().map_err(storage_error)?;
     }
+    if version < 4 {
+        let tx = connection.unchecked_transaction().map_err(storage_error)?;
+        tx.execute_batch(
+            "ALTER TABLE textbooks ADD COLUMN import_revision INTEGER NOT NULL DEFAULT 0;
+             INSERT INTO textbook_schema_migrations(version) VALUES (4);",
+        )
+        .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+    }
     Ok(())
 }
 
@@ -1405,6 +1419,7 @@ fn row_to_installed(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstalledTextbo
         entry_count: row.get::<_, i64>(8)? as u64,
         installed_at_epoch_ms: row.get::<_, i64>(9)? as u64,
         active: row.get(10)?,
+        metadata_refresh_available: row.get(11)?,
     })
 }
 
@@ -1752,6 +1767,7 @@ mod tests {
         let installed = store.list_installed().expect("installed");
         assert_eq!(installed[0].version, "1");
         assert!(installed[0].active);
+        assert!(!installed[0].metadata_refresh_available);
 
         let second_catalog = test_catalog(broken.path(), "test-en-zh", "2");
         store
@@ -1761,6 +1777,54 @@ mod tests {
         assert_eq!(installed[0].version, "2");
         assert!(installed[0].active);
         assert_eq!(installed[0].entry_count, 1);
+        assert!(!installed[0].metadata_refresh_available);
+    }
+
+    #[test]
+    fn same_version_verified_reinstall_clears_legacy_metadata_refresh() {
+        let app_db = NamedTempFile::new().expect("app db");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let fixture = wikdict_fixture_with_lexical_rows(
+            &[("supersede", "代替")],
+            &[("supersede", "代替", "eng/supersede__Verb__1", 1.0, 1, 1.0)],
+        );
+        let catalog = test_catalog(fixture.path(), "test-en-zh", "1");
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("install");
+        {
+            let connection = store.connection.lock().expect("database lock");
+            connection
+                .execute(
+                    "UPDATE textbooks SET import_revision = 0 WHERE id = ?1",
+                    params![catalog.id],
+                )
+                .expect("mark legacy import");
+        }
+        assert!(
+            store
+                .get_installed(&catalog.id)
+                .expect("query")
+                .expect("installed")
+                .metadata_refresh_available
+        );
+
+        store
+            .install_sqlite(&catalog, fixture.path(), 20)
+            .expect("verified refresh");
+        let refreshed = store
+            .get_installed(&catalog.id)
+            .expect("query")
+            .expect("installed");
+        assert!(!refreshed.metadata_refresh_available);
+        assert_eq!(
+            store
+                .list_entries(&catalog.id, None, 0, 50)
+                .expect("entries")
+                .entries[0]
+                .part_of_speech,
+            Some(PartOfSpeech::Verb)
+        );
     }
 
     #[test]
@@ -1972,6 +2036,13 @@ mod tests {
         drop(connection);
 
         let store = TextbookStore::open(app_db.path()).expect("migrate v1");
+        assert!(
+            store
+                .get_installed("legacy")
+                .expect("query legacy")
+                .expect("legacy textbook")
+                .metadata_refresh_available
+        );
         let page = store.list_entries("legacy", None, 0, 50).expect("browse");
         assert_eq!(page.entries[0].translated_text, "算盘");
         assert_eq!(page.entries[1].translated_text, "鲍鱼");

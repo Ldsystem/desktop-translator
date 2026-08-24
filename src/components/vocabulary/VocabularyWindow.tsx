@@ -253,9 +253,9 @@ export function VocabularyWindow({
           <p>Built quietly from the words you translate.</p>
         </div>
         <nav>
-          {(["library", "related", "practice", "textbooks"] as const).map((item) => (
+          {(["library", "practice", "textbooks"] as const).map((item) => (
             <button key={item} className={view === item ? "study-nav is-active" : "study-nav"} type="button" onClick={() => navigate(item)}>
-              {item === "library" ? "My wordbook" : item === "related" ? "Related words" : item === "practice" ? "Practice" : "Textbooks"}
+              {item === "library" ? "My wordbook" : item === "practice" ? "Practice" : "Textbooks"}
             </button>
           ))}
         </nav>
