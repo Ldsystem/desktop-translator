@@ -44,13 +44,16 @@ interface SelectionEvent {
 }
 
 const fallbackSettings: UserSettings = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   enabled: true,
   sourceLanguage: "auto",
   targetLanguage: "en",
   startAtLogin: false,
   theme: "system",
   maxSelectionCodePoints: 5_000,
+  uiLocale: "en",
+  translationProvider: "google",
+  microsoftCloud: "global",
 };
 
 function runningInTauri() {
@@ -133,6 +136,9 @@ export function Bootstrap() {
     }
 
     let disposed = false;
+    const settingsSubscription = listen<UserSettings>("settings-changed", ({ payload }) => {
+      if (!disposed) setSettings(payload);
+    });
     const subscription =
       mode === "overlay"
         ? listen<SelectionEvent>("selection-resolved", ({ payload }) => {
@@ -192,6 +198,7 @@ export function Bootstrap() {
         window.clearInterval(permissionPoll);
       }
       void subscription?.then((unlisten) => unlisten());
+      void settingsSubscription.then((unlisten) => unlisten());
     };
   }, [mode]);
 
@@ -438,6 +445,9 @@ export function Bootstrap() {
             if (!nextSettings.enabled) {
               speaking.current = false;
             }
+            void invoke<CredentialStatus>("get_credential_status", { provider: nextSettings.translationProvider })
+              .then(setCredentialStatus)
+              .catch(() => setCredentialStatus("missing"));
           })
           .catch(async () => {
             const status = await invoke<PermissionStatus>("get_permission_status").catch(
@@ -446,21 +456,28 @@ export function Bootstrap() {
             setPermissionStatus(status);
           });
       }}
-      onSaveCredential={() => {
-        void invoke<boolean>("prompt_and_save_credential").then((saved) => {
+      onSaveCredential={(provider, field) => {
+        void invoke<boolean>("prompt_and_save_credential", { provider, field }).then((saved) => {
           if (saved) {
-            setCredentialStatus("ready");
+            void invoke<CredentialStatus>("get_credential_status", { provider })
+              .then(setCredentialStatus)
+              .catch(() => setCredentialStatus("missing"));
           }
         });
       }}
-      onTestCredential={() => {
+      onProviderChange={(provider) => {
+        void invoke<CredentialStatus>("get_credential_status", { provider })
+          .then(setCredentialStatus)
+          .catch(() => setCredentialStatus("missing"));
+      }}
+      onTestCredential={(provider) => {
         setCredentialStatus("testing");
-        void invoke("test_credential")
+        void invoke("test_credential", { provider })
           .then(() => setCredentialStatus("ready"))
           .catch(() => setCredentialStatus("invalid"));
       }}
-      onRemoveCredential={() => {
-        void invoke("remove_credential").then(() =>
+      onRemoveCredential={(provider) => {
+        void invoke("remove_credential", { provider }).then(() =>
           setCredentialStatus("missing"),
         );
       }}

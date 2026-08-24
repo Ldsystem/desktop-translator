@@ -4,6 +4,8 @@
     "Avenir Next", Avenir, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   font-synthesis: none;
   --font-utility: ui-monospace, "SFMono-Regular", "Cascadia Code", monospace;
+  --font-cjk-sans: "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  --font-lexical: Georgia, "Songti SC", STSong, "Noto Serif CJK SC", serif;
   --ink: #17201f;
   --ink-muted: #66716f;
   --canvas: #f3f6f4;
@@ -31,6 +33,12 @@
   --study-ink: #173d36;
   --study-paper: #f7faf8;
   --study-rule: #c9d8d2;
+}
+
+[data-locale="zh-CN"] {
+  font-family: var(--font-cjk-sans);
+  font-size: 15px;
+  line-height: 1.62;
 }
 
 [data-theme="light"] {

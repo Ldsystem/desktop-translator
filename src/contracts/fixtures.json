@@ -10,13 +10,16 @@
     "capturedAtEpochMs": 1723464000000
   },
   "settings": {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "enabled": true,
     "sourceLanguage": "auto",
     "targetLanguage": "zh-CN",
     "startAtLogin": false,
     "theme": "system",
-    "maxSelectionCodePoints": 5000
+    "maxSelectionCodePoints": 5000,
+    "uiLocale": "en",
+    "translationProvider": "google",
+    "microsoftCloud": "global"
   },
   "translationRequest": {
     "selectionId": 42,

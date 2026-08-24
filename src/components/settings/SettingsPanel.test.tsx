@@ -11,13 +11,16 @@ const appCss = readFileSync("src/styles/app.css", "utf8");
 const tokensCss = readFileSync("src/styles/tokens.css", "utf8");
 
 const settings: UserSettings = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   enabled: true,
   sourceLanguage: "auto",
   targetLanguage: "en",
   startAtLogin: false,
   theme: "system",
   maxSelectionCodePoints: 5_000,
+  uiLocale: "en",
+  translationProvider: "google",
+  microsoftCloud: "global",
 };
 
 describe("SettingsPanel", () => {
@@ -55,19 +58,19 @@ describe("SettingsPanel", () => {
     );
 
     expect(container.querySelector('input[type="password"]')).toBeNull();
-    expect(container.textContent).toContain("Save API Key");
-    expect(container.textContent).toContain("Test API Key");
-    expect(container.textContent).toContain("Remove API Key");
+    expect(container.textContent).toContain("Configure API key");
+    expect(container.textContent).toContain("Test");
+    expect(container.textContent).toContain("Remove");
     expect(container.textContent).not.toContain("Gemini");
     expect(container.textContent).not.toContain("Explanation");
 
     const saveKey = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Save API Key",
+      (button) => button.textContent === "Configure API key",
     );
     act(() => saveKey?.focus());
     expect(document.activeElement).toBe(saveKey);
     act(() => saveKey?.click());
-    expect(onSaveCredential).toHaveBeenCalledOnce();
+    expect(onSaveCredential).toHaveBeenCalledWith("google", "api-key");
   });
 
   it("forces monitoring off and links denied permission guidance", () => {
@@ -90,7 +93,7 @@ describe("SettingsPanel", () => {
     );
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "quit Desktop Translator from the menu bar",
+      "reopen Desktop Translator",
     );
     expect(container.textContent).toContain("Monitoring Off");
     const enable = container.querySelector<HTMLInputElement>('input[name="enabled"]');
@@ -134,10 +137,10 @@ describe("SettingsPanel", () => {
     );
 
     expect(container.textContent).toContain(
-      "Selected text is sent to Google only after you choose Translate.",
+      "Text is sent only to the selected provider after you choose Translate.",
     );
-    expect(container.textContent).toContain("billing, quota, and API key restrictions");
-    expect(container.textContent).toContain("No content history is stored.");
+    expect(container.textContent).toContain("Credentials stay in the operating-system vault.");
+    expect(container.textContent).toContain("Personal vocabulary and practice data stay on this device.");
   });
 
   it("provides theme, focus, motion, contrast, and target-size contracts", () => {
@@ -162,6 +165,8 @@ describe("SettingsPanel", () => {
       (input) => input.value,
     );
     expect(themes).toEqual(["system", "light", "dark"]);
+    const appearanceCard = container.querySelector(".settings-card--appearance");
+    expect(appearanceCard?.querySelector(".theme-picker")).not.toBeNull();
     expect(appCss).toContain(":focus-visible");
     expect(appCss).toContain("@media (prefers-reduced-motion: reduce)");
     expect(appCss).toContain("animation-duration: 0.01ms !important");

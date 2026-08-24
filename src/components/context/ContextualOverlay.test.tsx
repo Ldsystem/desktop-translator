@@ -159,4 +159,11 @@ describe("ContextualOverlay", () => {
       "Accessibility Permission Required",
     );
   });
+
+  it("localizes the compact selection surface in Simplified Chinese", () => {
+    render({ mode: "translating", selection, generation: 1 }, { locale: "zh-CN" });
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("正在翻译…");
+    expect(container.querySelector('aside[aria-label="翻译"]')).not.toBeNull();
+  });
 });

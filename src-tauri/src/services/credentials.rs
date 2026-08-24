@@ -8,9 +8,143 @@ use async_trait::async_trait;
 use reqwest::Client;
 
 use crate::{
-    contracts::{AppError, AppErrorCode},
+    contracts::{AppError, AppErrorCode, TranslationProviderId},
     services::CredentialStore,
 };
+
+/// Provider-specific secret slots. They are deliberately absent from settings and IPC results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderSecretField {
+    ApiKey,
+    AppId,
+}
+
+impl ProviderSecretField {
+    fn account(self) -> &'static str {
+        match self {
+            Self::ApiKey => "translation-api-key",
+            Self::AppId => "translation-app-id",
+        }
+    }
+}
+
+/// OS-vault facade that isolates every provider and credential field.
+pub struct ProviderCredentialStore;
+
+impl ProviderCredentialStore {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn vault(
+        &self,
+        provider: TranslationProviderId,
+        field: ProviderSecretField,
+    ) -> Result<KeyringVault, AppError> {
+        let service = match provider {
+            TranslationProviderId::Google => DEFAULT_VAULT_SERVICE.to_owned(),
+            TranslationProviderId::Baidu => "com.desktop-translator.baidu-translation".to_owned(),
+            TranslationProviderId::Microsoft => {
+                "com.desktop-translator.microsoft-translator".to_owned()
+            }
+        };
+        KeyringVault::new(service, field.account())
+    }
+
+    pub fn set(
+        &self,
+        provider: TranslationProviderId,
+        field: ProviderSecretField,
+        secret: &str,
+    ) -> Result<(), AppError> {
+        let value = secret.trim();
+        if value.is_empty() || value.len() > 4096 {
+            return Err(AppError::new(
+                AppErrorCode::InvalidCredential,
+                "The credential value is empty or too long.",
+                false,
+            ));
+        }
+        self.vault(provider, field)?.set_secret(value)
+    }
+
+    pub fn get(
+        &self,
+        provider: TranslationProviderId,
+        field: ProviderSecretField,
+    ) -> Result<Option<String>, AppError> {
+        self.vault(provider, field)?.get_secret()
+    }
+
+    pub fn remove_provider(&self, provider: TranslationProviderId) -> Result<(), AppError> {
+        self.vault(provider, ProviderSecretField::ApiKey)?
+            .remove_secret()?;
+        if provider == TranslationProviderId::Baidu {
+            self.vault(provider, ProviderSecretField::AppId)?
+                .remove_secret()?;
+        }
+        Ok(())
+    }
+
+    pub fn configured(&self, provider: TranslationProviderId) -> Result<bool, AppError> {
+        let key = self
+            .get(provider, ProviderSecretField::ApiKey)?
+            .is_some_and(|value| !value.trim().is_empty());
+        let app_id = provider != TranslationProviderId::Baidu
+            || self
+                .get(provider, ProviderSecretField::AppId)?
+                .is_some_and(|value| !value.trim().is_empty());
+        Ok(key && app_id)
+    }
+}
+
+impl Default for ProviderCredentialStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Google-compatible view used by the existing adapter without weakening its narrow trait.
+pub struct GoogleCredentialView {
+    store: Arc<ProviderCredentialStore>,
+}
+
+impl GoogleCredentialView {
+    pub fn new(store: Arc<ProviderCredentialStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl CredentialStore for GoogleCredentialView {
+    fn set_api_key(&self, api_key: &str) -> Result<(), AppError> {
+        self.store.set(
+            TranslationProviderId::Google,
+            ProviderSecretField::ApiKey,
+            api_key,
+        )
+    }
+
+    fn get_api_key(&self) -> Result<Option<String>, AppError> {
+        self.store
+            .get(TranslationProviderId::Google, ProviderSecretField::ApiKey)
+    }
+
+    async fn test_api_key(&self) -> Result<(), AppError> {
+        let key = self.get_api_key()?.ok_or_else(|| {
+            AppError::new(
+                AppErrorCode::MissingCredential,
+                "Add a Google API key.",
+                false,
+            )
+        })?;
+        GoogleCredentialValidator::new()?.validate(&key).await
+    }
+
+    fn remove_api_key(&self) -> Result<(), AppError> {
+        self.store.remove_provider(TranslationProviderId::Google)
+    }
+}
 
 use super::translation::validate_google_api_key;
 

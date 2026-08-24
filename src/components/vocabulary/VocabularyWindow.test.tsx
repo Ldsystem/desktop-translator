@@ -153,6 +153,38 @@ describe("VocabularyWindow", () => {
     expect(scroller?.getAttribute("data-scroll-owner")).toBe("study-content");
   });
 
+  it("localizes the complete practice experience in Simplified Chinese", async () => {
+    const api = makeStudyApi({
+      getPracticeQuestion: vi.fn().mockResolvedValue({
+        entryId: 1,
+        direction: "target-to-source",
+        prompt: "知识",
+        promptLanguage: "zh-CN",
+        answerLanguage: "en",
+        promptPartOfSpeech: "noun",
+        correctAnswer: "knowledge",
+        choices: [
+          { value: "knowledge", partOfSpeech: "noun" },
+          { value: "cognizance", partOfSpeech: "noun" },
+        ],
+      }),
+    });
+    act(() => root.render(<VocabularyWindow locale="zh-CN" entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+
+    const practice = [...container.querySelectorAll<HTMLButtonElement>(".study-nav")]
+      .find((button) => button.textContent === "练习");
+    act(() => practice?.click());
+    await flushEffects();
+
+    expect(container.textContent).toContain("选择答案");
+    expect(container.textContent).toContain("双向混合");
+    expect(container.textContent).toContain("单词 → 释义");
+    expect(container.textContent).toContain("释义 → 单词");
+    expect(container.textContent).toContain("检查答案");
+    expect(container.textContent).not.toContain("Choose the answer");
+    expect(container.textContent).not.toContain("Both directions");
+  });
+
   it("contains document scrolling and gives the content scroller a quiet visual treatment", () => {
     expect(appCss).toMatch(/\.app-surface\.app-surface--study\s*\{[^}]*position:\s*fixed[^}]*inset:\s*0[^}]*overflow:\s*hidden/s);
     expect(appCss).not.toMatch(/html,\s*body,\s*#root\s*\{[^}]*overflow:\s*hidden/s);
@@ -523,6 +555,17 @@ describe("VocabularyWindow", () => {
 
     expect(container.textContent).toContain("Your working vocabulary");
     expect(container.textContent).toContain("hello");
+    expect(container.textContent).not.toContain("Connections for hello");
+  });
+
+  it("localizes the card-scoped related view in Simplified Chinese", async () => {
+    const api = makeStudyApi();
+    act(() => root.render(<VocabularyWindow locale="zh-CN" entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello")?.click());
+    await flushEffects();
+
+    expect(container.textContent).toContain("返回我的词汇本");
+    expect(container.textContent).toContain("hello 的关联");
     expect(container.textContent).not.toContain("Connections for hello");
   });
 

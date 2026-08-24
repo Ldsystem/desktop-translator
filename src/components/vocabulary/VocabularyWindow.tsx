@@ -14,6 +14,7 @@ import type {
   TextbookPromotionResult,
   VocabularyEntry,
   VocabularyProvenance,
+  UiLocale,
 } from "../../contracts/ipc";
 import { PartOfSpeechBadge, PracticeView } from "./PracticeView";
 import { RelatedWordsView } from "./RelatedWordsView";
@@ -22,6 +23,7 @@ import { TextbooksView } from "./TextbooksView";
 type StudyView = "library" | "related" | "practice" | "textbooks";
 
 interface VocabularyWindowProps {
+  locale?: UiLocale;
   entries: readonly VocabularyEntry[];
   loading: boolean;
   error?: string;
@@ -141,6 +143,7 @@ function EntryCard({
 }
 
 export function VocabularyWindow({
+  locale = "en",
   entries,
   loading,
   error,
@@ -156,6 +159,7 @@ export function VocabularyWindow({
   onSubmitAnswer,
   studyApi,
 }: VocabularyWindowProps) {
+  const zh = locale === "zh-CN";
   const [view, setView] = useState<StudyView>(question !== undefined ? "practice" : "library");
   const [search, setSearch] = useState("");
   const [selectedChoice, setSelectedChoice] = useState<string>();
@@ -245,66 +249,66 @@ export function VocabularyWindow({
 
   return (
     <main className="study-window">
-      <aside ref={studyRail} className="study-rail" aria-label="Vocabulary study navigation">
+      <aside ref={studyRail} className="study-rail" aria-label={zh ? "词汇学习导航" : "Vocabulary study navigation"}>
         <div className="study-mark" aria-hidden="true">Aa</div>
         <div>
-          <p className="eyebrow">Personal lexicon</p>
-          <h1>Wordbook</h1>
-          <p>Built quietly from the words you translate.</p>
+          <p className="eyebrow">{zh ? "个人词库" : "Personal lexicon"}</p>
+          <h1>{zh ? "词汇本" : "Wordbook"}</h1>
+          <p>{zh ? "从你翻译的词汇中安静积累。" : "Built quietly from the words you translate."}</p>
         </div>
         <nav>
           {(["library", "practice", "textbooks"] as const).map((item) => (
             <button key={item} className={view === item ? "study-nav is-active" : "study-nav"} type="button" onClick={() => navigate(item)}>
-              {item === "library" ? "My wordbook" : item === "practice" ? "Practice" : "Textbooks"}
+              {item === "library" ? (zh ? "我的词汇本" : "My wordbook") : item === "practice" ? (zh ? "练习" : "Practice") : (zh ? "词书" : "Textbooks")}
             </button>
           ))}
         </nav>
-        <p className="study-rail__privacy">Your wordbook and practice activity stay on this device.</p>
+        <p className="study-rail__privacy">{zh ? "词汇本和练习记录仅保存在本机。" : "Your wordbook and practice activity stay on this device."}</p>
       </aside>
 
       <section className="study-content"><div ref={studyScroller} className="study-scroll-region" data-scroll-owner="study-content">
         {view === "library" && (
           <>
             <header className="study-header">
-              <div><p className="eyebrow">Textbook</p><h2>Your working vocabulary</h2></div>
+              <div><p className="eyebrow">{zh ? "词汇本" : "Textbook"}</p><h2>{zh ? "正在学习的词汇" : "Your working vocabulary"}</h2></div>
               <label className="study-search">
-                <span className="sr-only">Search vocabulary</span>
-                <input ref={searchInput} value={search} type="search" placeholder="Find a word or translation" onChange={(event) => { setSearch(event.target.value); onSearch(event.target.value); }} />
+                <span className="sr-only">{zh ? "搜索词汇" : "Search vocabulary"}</span>
+                <input ref={searchInput} value={search} type="search" placeholder={zh ? "查找单词或译文" : "Find a word or translation"} onChange={(event) => { setSearch(event.target.value); onSearch(event.target.value); }} />
               </label>
             </header>
             {error && <div className="study-notice study-notice--error" role="alert">{error}</div>}
             {loading ? (
-              <div className="study-empty" role="status"><strong>Opening your wordbook…</strong><span>Reading local study history.</span></div>
+              <div className="study-empty" role="status"><strong>{zh ? "正在打开词汇本…" : "Opening your wordbook…"}</strong><span>{zh ? "正在读取本地学习记录。" : "Reading local study history."}</span></div>
             ) : entries.length === 0 ? (
-              <div className="study-empty"><strong>Translate a word to begin.</strong><span>Eligible words and short phrases will appear here automatically.</span></div>
+              <div className="study-empty"><strong>{zh ? "翻译一个单词即可开始。" : "Translate a word to begin."}</strong><span>{zh ? "符合条件的单词和短语会自动出现在这里。" : "Eligible words and short phrases will appear here automatically."}</span></div>
             ) : (
               <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} managed={managedEntry?.id === entry.id} onManage={(trigger) => { manageTrigger.current = trigger; setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
             )}
           </>
         )}
 
-        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} revision={revision} onBack={() => navigate("library")} />}
+        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} revision={revision} locale={locale} onBack={() => navigate("library")} />}
 
         {view === "related" && !studyApi && (
           <>
-            <header className="study-header"><div><button className="text-button textbook-back" type="button" onClick={() => navigate("library")}>← Back to My wordbook</button><p className="eyebrow">Related words</p><h2>Connections in your wordbook</h2><p>Roots use a conservative Latin suffix rule. Meanings share words in stored translations.</p></div></header>
+            <header className="study-header"><div><button className="text-button textbook-back" type="button" onClick={() => navigate("library")}>← {zh ? "返回我的词汇本" : "Back to My wordbook"}</button><p className="eyebrow">{zh ? "相关词" : "Related words"}</p><h2>{zh ? "词汇本中的关联" : "Connections in your wordbook"}</h2><p>{zh ? "词根采用保守的拉丁后缀规则；释义关联来自已保存的翻译。" : "Roots use a conservative Latin suffix rule. Meanings share words in stored translations."}</p></div></header>
             {related.length === 0 ? (
-              <div className="study-empty"><strong>No local connections yet.</strong><span>Open a word from the textbook as your collection grows.</span></div>
+              <div className="study-empty"><strong>{zh ? "暂未找到本地关联。" : "No local connections yet."}</strong><span>{zh ? "随着词汇积累，可从词汇卡片打开相关词。" : "Open a word from the textbook as your collection grows."}</span></div>
             ) : (
               <div className="relation-list">{related.map(({ entry, reason }) => <article key={`${entry.id}-${reason}`}><span className={`relation-badge relation-badge--${reason}`}>{reason === "root" ? "shared root" : "shared meaning"}</span><strong>{entry.sourceText}</strong><span>{entry.translatedText}</span></article>)}</div>
             )}
           </>
         )}
 
-        {view === "practice" && studyApi && <PracticeView api={studyApi} revision={revision} />}
+        {view === "practice" && studyApi && <PracticeView api={studyApi} revision={revision} locale={locale} />}
 
         {view === "practice" && !studyApi && (
           <>
-            <header className="study-header"><div><p className="eyebrow">Practice</p><h2>Choose the translation</h2><p>Recall changes only after you check an answer.</p></div></header>
+            <header className="study-header"><div><p className="eyebrow">{zh ? "练习" : "Practice"}</p><h2>{zh ? "选择正确译文" : "Choose the translation"}</h2><p>{zh ? "提交答案后才会更新 Recall。" : "Recall changes only after you check an answer."}</p></div></header>
             {question === undefined ? (
-              <div className="study-empty" role="status"><strong>Choosing what needs attention…</strong></div>
+              <div className="study-empty" role="status"><strong>{zh ? "正在挑选需要复习的词汇…" : "Choosing what needs attention…"}</strong></div>
             ) : question === null ? (
-              <div className="study-empty"><strong>Add at least two distinct translations.</strong><span>Practice questions are assembled only from your local wordbook.</span></div>
+              <div className="study-empty"><strong>{zh ? "请至少添加两个释义不同的词汇。" : "Add at least two distinct translations."}</strong><span>{zh ? "练习题仅从你的本地词汇本中生成。" : "Practice questions are assembled only from your local wordbook."}</span></div>
             ) : (
               <section className="practice-card">
                 <div className="practice-prompt"><span>{question.effectiveSourceLanguage} → {question.targetLanguage}</span><strong>{question.sourceText}</strong></div>
@@ -316,12 +320,12 @@ export function VocabularyWindow({
                     <>
                       <div className={outcome.correct ? "practice-feedback is-correct" : "practice-feedback is-wrong"} role="status">
                         <span className="practice-feedback__mark" aria-hidden="true">{outcome.correct ? "✓" : "↺"}</span>
-                        <span className="practice-feedback__copy"><strong>{outcome.correct ? "Correct" : "Keep this one close"}</strong><span>{outcome.correct ? `Recall is now ${Math.round(outcome.entry.effectiveRecall)}.` : `The translation is “${outcome.correctTranslation}”.`}</span></span>
+                        <span className="practice-feedback__copy"><strong>{outcome.correct ? (zh ? "正确" : "Correct") : (zh ? "再记一遍" : "Keep this one close")}</strong><span>{outcome.correct ? (zh ? `Recall 已更新为 ${Math.round(outcome.entry.effectiveRecall)}。` : `Recall is now ${Math.round(outcome.entry.effectiveRecall)}.`) : (zh ? `正确译文是“${outcome.correctTranslation}”。` : `The translation is “${outcome.correctTranslation}”.`)}</span></span>
                       </div>
-                      <button ref={nextWordButton} className="button button--primary practice-next" type="button" onClick={onStartPractice}>Next word</button>
+                      <button ref={nextWordButton} className="button button--primary practice-next" type="button" onClick={onStartPractice}>{zh ? "下一个词" : "Next word"}</button>
                     </>
                   ) : (
-                    <button className="button button--primary practice-submit" type="button" disabled={!selectedChoice} onClick={() => selectedChoice && onSubmitAnswer(question.entryId, selectedChoice)}>Check answer</button>
+                    <button className="button button--primary practice-submit" type="button" disabled={!selectedChoice} onClick={() => selectedChoice && onSubmitAnswer(question.entryId, selectedChoice)}>{zh ? "检查答案" : "Check answer"}</button>
                   )}
                 </div>
               </section>
@@ -329,9 +333,9 @@ export function VocabularyWindow({
           </>
         )}
 
-        {view === "textbooks" && (studyApi ? <TextbooksView api={studyApi} /> : <div className="study-empty"><strong>Textbooks are unavailable.</strong><span>Restart the desktop app to reconnect the local textbook service.</span></div>)}
+        {view === "textbooks" && (studyApi ? <TextbooksView api={studyApi} locale={locale} /> : <div className="study-empty"><strong>{zh ? "词书暂不可用。" : "Textbooks are unavailable."}</strong><span>{zh ? "请重启桌面翻译以重新连接本地词书服务。" : "Restart the desktop app to reconnect the local textbook service."}</span></div>)}
       </div>
-      {managedEntry && studyApi && <section ref={manageDialog} id={`word-manage-${managedEntry.id}`} className="word-manage word-manage--drawer" role="dialog" aria-modal="true" tabIndex={-1} data-placement="drawer" aria-labelledby={`word-manage-title-${managedEntry.id}`}><header className="word-manage__header"><strong id={`word-manage-title-${managedEntry.id}`}>Manage {managedEntry.sourceText}</strong><button ref={manageCloseButton} className="text-button" type="button" onClick={closeManage}>Close</button></header><div className="word-manage__body">{manageError && <p className="study-notice study-notice--error" role="alert">{manageError}</p>}<label className="field">Source language<select value={correction} onChange={(event) => setCorrection(event.target.value)}>{["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "fr", "de", "es"].map((language) => <option key={language} value={language}>{language.toUpperCase()}</option>)}</select></label></div><footer className="word-manage__footer"><button className="button button--secondary" type="button" onClick={() => { void studyApi.correctVocabularySourceLanguage(managedEntry.id, correction).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError("The language correction could not be saved.")); }}>Save language</button><span className="word-manage__delete-slot">{confirmDelete ? <span className="word-manage__confirm" role="status"><span>Delete this word?</span><button className="button button--danger" type="button" onClick={() => { void studyApi.deleteVocabularyEntry(managedEntry.id).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError("This word could not be deleted.")); }}>Confirm</button><button className="text-button" type="button" onClick={() => setConfirmDelete(false)}>Cancel</button></span> : <button className="text-button is-danger" type="button" aria-label={`Delete ${managedEntry.sourceText}`} onClick={() => setConfirmDelete(true)}>Delete word</button>}</span></footer></section>}
+      {managedEntry && studyApi && <section ref={manageDialog} id={`word-manage-${managedEntry.id}`} className="word-manage word-manage--drawer" role="dialog" aria-modal="true" tabIndex={-1} data-placement="drawer" aria-labelledby={`word-manage-title-${managedEntry.id}`}><header className="word-manage__header"><strong id={`word-manage-title-${managedEntry.id}`}>{zh ? "管理" : "Manage"} {managedEntry.sourceText}</strong><button ref={manageCloseButton} className="text-button" type="button" onClick={closeManage}>{zh ? "关闭" : "Close"}</button></header><div className="word-manage__body">{manageError && <p className="study-notice study-notice--error" role="alert">{manageError}</p>}<label className="field">{zh ? "源语言" : "Source language"}<select value={correction} onChange={(event) => setCorrection(event.target.value)}>{["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "fr", "de", "es"].map((language) => <option key={language} value={language}>{language.toUpperCase()}</option>)}</select></label></div><footer className="word-manage__footer"><button className="button button--secondary" type="button" onClick={() => { void studyApi.correctVocabularySourceLanguage(managedEntry.id, correction).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError(zh ? "无法保存语言更正。" : "The language correction could not be saved.")); }}>{zh ? "保存语言" : "Save language"}</button><span className="word-manage__delete-slot">{confirmDelete ? <span className="word-manage__confirm" role="status"><span>{zh ? "删除此词？" : "Delete this word?"}</span><button className="button button--danger" type="button" onClick={() => { void studyApi.deleteVocabularyEntry(managedEntry.id).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError(zh ? "无法删除此词。" : "This word could not be deleted.")); }}>{zh ? "确认" : "Confirm"}</button><button className="text-button" type="button" onClick={() => setConfirmDelete(false)}>{zh ? "取消" : "Cancel"}</button></span> : <button className="text-button is-danger" type="button" aria-label={`Delete ${managedEntry.sourceText}`} onClick={() => setConfirmDelete(true)}>{zh ? "删除词汇" : "Delete word"}</button>}</span></footer></section>}
       </section>
     </main>
   );

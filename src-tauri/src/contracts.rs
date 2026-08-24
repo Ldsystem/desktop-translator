@@ -126,6 +126,32 @@ pub enum Theme {
     Dark,
 }
 
+/// Application chrome language. Lexical content keeps its own language codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UiLocale {
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "zh-CN")]
+    SimplifiedChinese,
+}
+
+/// Online translation service selected by the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TranslationProviderId {
+    Google,
+    Baidu,
+    Microsoft,
+}
+
+/// Microsoft Translator offers separate public and China sovereign clouds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MicrosoftCloud {
+    Global,
+    China,
+}
+
 /// Schema-versioned, non-secret application preferences.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,6 +163,11 @@ pub struct UserSettings {
     pub start_at_login: bool,
     pub theme: Theme,
     pub max_selection_code_points: usize,
+    pub ui_locale: UiLocale,
+    pub translation_provider: TranslationProviderId,
+    pub microsoft_cloud: MicrosoftCloud,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microsoft_region: Option<String>,
 }
 
 /// Validated request passed to a translation provider.
@@ -488,13 +519,17 @@ impl ValidateContract for SelectionSnapshot {
 
 impl ValidateContract for UserSettings {
     fn validate(&self) -> Result<(), AppError> {
-        if self.schema_version != 1
+        if self.schema_version != 2
             || self.source_language.trim().is_empty()
             || self.target_language.trim().is_empty()
             || self.max_selection_code_points == 0
             || u64::try_from(self.max_selection_code_points)
                 .map(|value| value > JS_SAFE_INTEGER_MAX)
                 .unwrap_or(true)
+            || self
+                .microsoft_region
+                .as_ref()
+                .is_some_and(|region| region.trim().is_empty() || region.len() > 64)
         {
             return Err(validation_error("settings violate schema constraints"));
         }
@@ -610,7 +645,7 @@ mod tests {
         let fixtures: Fixtures = serde_json::from_str(raw).expect("fixtures must deserialize");
 
         assert_eq!(fixtures.selection.id, 42);
-        assert_eq!(fixtures.settings.schema_version, 1);
+        assert_eq!(fixtures.settings.schema_version, 2);
         assert_eq!(fixtures.translation_request.selection_id, 42);
         assert_eq!(fixtures.translation_result.selection_id, 42);
         assert_eq!(fixtures.study_practice_question.choices[0].value, "短暂的");

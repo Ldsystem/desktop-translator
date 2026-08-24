@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 
-import type { UserSettings } from "../../contracts/ipc";
+import type { TranslationProviderId, UserSettings } from "../../contracts/ipc";
+import { messages } from "../../i18n/catalog";
 import { defaultLanguages } from "../context/ContextualOverlay";
 
 type CredentialStatus = "missing" | "ready" | "invalid" | "testing";
@@ -11,19 +12,13 @@ interface SettingsPanelProps {
   credentialStatus: CredentialStatus;
   permissionStatus: PermissionStatus;
   onSave: (settings: UserSettings) => void;
-  onSaveCredential: () => void;
-  onTestCredential: () => void;
-  onRemoveCredential: () => void;
+  onSaveCredential: (provider: TranslationProviderId, field: "api-key" | "app-id") => void;
+  onProviderChange?: (provider: TranslationProviderId) => void;
+  onTestCredential: (provider: TranslationProviderId) => void;
+  onRemoveCredential: (provider: TranslationProviderId) => void;
   onOpenSystemSettings: () => void;
   onQuit: () => void;
 }
-
-const credentialLabels: Record<CredentialStatus, string> = {
-  missing: "Not Configured",
-  ready: "Stored Securely",
-  invalid: "Needs Attention",
-  testing: "Testing…",
-};
 
 export function SettingsPanel({
   settings,
@@ -31,6 +26,7 @@ export function SettingsPanel({
   permissionStatus,
   onSave,
   onSaveCredential,
+  onProviderChange = () => undefined,
   onTestCredential,
   onRemoveCredential,
   onOpenSystemSettings,
@@ -39,6 +35,13 @@ export function SettingsPanel({
   const [draft, setDraft] = useState(settings);
   const [confirmRemoval, setConfirmRemoval] = useState(false);
   const monitoringEnabled = permissionStatus !== "denied" && draft.enabled;
+  const copy = messages(draft.uiLocale);
+  const credentialLabel = {
+    missing: copy.notConfigured,
+    ready: copy.storedSecurely,
+    invalid: copy.needsAttention,
+    testing: copy.testing,
+  }[credentialStatus];
 
   useEffect(() => setDraft(settings), [settings]);
 
@@ -58,27 +61,23 @@ export function SettingsPanel({
           <span className="brand-mark" aria-hidden="true">译</span>
           <div>
             <p className="eyebrow">Desktop Translator</p>
-            <h1>Settings</h1>
+            <h1>{copy.settings}</h1>
           </div>
         </div>
         <span className={`status-chip status-chip--${monitoringEnabled ? "active" : "quiet"}`}>
           <span aria-hidden="true" />
-          {monitoringEnabled ? "Monitoring On" : "Monitoring Off"}
+          {monitoringEnabled ? copy.monitoringOn : copy.monitoringOff}
         </span>
       </header>
 
       {permissionStatus === "denied" && (
         <section className="permission-banner" role="alert" aria-labelledby="permission-title">
           <div>
-            <h2 id="permission-title">Accessibility Permission Required</h2>
-            <p>
-              Monitoring is off. Allow access in System Settings, then quit
-              Desktop Translator from the menu bar and open it again. macOS does
-              not apply this permission to an app that is already running.
-            </p>
+            <h2 id="permission-title">{copy.permissionTitle}</h2>
+            <p>{copy.permissionBody}</p>
           </div>
           <button className="button button--secondary" type="button" onClick={onOpenSystemSettings}>
-            Open System Settings
+            {copy.openSystemSettings}
           </button>
         </section>
       )}
@@ -88,15 +87,15 @@ export function SettingsPanel({
           <div className="section-heading">
             <span className="section-heading__index" aria-hidden="true">01</span>
             <div>
-              <h2 id="general-heading">General</h2>
-              <p>Choose when translation is available.</p>
+              <h2 id="general-heading">{copy.general}</h2>
+              <p>{copy.generalHint}</p>
             </div>
           </div>
           <div className="settings-card">
             <label className="setting-row setting-row--toggle">
               <span>
-                <strong>Enable Selection Translation</strong>
-                <small>Show the translate control when text is selected.</small>
+                <strong>{copy.enableSelection}</strong>
+                <small>{copy.enableSelectionHint}</small>
               </span>
               <input
                 type="checkbox"
@@ -109,8 +108,8 @@ export function SettingsPanel({
             </label>
             <label className="setting-row setting-row--toggle">
               <span>
-                <strong>Start at Login</strong>
-                <small>Keep translation ready after you sign in.</small>
+                <strong>{copy.startAtLogin}</strong>
+                <small>{copy.startAtLoginHint}</small>
               </span>
               <input
                 type="checkbox"
@@ -127,20 +126,20 @@ export function SettingsPanel({
           <div className="section-heading">
             <span className="section-heading__index" aria-hidden="true">02</span>
             <div>
-              <h2 id="languages-heading">Languages</h2>
-              <p>Set the default direction for new selections.</p>
+              <h2 id="languages-heading">{copy.languages}</h2>
+              <p>{copy.languagesHint}</p>
             </div>
           </div>
           <div className="settings-card settings-card--fields">
             <label className="field">
-              <span>Source Language</span>
+              <span>{copy.sourceLanguage}</span>
               <select
                 id="source-language"
                 name="sourceLanguage"
                 value={draft.sourceLanguage}
                 onChange={(event) => update("sourceLanguage", event.currentTarget.value)}
               >
-                <option value="auto">Detect Automatically</option>
+                <option value="auto">{copy.detectAutomatically}</option>
                 {defaultLanguages.map((language) => (
                   <option key={language.code} value={language.code}>{language.label}</option>
                 ))}
@@ -148,7 +147,7 @@ export function SettingsPanel({
             </label>
             <span className="language-arrow" aria-hidden="true">→</span>
             <label className="field">
-              <span>Target Language</span>
+              <span>{copy.targetLanguage}</span>
               <select
                 id="target-language"
                 name="targetLanguage"
@@ -167,55 +166,87 @@ export function SettingsPanel({
           <div className="section-heading">
             <span className="section-heading__index" aria-hidden="true">03</span>
             <div>
-              <h2 id="appearance-heading">Appearance</h2>
-              <p>Match the overlay to your workspace.</p>
+              <h2 id="appearance-heading">{copy.appearance}</h2>
+              <p>{copy.appearanceHint}</p>
             </div>
           </div>
-          <fieldset className="theme-picker">
-            <legend>Theme</legend>
-            {(["system", "light", "dark"] as const).map((theme) => (
-              <label key={theme}>
-                <input
-                  type="radio"
-                  name="theme"
-                  value={theme}
-                  checked={draft.theme === theme}
-                  onChange={() => update("theme", theme)}
-                />
-                <span className={`theme-preview theme-preview--${theme}`} aria-hidden="true">
-                  <span />
-                </span>
-                <span>{theme === "system" ? "System" : theme === "light" ? "Light" : "Dark"}</span>
-              </label>
-            ))}
-          </fieldset>
+          <div className="settings-card settings-card--fields settings-card--appearance">
+            <label className="field">
+              <span>{copy.interfaceLanguage}</span>
+              <select value={draft.uiLocale} onChange={(event) => update("uiLocale", event.currentTarget.value as UserSettings["uiLocale"])}>
+                <option value="en">English</option>
+                <option value="zh-CN">简体中文</option>
+              </select>
+            </label>
+            <fieldset className="theme-picker">
+              <legend>{copy.theme}</legend>
+              {(["system", "light", "dark"] as const).map((theme) => (
+                <label key={theme}>
+                  <input
+                    type="radio"
+                    name="theme"
+                    value={theme}
+                    checked={draft.theme === theme}
+                    onChange={() => update("theme", theme)}
+                  />
+                  <span className={`theme-preview theme-preview--${theme}`} aria-hidden="true">
+                    <span />
+                  </span>
+                  <span>{theme === "system" ? copy.system : theme === "light" ? copy.light : copy.dark}</span>
+                </label>
+              ))}
+            </fieldset>
+          </div>
         </section>
 
         <section className="settings-section" aria-labelledby="access-heading">
           <div className="section-heading">
             <span className="section-heading__index" aria-hidden="true">04</span>
             <div>
-              <h2 id="access-heading">Service Access</h2>
-              <p>Manage the key stored by the secure native service.</p>
+              <h2 id="access-heading">{copy.serviceAccess}</h2>
+              <p>{copy.serviceHint}</p>
             </div>
+          </div>
+          <div className="settings-card provider-card">
+            <label className="field">
+              <span>{copy.provider}</span>
+              <select value={draft.translationProvider} onChange={(event) => { const provider = event.currentTarget.value as TranslationProviderId; update("translationProvider", provider); onProviderChange(provider); }}>
+                <option value="google">{copy.google}</option>
+                <option value="baidu">{copy.baidu}</option>
+                <option value="microsoft">{copy.microsoft}</option>
+              </select>
+            </label>
+            {draft.translationProvider === "microsoft" && (
+              <>
+                <label className="field">
+                  <span>{copy.microsoftCloud}</span>
+                  <select value={draft.microsoftCloud} onChange={(event) => update("microsoftCloud", event.currentTarget.value as UserSettings["microsoftCloud"])}>
+                    <option value="global">{copy.globalCloud}</option>
+                    <option value="china">{copy.chinaCloud}</option>
+                  </select>
+                </label>
+                <label className="field"><span>{copy.region}</span><input value={draft.microsoftRegion ?? ""} onChange={(event) => update("microsoftRegion", event.currentTarget.value || undefined)} placeholder="chinaeast2" /></label>
+              </>
+            )}
           </div>
           <div className="settings-card credential-card">
             <div>
               <span className={`credential-dot credential-dot--${credentialStatus}`} aria-hidden="true" />
-              <strong>API Key</strong>
-              <small aria-live="polite">{credentialLabels[credentialStatus]}</small>
+              <strong>{draft.translationProvider === "baidu" ? `${copy.appId} + ${copy.secretKey}` : copy.apiKey}</strong>
+              <small aria-live="polite">{credentialLabel}</small>
             </div>
             <div className="button-group">
-              <button className="button button--secondary" type="button" onClick={onSaveCredential}>
-                Save API Key
+              {draft.translationProvider === "baidu" && <button className="button button--secondary" type="button" onClick={() => onSaveCredential("baidu", "app-id")}>{copy.configure} {copy.appId}</button>}
+              <button className="button button--secondary" type="button" onClick={() => onSaveCredential(draft.translationProvider, "api-key")}>
+                {copy.configure} {draft.translationProvider === "baidu" ? copy.secretKey : copy.apiKey}
               </button>
               <button
                 className="button button--secondary"
                 type="button"
-                onClick={onTestCredential}
+                onClick={() => onTestCredential(draft.translationProvider)}
                 disabled={credentialStatus === "missing" || credentialStatus === "testing"}
               >
-                {credentialStatus === "testing" ? "Testing…" : "Test API Key"}
+                {credentialStatus === "testing" ? copy.testing : copy.test}
               </button>
               {confirmRemoval ? (
                 <>
@@ -223,18 +254,18 @@ export function SettingsPanel({
                     className="button button--danger"
                     type="button"
                     onClick={() => {
-                      onRemoveCredential();
+                      onRemoveCredential(draft.translationProvider);
                       setConfirmRemoval(false);
                     }}
                   >
-                    Confirm Removal
+                    {copy.confirmRemoval}
                   </button>
                   <button
                     className="button button--secondary"
                     type="button"
                     onClick={() => setConfirmRemoval(false)}
                   >
-                    Cancel
+                    {copy.cancel}
                   </button>
                 </>
               ) : (
@@ -244,7 +275,7 @@ export function SettingsPanel({
                   onClick={() => setConfirmRemoval(true)}
                   disabled={credentialStatus === "missing"}
                 >
-                  Remove API Key
+                  {copy.remove}
                 </button>
               )}
             </div>
@@ -255,27 +286,24 @@ export function SettingsPanel({
           <div className="section-heading">
             <span className="section-heading__index" aria-hidden="true">05</span>
             <div>
-              <h2 id="privacy-heading">Privacy & Usage</h2>
-              <p>Know what leaves your Mac and when.</p>
+              <h2 id="privacy-heading">{copy.privacy}</h2>
+              <p>{copy.privacyHint}</p>
             </div>
           </div>
           <div className="settings-card guidance-card">
             <ul>
-              <li>Selected text is sent to Google only after you choose Translate.</li>
-              <li>
-                API usage may incur charges and is subject to billing, quota, and API key
-                restrictions.
-              </li>
-              <li>No content history is stored.</li>
+              <li>{copy.privacyOne}</li>
+              <li>{copy.privacyTwo}</li>
+              <li>{copy.privacyThree}</li>
             </ul>
           </div>
         </section>
 
         <footer className="settings-footer">
           <button className="text-button text-button--danger" type="button" onClick={onQuit}>
-            Quit Desktop Translator
+            {copy.quit}
           </button>
-          <button className="button button--primary" type="submit">Save Changes</button>
+          <button className="button button--primary" type="submit">{copy.save}</button>
         </footer>
       </form>
     </main>

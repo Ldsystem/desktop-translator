@@ -244,9 +244,7 @@ impl OverlayController for TauriOverlayController {
             .lock()
             .expect("overlay session")
             .present(selection.clone());
-        window
-            .show()
-            .map_err(|_| overlay_error("Overlay could not be shown"))?;
+        show_overlay_without_activation(&window)?;
         if let Some(selection) = ready_selection {
             emit_selection(&self.app, selection)?;
         }
@@ -399,6 +397,47 @@ fn ensure_overlay(app: &AppHandle) -> Result<WebviewWindow, AppError> {
     #[cfg(target_os = "windows")]
     configure_native_nonactivation(&window)?;
     Ok(window)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show_overlay_without_activation(window: &WebviewWindow) -> Result<(), AppError> {
+    window
+        .show()
+        .map_err(|_| overlay_error("Overlay could not be shown"))
+}
+
+/// Applies the AppKit non-activating style and orders the contextual panel
+/// above the current app without bringing Desktop Translator's study window
+/// to the foreground. Both selectors must run on AppKit's main thread.
+#[cfg(target_os = "macos")]
+fn show_overlay_without_activation(window: &WebviewWindow) -> Result<(), AppError> {
+    use std::{sync::mpsc, time::Duration};
+
+    use crate::platform::macos::{
+        configure_nonactivating_panel, order_front_without_activation, NonActivatingPanelPolicy,
+    };
+
+    let panel = window
+        .ns_window()
+        .map_err(|_| overlay_error("Native overlay handle is unavailable"))?
+        as usize;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let panel = panel as *mut std::ffi::c_void;
+            // SAFETY: Tauri supplied a live NSWindow-compatible object and the
+            // closure is dispatched on AppKit's main thread.
+            let result = unsafe {
+                configure_nonactivating_panel(panel, NonActivatingPanelPolicy::default())
+                    .and_then(|_| order_front_without_activation(panel))
+            };
+            let _ = sender.send(result);
+        })
+        .map_err(|_| overlay_error("Overlay could not be scheduled for display"))?;
+    receiver
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| overlay_error("Overlay display timed out"))?
+        .map_err(|_| overlay_error("Overlay could not be shown"))
 }
 
 #[cfg(target_os = "windows")]

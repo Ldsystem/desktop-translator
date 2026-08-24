@@ -26,6 +26,9 @@ export const partOfSpeechValues = [
 export type PartOfSpeech = (typeof partOfSpeechValues)[number];
 /** User-selectable application color theme. */
 export type Theme = "system" | "light" | "dark";
+export type UiLocale = "en" | "zh-CN";
+export type TranslationProviderId = "google" | "baidu" | "microsoft";
+export type MicrosoftCloud = "global" | "china";
 
 /** Rectangle expressed in global physical screen pixels. */
 export interface PhysicalRect {
@@ -47,13 +50,17 @@ export interface SelectionSnapshot {
 
 /** Schema-versioned, non-secret user preferences persisted by the core. */
 export interface UserSettings {
-  schemaVersion: 1;
+  schemaVersion: 2;
   enabled: boolean;
   sourceLanguage: "auto" | LanguageCode;
   targetLanguage: LanguageCode;
   startAtLogin: boolean;
   theme: Theme;
   maxSelectionCodePoints: number;
+  uiLocale: UiLocale;
+  translationProvider: TranslationProviderId;
+  microsoftCloud: MicrosoftCloud;
+  microsoftRegion?: string;
 }
 
 /** Validated translation command payload sent from the overlay to the core. */
@@ -354,7 +361,7 @@ export function isSelectionSnapshot(value: unknown): value is SelectionSnapshot 
 export function isUserSettings(value: unknown): value is UserSettings {
   return (
     isRecord(value) &&
-    value.schemaVersion === 1 &&
+    value.schemaVersion === 2 &&
     typeof value.enabled === "boolean" &&
     isNonEmptyString(value.sourceLanguage) &&
     isNonEmptyString(value.targetLanguage) &&
@@ -362,6 +369,10 @@ export function isUserSettings(value: unknown): value is UserSettings {
     (value.theme === "system" || value.theme === "light" || value.theme === "dark") &&
     Number.isSafeInteger(value.maxSelectionCodePoints) &&
     Number(value.maxSelectionCodePoints) > 0
+    && (value.uiLocale === "en" || value.uiLocale === "zh-CN")
+    && ["google", "baidu", "microsoft"].includes(String(value.translationProvider))
+    && (value.microsoftCloud === "global" || value.microsoftCloud === "china")
+    && (value.microsoftRegion === undefined || isNonEmptyString(value.microsoftRegion))
   );
 }
 
