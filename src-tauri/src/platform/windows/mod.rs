@@ -17,6 +17,6 @@ pub use input::{
 pub use selection::WindowsSelectionAdapter;
 pub use speech::WindowsSpeechAdapter;
 pub use window::{
-    WindowsOverlayContent, WindowsOverlayContentDispatcher, WindowsOverlayMetrics,
-    WindowsOverlayWindow,
+    apply_non_activating_tool_window, hwnd_from_raw_pointer, WindowsOverlayContent,
+    WindowsOverlayContentDispatcher, WindowsOverlayMetrics, WindowsOverlayWindow,
 };

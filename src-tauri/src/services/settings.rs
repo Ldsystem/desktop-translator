@@ -4,10 +4,13 @@
 //! or source-application history, making content persistence unavailable by construction.
 
 use std::{
-    fs::{self, File},
+    fs,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::fs::File;
 
 use serde::Deserialize;
 

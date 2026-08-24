@@ -12,7 +12,7 @@ use std::{
 
 use async_trait::async_trait;
 use windows::{
-    core::Error as WindowsError,
+    core::{Error as WindowsError, HRESULT},
     Win32::{
         Foundation::E_ACCESSDENIED,
         System::{
@@ -277,7 +277,9 @@ fn copy_f64_safearray(array: *mut SAFEARRAY) -> Result<Vec<f64>, AppError> {
 
 fn rectangles_from_flat_values(values: &[f64]) -> Vec<PhysicalRect> {
     values
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter_map(|quad| {
             let rect = PhysicalRect {
                 x: quad[0],
@@ -301,7 +303,10 @@ fn map_uia_error(error: WindowsError) -> AppError {
 }
 
 fn map_uia_hresult(code: windows::core::HRESULT) -> AppError {
-    if code == E_ACCESSDENIED || code == UIA_E_NOTSUPPORTED || code == UIA_E_ELEMENTNOTAVAILABLE {
+    if code == E_ACCESSDENIED
+        || code == HRESULT(UIA_E_NOTSUPPORTED as i32)
+        || code == HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32)
+    {
         unsupported("control is protected, elevated, or does not expose TextPattern")
     } else {
         internal("UI Automation could not resolve the selection")
@@ -414,7 +419,9 @@ impl<T> Future for ReplyReceiver<T> {
 mod tests {
     use std::{future::Future, pin::Pin, task::Context};
 
+    use windows::core::HRESULT;
     use windows::Win32::Foundation::E_ACCESSDENIED;
+    use windows::Win32::UI::Accessibility::UIA_E_NOTSUPPORTED;
 
     use crate::contracts::AppErrorCode;
 
@@ -451,6 +458,13 @@ mod tests {
     #[test]
     fn maps_access_denied_to_stable_unsupported_control() {
         let error = map_uia_hresult(E_ACCESSDENIED);
+        assert_eq!(error.code, AppErrorCode::UnsupportedControl);
+        assert!(!error.retryable);
+    }
+
+    #[test]
+    fn maps_uia_not_supported_constant_to_unsupported_control() {
+        let error = map_uia_hresult(HRESULT(UIA_E_NOTSUPPORTED as i32));
         assert_eq!(error.code, AppErrorCode::UnsupportedControl);
         assert!(!error.retryable);
     }
