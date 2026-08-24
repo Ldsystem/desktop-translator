@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Desktop Translator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.desktoptranslator.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -27,7 +27,7 @@
     ],
     "category": "Productivity",
     "shortDescription": "Translate selected text anywhere on your desktop.",
-    "longDescription": "Desktop Translator watches for a completed text selection in any application, offers a small translate button beside it, and returns a translation from the Google Cloud Translation API without taking focus away from what you are reading.",
+    "longDescription": "Desktop Translator translates selected text without taking focus, supports Google, Baidu, and Microsoft translation services, and includes a private vocabulary study tool with an offline English to Simplified Chinese starter textbook.",
     "copyright": "Copyright © 2026 刘升龙 (Ldsystem)",
     "macOS": {
       "minimumSystemVersion": "11.0",

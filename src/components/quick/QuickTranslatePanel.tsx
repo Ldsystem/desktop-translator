@@ -5,6 +5,7 @@ import type {
   LanguageCode,
   TranslationRequest,
   TranslationResult,
+  UiLocale,
 } from "../../contracts/ipc";
 import { defaultLanguages, type LanguageOption } from "../context/ContextualOverlay";
 import { errorCopy } from "../errorCopy";
@@ -18,6 +19,7 @@ export type QuickTranslateStatus =
 
 interface QuickTranslatePanelProps {
   status: QuickTranslateStatus;
+  locale?: UiLocale;
   sourceLanguage: "auto" | LanguageCode;
   targetLanguage: LanguageCode;
   languages?: readonly LanguageOption[];
@@ -36,6 +38,7 @@ function SpeakerIcon() {
 
 export function QuickTranslatePanel({
   status,
+  locale = "en",
   sourceLanguage,
   targetLanguage,
   languages = defaultLanguages,
@@ -43,6 +46,8 @@ export function QuickTranslatePanel({
   onTranslate,
   onSpeak,
 }: QuickTranslatePanelProps) {
+  const zh = locale === "zh-CN";
+  const errors = errorCopy(locale);
   const [text, setText] = useState("");
   const [source, setSource] = useState<"auto" | LanguageCode>(sourceLanguage);
   const [target, setTarget] = useState<LanguageCode>(targetLanguage);
@@ -68,7 +73,7 @@ export function QuickTranslatePanel({
   };
 
   return (
-    <section className="quick-panel" aria-label="Quick Translation">
+    <section className="quick-panel" aria-label={zh ? "快速翻译" : "Quick Translation"}>
       <form
         className="quick-panel__form"
         onSubmit={(event) => {
@@ -78,12 +83,12 @@ export function QuickTranslatePanel({
       >
         <div className="quick-panel__languages">
           <label className="field">
-            <span>From</span>
+            <span>{zh ? "源语言" : "From"}</span>
             <select
               value={source}
               onChange={(event) => setSource(event.target.value as "auto" | LanguageCode)}
             >
-              <option value="auto">Detect language</option>
+              <option value="auto">{zh ? "自动检测" : "Detect language"}</option>
               {languages.map((language) => (
                 <option key={language.code} value={language.code}>
                   {language.label}
@@ -95,7 +100,7 @@ export function QuickTranslatePanel({
             →
           </span>
           <label className="field">
-            <span>To</span>
+            <span>{zh ? "目标语言" : "To"}</span>
             <select
               value={target}
               onChange={(event) => setTarget(event.target.value as LanguageCode)}
@@ -114,8 +119,8 @@ export function QuickTranslatePanel({
           className="quick-panel__input"
           value={text}
           rows={3}
-          placeholder="Type or paste text to translate"
-          aria-label="Text to Translate"
+          placeholder={zh ? "输入或粘贴要翻译的文本" : "Type or paste text to translate"}
+          aria-label={zh ? "待翻译文本" : "Text to Translate"}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
             // Enter translates; Shift+Enter keeps the newline for longer text.
@@ -131,7 +136,7 @@ export function QuickTranslatePanel({
           type="submit"
           disabled={translating || text.trim().length === 0}
         >
-          {translating ? "Translating…" : "Translate"}
+          {translating ? (zh ? "正在翻译…" : "Translating…") : (zh ? "翻译" : "Translate")}
         </button>
       </form>
 
@@ -142,7 +147,7 @@ export function QuickTranslatePanel({
             <button
               className="icon-button"
               type="button"
-              aria-label="Speak Translation"
+              aria-label={zh ? "朗读译文" : "Speak Translation"}
               disabled={speechAvailability[status.result.targetLanguage] === false}
               onClick={() =>
                 onSpeak(status.result.translatedText, status.result.targetLanguage)
@@ -157,8 +162,8 @@ export function QuickTranslatePanel({
 
       {status.mode === "error" && (
         <div className="quick-panel__error" role="alert">
-          <strong>{errorCopy[status.error.code].title}</strong>
-          <span>{errorCopy[status.error.code].guidance}</span>
+          <strong>{errors[status.error.code].title}</strong>
+          <span>{errors[status.error.code].guidance}</span>
         </div>
       )}
     </section>

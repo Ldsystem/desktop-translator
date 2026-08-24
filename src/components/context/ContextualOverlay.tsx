@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import type { LanguageCode, TranslationRequest } from "../../contracts/ipc";
+import type { LanguageCode, TranslationRequest, UiLocale } from "../../contracts/ipc";
 import type { OverlayState } from "../../state/overlayMachine";
 import { errorCopy } from "../errorCopy";
 
@@ -21,6 +21,7 @@ export const defaultLanguages: readonly LanguageOption[] = [
 
 interface ContextualOverlayProps {
   state: OverlayState;
+  locale?: UiLocale;
   sourceLanguage: "auto" | LanguageCode;
   targetLanguage: LanguageCode;
   languages?: readonly LanguageOption[];
@@ -50,6 +51,7 @@ function CloseIcon() {
 
 export function ContextualOverlay({
   state,
+  locale = "en",
   sourceLanguage,
   targetLanguage,
   languages = defaultLanguages,
@@ -59,6 +61,8 @@ export function ContextualOverlay({
   onSpeak,
   onDismiss,
 }: ContextualOverlayProps) {
+  const zh = locale === "zh-CN";
+  const errors = errorCopy(locale);
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && state.mode !== "idle" && state.mode !== "disabled") {
@@ -87,11 +91,11 @@ export function ContextualOverlay({
 
   if (state.mode === "button-visible") {
     return (
-      <aside className="contextual-trigger" aria-label="Translation Controls">
+      <aside className="contextual-trigger" aria-label={zh ? "翻译控制" : "Translation Controls"}>
         <button
           className="translate-trigger"
           type="button"
-          aria-label="Translate Selected Text"
+          aria-label={zh ? "翻译所选文本" : "Translate Selected Text"}
           onClick={() => onTranslate(request())}
         >
           <span aria-hidden="true">A</span>
@@ -102,9 +106,9 @@ export function ContextualOverlay({
   }
 
   return (
-    <aside className="contextual-card" aria-label="Translation">
+    <aside className="contextual-card" aria-label={zh ? "翻译" : "Translation"}>
       <div className="contextual-card__rail" aria-hidden="true" />
-      <button className="icon-button dismiss-button" type="button" aria-label="Dismiss" onClick={onDismiss}>
+      <button className="icon-button dismiss-button" type="button" aria-label={zh ? "关闭" : "Dismiss"} onClick={onDismiss}>
         <CloseIcon />
       </button>
 
@@ -115,7 +119,7 @@ export function ContextualOverlay({
             <span />
             <span />
           </span>
-          <span>Translating…</span>
+          <span>{zh ? "正在翻译…" : "Translating…"}</span>
         </div>
       )}
 
@@ -124,14 +128,14 @@ export function ContextualOverlay({
           <section className="translation-block translation-block--source" aria-labelledby="source-heading">
             <div className="translation-block__header">
               <label id="source-heading" htmlFor="overlay-source-language">
-                Source
+                {zh ? "源文本" : "Source"}
               </label>
               <select
                 id="overlay-source-language"
                 name="overlay-source-language"
                 value={state.result.effectiveSourceLanguage}
                 onChange={(event) => onCorrectSource(request(event.currentTarget.value))}
-                aria-label="Correct Source Language"
+                aria-label={zh ? "更正源语言" : "Correct Source Language"}
               >
                 {languages.map((language) => (
                   <option key={language.code} value={language.code}>
@@ -142,13 +146,13 @@ export function ContextualOverlay({
               <button
                 className="icon-button"
                 type="button"
-                aria-label="Speak Source Text"
+                aria-label={zh ? "朗读源文本" : "Speak Source Text"}
                 disabled={speechAvailability[state.result.effectiveSourceLanguage] !== true}
                 title={
                   speechAvailability[state.result.effectiveSourceLanguage] === false
-                    ? "No installed voice supports this language"
+                    ? (zh ? "没有已安装的语音支持此语言" : "No installed voice supports this language")
                     : speechAvailability[state.result.effectiveSourceLanguage] === undefined
-                      ? "Checking installed voice availability"
+                      ? (zh ? "正在检查已安装语音" : "Checking installed voice availability")
                       : undefined
                 }
                 onClick={() => onSpeak(state.selection.text, state.result.effectiveSourceLanguage)}
@@ -168,13 +172,13 @@ export function ContextualOverlay({
               <button
                 className="icon-button"
                 type="button"
-                aria-label="Speak Translation"
+                aria-label={zh ? "朗读译文" : "Speak Translation"}
                 disabled={speechAvailability[state.result.targetLanguage] !== true}
                 title={
                   speechAvailability[state.result.targetLanguage] === false
-                    ? "No installed voice supports this language"
+                    ? (zh ? "没有已安装的语音支持此语言" : "No installed voice supports this language")
                     : speechAvailability[state.result.targetLanguage] === undefined
-                      ? "Checking installed voice availability"
+                      ? (zh ? "正在检查已安装语音" : "Checking installed voice availability")
                       : undefined
                 }
                 onClick={() => onSpeak(state.result.translatedText, state.result.targetLanguage)}
@@ -191,13 +195,13 @@ export function ContextualOverlay({
         <div className="error-state" role="alert">
           <span className="error-state__mark" aria-hidden="true">!</span>
           <div>
-            <h2>{errorCopy[state.error.code].title}</h2>
-            <p>{state.error.message}</p>
-            <p className="error-state__guidance">{errorCopy[state.error.code].guidance}</p>
+            <h2>{errors[state.error.code].title}</h2>
+            {!zh && <p>{state.error.message}</p>}
+            <p className="error-state__guidance">{errors[state.error.code].guidance}</p>
           </div>
           {state.error.retryable && (
             <button className="button button--secondary" type="button" onClick={() => onTranslate(request())}>
-              Retry Translation
+              {zh ? "重试翻译" : "Retry Translation"}
             </button>
           )}
         </div>

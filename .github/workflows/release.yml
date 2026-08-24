@@ -58,6 +58,7 @@ jobs:
           codesign --verify --verbose=2 "$app"
           codesign -dv --verbose=2 "$app" 2>&1 | grep -q '^Signature=' \
             || { echo "bundle is unsigned"; exit 1; }
+          tools/release/audit-macos-bundle.sh "$app"
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -83,7 +84,9 @@ jobs:
             ```
 
             On first run, grant Accessibility permission when prompted, then
-            add your own Google Cloud Translation API key in Settings.
+            choose Google, Baidu, or Microsoft Translator in Settings and add
+            that provider's credentials. Vocabulary Study includes an offline
+            English to Simplified Chinese starter textbook.
 
             The app is ad-hoc signed, so its code identity changes with every
             release. After installing an update, macOS drops the old grant:

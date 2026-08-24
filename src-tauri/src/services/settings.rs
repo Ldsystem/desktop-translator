@@ -12,12 +12,15 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    contracts::{AppError, AppErrorCode, Theme, UserSettings, ValidateContract},
+    contracts::{
+        AppError, AppErrorCode, MicrosoftCloud, Theme, TranslationProviderId, UiLocale,
+        UserSettings, ValidateContract,
+    },
     services::SettingsStore,
 };
 
 /// Current on-disk settings schema.
-pub const SETTINGS_SCHEMA_VERSION: u8 = 1;
+pub const SETTINGS_SCHEMA_VERSION: u8 = 2;
 const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
 
 #[derive(Default, Deserialize)]
@@ -37,6 +40,17 @@ struct LegacySettingsV0 {
     max_selection_code_points: Option<usize>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySettingsV1 {
+    enabled: bool,
+    source_language: String,
+    target_language: String,
+    start_at_login: bool,
+    theme: Theme,
+    max_selection_code_points: usize,
+}
+
 /// Returns safe first-run defaults containing no user content.
 pub fn default_user_settings() -> UserSettings {
     UserSettings {
@@ -47,6 +61,10 @@ pub fn default_user_settings() -> UserSettings {
         start_at_login: false,
         theme: Theme::System,
         max_selection_code_points: 5_000,
+        ui_locale: UiLocale::English,
+        translation_provider: TranslationProviderId::Google,
+        microsoft_cloud: MicrosoftCloud::Global,
+        microsoft_region: None,
     }
 }
 
@@ -113,6 +131,25 @@ impl SettingsStore for JsonSettingsStore {
                     self.save(&settings)?;
                 }
                 Ok(settings)
+            }
+            Some(1) => {
+                let legacy: LegacySettingsV1 = match serde_json::from_value(value) {
+                    Ok(legacy) => legacy,
+                    Err(_) => return self.replace_with_defaults(),
+                };
+                let migrated = UserSettings {
+                    schema_version: SETTINGS_SCHEMA_VERSION,
+                    enabled: legacy.enabled,
+                    source_language: legacy.source_language,
+                    target_language: legacy.target_language,
+                    start_at_login: legacy.start_at_login,
+                    theme: legacy.theme,
+                    max_selection_code_points: legacy.max_selection_code_points,
+                    ..self.defaults.clone()
+                };
+                migrated.validate().map_err(|_| settings_data_error())?;
+                self.save(&migrated)?;
+                Ok(migrated)
             }
             Some(0) | None => {
                 let legacy: LegacySettingsV0 = match serde_json::from_value(value) {
@@ -334,6 +371,35 @@ mod tests {
         let persisted: UserSettings =
             serde_json::from_str(&persisted).expect("current schema persisted");
         assert_eq!(persisted, migrated);
+    }
+
+    #[test]
+    fn schema_one_migrates_to_english_google_defaults_without_losing_preferences() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{
+          "schemaVersion": 1,
+          "enabled": false,
+          "sourceLanguage": "en",
+          "targetLanguage": "zh-CN",
+          "startAtLogin": true,
+          "theme": "dark",
+          "maxSelectionCodePoints": 2048
+        }"#,
+        )
+        .expect("legacy fixture");
+        let settings = JsonSettingsStore::with_application_defaults(&path)
+            .load()
+            .expect("migration");
+        assert_eq!(settings.schema_version, 2);
+        assert_eq!(settings.ui_locale, UiLocale::English);
+        assert_eq!(settings.translation_provider, TranslationProviderId::Google);
+        assert_eq!(settings.microsoft_cloud, MicrosoftCloud::Global);
+        assert_eq!(settings.max_selection_code_points, 2048);
+        assert!(settings.start_at_login);
+        assert_eq!(settings.theme, Theme::Dark);
     }
 
     #[test]

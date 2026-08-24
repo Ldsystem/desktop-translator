@@ -4,6 +4,7 @@ import type {
   InstalledTextbook,
   TextbookCatalogItem,
   TextbookEntry,
+  UiLocale,
 } from "../../contracts/ipc";
 import type { StudyApi } from "./VocabularyWindow";
 import { PartOfSpeechBadge } from "./PracticeView";
@@ -11,26 +12,27 @@ import { PartOfSpeechBadge } from "./PracticeView";
 type ShelfTab = "discover" | "downloaded";
 const PAGE_SIZE = 40;
 
-const catalogPresentation: Record<string, { description: string; scope: string; count: number }> = {
-  "wikdict-en-zh-2026-06": { description: "A broad English reference for lookup, discovery, and uncommon words.", scope: "General reference", count: 30_518 },
-  "ngsl-en-zh-1-2": { description: "High-frequency vocabulary for daily reading and conversation.", scope: "Everyday · NGSL", count: 2_809 },
-  "nawl-en-zh-1-2": { description: "Vocabulary with high coverage across general academic texts.", scope: "Academic · NAWL", count: 957 },
-  "tsl-en-zh-1-2": { description: "A focused service list for TOEIC listening and reading preparation.", scope: "TOEIC · TSL", count: 1_250 },
-  "bsl-en-zh-1-20": { description: "High-frequency vocabulary for workplace and business communication.", scope: "Business · BSL", count: 1_744 },
+const catalogPresentation: Record<string, { description: string; descriptionZh: string; scope: string; scopeZh: string; count: number }> = {
+  "wikdict-en-zh-2026-06": { description: "A broad English reference for lookup, discovery, and uncommon words.", descriptionZh: "适合查询、拓展和学习非常用词的综合英语词典。", scope: "General reference", scopeZh: "综合参考", count: 30_518 },
+  "ngsl-en-zh-1-2": { description: "High-frequency vocabulary for daily reading and conversation.", descriptionZh: "覆盖日常阅读和交流中的高频词汇。", scope: "Everyday · NGSL", scopeZh: "日常 · NGSL", count: 2_809 },
+  "nawl-en-zh-1-2": { description: "Vocabulary with high coverage across general academic texts.", descriptionZh: "覆盖一般学术文本中的常用词汇。", scope: "Academic · NAWL", scopeZh: "学术 · NAWL", count: 957 },
+  "tsl-en-zh-1-2": { description: "A focused service list for TOEIC listening and reading preparation.", descriptionZh: "面向 TOEIC 听力和阅读备考的精简词表。", scope: "TOEIC · TSL", scopeZh: "TOEIC · TSL", count: 1_250 },
+  "bsl-en-zh-1-20": { description: "High-frequency vocabulary for workplace and business communication.", descriptionZh: "覆盖职场和商务交流中的高频词汇。", scope: "Business · BSL", scopeZh: "商务 · BSL", count: 1_744 },
 };
 
-function presentation(item: TextbookCatalogItem) {
+function presentation(item: TextbookCatalogItem, zh: boolean) {
   const curated = catalogPresentation[item.id];
   return {
-    description: item.description ?? curated?.description ?? "A curated English vocabulary reference.",
-    scope: item.scope ?? curated?.scope ?? "Curated vocabulary",
+    description: zh ? curated?.descriptionZh ?? item.description ?? "精选英语词汇参考。" : item.description ?? curated?.description ?? "A curated English vocabulary reference.",
+    scope: zh ? curated?.scopeZh ?? item.scope ?? "精选词汇" : item.scope ?? curated?.scope ?? "Curated vocabulary",
     count: item.estimatedEntryCount ?? curated?.count,
-    script: item.script ?? "Simplified Chinese",
+    script: zh ? "简体中文" : item.script ?? "Simplified Chinese",
   };
 }
 
 interface TextbooksViewProps {
   api: StudyApi;
+  locale?: UiLocale;
 }
 
 function message(error: unknown, fallback: string) {
@@ -40,7 +42,9 @@ function message(error: unknown, fallback: string) {
   return fallback;
 }
 
-export function TextbooksView({ api }: TextbooksViewProps) {
+export function TextbooksView({ api, locale = "en" }: TextbooksViewProps) {
+  const zh = locale === "zh-CN";
+  const tr = (english: string, chinese: string) => zh ? chinese : english;
   const [tab, setTab] = useState<ShelfTab>("discover");
   const [catalog, setCatalog] = useState<TextbookCatalogItem[]>([]);
   const [downloaded, setDownloaded] = useState<InstalledTextbook[]>([]);
@@ -151,24 +155,24 @@ export function TextbooksView({ api }: TextbooksViewProps) {
       <section className="textbook-detail" aria-labelledby="textbook-detail-title">
         <header className="study-header textbook-detail__header">
           <div>
-            <button className="text-button textbook-back" type="button" onClick={() => setOpenBook(undefined)}>← Back to shelf</button>
-            <p className="eyebrow">Downloaded textbook</p>
+            <button className="text-button textbook-back" type="button" onClick={() => setOpenBook(undefined)}>← {tr("Back to shelf", "返回词书架")}</button>
+            <p className="eyebrow">{tr("Downloaded textbook", "已下载词书")}</p>
             <h2 id="textbook-detail-title">{openBook.title}</h2>
             <p>{openBook.sourceLanguage.toUpperCase()} → {openBook.targetLanguage.toUpperCase()} · {openBook.entryCount.toLocaleString()} words · {openBook.license}</p>
           </div>
           <form className="study-search" onSubmit={(event) => { event.preventDefault(); loadEntries(openBook, entrySearch, 0); }}>
             <label>
-              <span className="sr-only">Search this textbook</span>
-              <input ref={searchInput} value={entrySearch} type="search" placeholder="Find a word in this textbook" onChange={(event) => setEntrySearch(event.target.value)} />
+              <span className="sr-only">{tr("Search this textbook", "搜索此词书")}</span>
+              <input ref={searchInput} value={entrySearch} type="search" placeholder={tr("Find a word in this textbook", "在此词书中查找单词")} onChange={(event) => setEntrySearch(event.target.value)} />
             </label>
           </form>
         </header>
-        {refreshItem && <div className="study-notice" role="status"><span>This download predates word details such as parts of speech.</span><button className="button button--secondary" type="button" disabled={busyBook === openBook.id} onClick={() => install(refreshItem)}>{busyBook === openBook.id ? "Refreshing…" : "Add parts of speech"}</button></div>}
-        {entryError && <div className="study-notice study-notice--error" role="alert">{entryError} <button className="text-button" type="button" onClick={() => loadEntries(openBook, entrySearch, entryOffset)}>Try again</button></div>}
+        {refreshItem && <div className="study-notice" role="status"><span>{tr("This download predates word details such as parts of speech.", "此版本缺少词性等词汇详情。")}</span><button className="button button--secondary" type="button" disabled={busyBook === openBook.id} onClick={() => install(refreshItem)}>{busyBook === openBook.id ? tr("Refreshing…", "更新中…") : tr("Add parts of speech", "补充词性")}</button></div>}
+        {entryError && <div className="study-notice study-notice--error" role="alert">{entryError} <button className="text-button" type="button" onClick={() => loadEntries(openBook, entrySearch, entryOffset)}>{tr("Try again", "重试")}</button></div>}
         {entryLoading ? (
-          <div className="study-empty" role="status"><strong>Opening this textbook…</strong><span>Reading its local index.</span></div>
+          <div className="study-empty" role="status"><strong>{tr("Opening this textbook…", "正在打开词书…")}</strong><span>{tr("Reading its local index.", "正在读取本地索引。")}</span></div>
         ) : entries.length === 0 ? (
-          <div className="study-empty"><strong>No matching words.</strong><span>Try a shorter spelling or clear the search.</span></div>
+          <div className="study-empty"><strong>{tr("No matching words.", "没有匹配的词汇。")}</strong><span>{tr("Try a shorter spelling or clear the search.", "可缩短拼写或清空搜索条件。")}</span></div>
         ) : (
           <>
             <div className="textbook-entry-list">
@@ -186,7 +190,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
                         setAdded((current) => new Set(current).add(entry.id));
                         api.refreshPersonal();
                       }).catch((error) => setEntryError(message(error, "This word could not be added."))).finally(() => setAdding(undefined));
-                    }}>{isAdded ? "Added" : adding === entry.id ? "Adding…" : "Add to my wordbook"}</button>
+                    }}>{isAdded ? tr("Added", "已添加") : adding === entry.id ? tr("Adding…", "添加中…") : tr("Add to my wordbook", "添加到我的词汇本")}</button>
                   </article>
                 );
               })}
@@ -194,8 +198,8 @@ export function TextbooksView({ api }: TextbooksViewProps) {
             <div className="textbook-pagination" aria-label="Textbook pages">
               <span>{pageStart.toLocaleString()}–{pageEnd.toLocaleString()} of {entryTotal.toLocaleString()}</span>
               <div>
-                <button className="button button--secondary" type="button" disabled={entryOffset === 0} onClick={() => loadEntries(openBook, entrySearch, Math.max(0, entryOffset - PAGE_SIZE))}>Previous</button>
-                <button className="button button--secondary" type="button" disabled={entryOffset + entries.length >= entryTotal} onClick={() => loadEntries(openBook, entrySearch, entryOffset + PAGE_SIZE)}>Next</button>
+                <button className="button button--secondary" type="button" disabled={entryOffset === 0} onClick={() => loadEntries(openBook, entrySearch, Math.max(0, entryOffset - PAGE_SIZE))}>{tr("Previous", "上一页")}</button>
+                <button className="button button--secondary" type="button" disabled={entryOffset + entries.length >= entryTotal} onClick={() => loadEntries(openBook, entrySearch, entryOffset + PAGE_SIZE)}>{tr("Next", "下一页")}</button>
               </div>
             </div>
           </>
@@ -207,10 +211,10 @@ export function TextbooksView({ api }: TextbooksViewProps) {
   return (
     <section aria-labelledby="textbook-shelf-title">
       <header className="study-header textbook-shelf__header">
-        <div><p className="eyebrow">Textbooks</p><h2 id="textbook-shelf-title">Textbook shelf</h2><p>Choose a learning path with clear Simplified Chinese meanings, then make one book active.</p></div>
+        <div><p className="eyebrow">{tr("Textbooks", "词书")}</p><h2 id="textbook-shelf-title">{tr("Textbook shelf", "词书架")}</h2><p>{tr("Choose a learning path with clear Simplified Chinese meanings, then make one book active.", "选择带有清晰简体中文释义的学习路径，并将其中一本设为当前词书。")}</p></div>
         <div className="shelf-tabs" aria-label="Textbook shelf sections">
-          <button type="button" aria-pressed={tab === "discover"} className={tab === "discover" ? "is-active" : ""} onClick={() => setTab("discover")}>Discover</button>
-          <button type="button" aria-pressed={tab === "downloaded"} className={tab === "downloaded" ? "is-active" : ""} onClick={() => setTab("downloaded")}>Downloaded</button>
+          <button type="button" aria-pressed={tab === "discover"} className={tab === "discover" ? "is-active" : ""} onClick={() => setTab("discover")}>{tr("Discover", "发现")}</button>
+          <button type="button" aria-pressed={tab === "downloaded"} className={tab === "downloaded" ? "is-active" : ""} onClick={() => setTab("downloaded")}>{tr("Downloaded", "已下载")}</button>
         </div>
       </header>
 
@@ -222,7 +226,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
               const installed = installedById.get(item.id);
               const update = installed && installed.version !== item.version;
               const metadataRefresh = installed?.metadataRefreshAvailable === true;
-              const details = presentation(item);
+              const details = presentation(item, zh);
               return <article className="textbook-volume" key={item.id}>
                 <span className="textbook-volume__spine" aria-hidden="true">{details.scope}</span>
                 <div className="textbook-volume__copy">
@@ -231,13 +235,13 @@ export function TextbooksView({ api }: TextbooksViewProps) {
                   <p className="textbook-volume__description">{details.description}</p>
                   <div className="textbook-volume__facts" aria-label="Textbook details">
                     <span>{details.scope}</span>
-                    {details.count && <span>{details.count.toLocaleString()} words</span>}
+                    {details.count && <span>{details.count.toLocaleString()} {tr("words", "词")}</span>}
                     <span>{details.script}</span>
                   </div>
                   <p className="textbook-volume__credit">{item.attribution}</p>
-                  <div className="textbook-volume__source"><small>{item.license} · {item.version}</small><a href={item.sourceUrl} target="_blank" rel="noreferrer">View source</a></div>
+                  <div className="textbook-volume__source"><small>{item.license} · {item.version}</small><a href={item.sourceUrl} target="_blank" rel="noreferrer">{tr("View source", "查看来源")}</a></div>
                 </div>
-                <button className="button button--primary" type="button" disabled={busyBook === item.id || Boolean(installed && !update && !metadataRefresh)} onClick={() => install(item)}>{busyBook === item.id ? "Downloading…" : metadataRefresh ? "Add parts of speech" : update ? "Update" : installed ? "Downloaded" : "Download"}</button>
+                <button className="button button--primary" type="button" disabled={busyBook === item.id || Boolean(installed && !update && !metadataRefresh)} onClick={() => install(item)}>{busyBook === item.id ? tr("Downloading…", "下载中…") : metadataRefresh ? tr("Add parts of speech", "补充词性") : update ? tr("Update", "更新") : installed ? tr("Downloaded", "已下载") : tr("Download", "下载")}</button>
               </article>;
             })}</div>
           )}
@@ -245,16 +249,16 @@ export function TextbooksView({ api }: TextbooksViewProps) {
       ) : (
         <div className="textbook-surface">
           {downloadedError && <div className="study-notice study-notice--error" role="alert">{downloadedError}</div>}
-          {downloadedLoading ? <div className="study-empty" role="status"><strong>Reading your shelf…</strong></div> : downloaded.length === 0 ? <div className="study-empty"><strong>No downloaded textbooks yet.</strong><span>Open Discover to add a curated local reference.</span><button className="button button--secondary study-empty__action" type="button" onClick={() => setTab("discover")}>Browse Discover</button></div> : (
+          {downloadedLoading ? <div className="study-empty" role="status"><strong>{tr("Reading your shelf…", "正在读取词书架…")}</strong></div> : downloaded.length === 0 ? <div className="study-empty"><strong>{tr("No downloaded textbooks yet.", "尚未下载词书。")}</strong><span>{tr("Open Discover to add a curated local reference.", "前往“发现”添加精选本地词书。")}</span><button className="button button--secondary study-empty__action" type="button" onClick={() => setTab("discover")}>{tr("Browse Discover", "浏览发现")}</button></div> : (
             <div className="downloaded-list">{downloaded.map((book) => {
               const refreshItem = book.metadataRefreshAvailable ? catalog.find((item) => item.id === book.id) : undefined;
               return <article className={book.active ? "downloaded-book is-active" : "downloaded-book"} key={book.id}>
-              <div className="downloaded-book__identity"><span aria-hidden="true">Aa</span><div><small>{book.active ? "Active textbook" : "Downloaded"}</small><h3>{book.title}</h3><p>{book.sourceLanguage.toUpperCase()} → {book.targetLanguage.toUpperCase()} · {book.entryCount.toLocaleString()} words</p></div></div>
+              <div className="downloaded-book__identity"><span aria-hidden="true">Aa</span><div><small>{book.active ? tr("Active textbook", "当前词书") : tr("Downloaded", "已下载")}</small><h3>{book.title}</h3><p>{book.sourceLanguage.toUpperCase()} → {book.targetLanguage.toUpperCase()} · {book.entryCount.toLocaleString()} {tr("words", "词")}</p></div></div>
               <div className="downloaded-book__actions">
-                <button className="button button--secondary" type="button" onClick={() => { setEntrySearch(""); loadEntries(book, "", 0); }}>Browse words</button>
-                {refreshItem && <button className="button button--secondary" type="button" disabled={busyBook === book.id} onClick={() => install(refreshItem)}>{busyBook === book.id ? "Refreshing…" : "Add parts of speech"}</button>}
-                <button className="button button--secondary" type="button" disabled={busyBook === book.id} onClick={() => updateShelf(() => api.setActiveTextbook(book.active ? undefined : book.id), book.id)}>{book.active ? "Deactivate" : "Make active"}</button>
-                {confirmRemove === book.id ? <span className="inline-confirm"><span>Remove local copy?</span><button className="text-button is-danger" type="button" onClick={() => updateShelf(() => api.removeTextbook(book.id), book.id).then((removed) => { if (removed) setConfirmRemove(undefined); })}>Remove</button><button className="text-button" type="button" onClick={() => setConfirmRemove(undefined)}>Cancel</button></span> : <button className="text-button is-danger" type="button" onClick={() => setConfirmRemove(book.id)}>Remove</button>}
+                <button className="button button--secondary" type="button" onClick={() => { setEntrySearch(""); loadEntries(book, "", 0); }}>{tr("Browse words", "浏览词汇")}</button>
+                {refreshItem && <button className="button button--secondary" type="button" disabled={busyBook === book.id} onClick={() => install(refreshItem)}>{busyBook === book.id ? tr("Refreshing…", "更新中…") : tr("Add parts of speech", "补充词性")}</button>}
+                <button className="button button--secondary" type="button" disabled={busyBook === book.id} onClick={() => updateShelf(() => api.setActiveTextbook(book.active ? undefined : book.id), book.id)}>{book.active ? tr("Deactivate", "停用") : tr("Make active", "设为当前")}</button>
+                {confirmRemove === book.id ? <span className="inline-confirm"><span>{tr("Remove local copy?", "移除本地副本？")}</span><button className="text-button is-danger" type="button" onClick={() => updateShelf(() => api.removeTextbook(book.id), book.id).then((removed) => { if (removed) setConfirmRemove(undefined); })}>{tr("Remove", "移除")}</button><button className="text-button" type="button" onClick={() => setConfirmRemove(undefined)}>{tr("Cancel", "取消")}</button></span> : <button className="text-button is-danger" type="button" onClick={() => setConfirmRemove(book.id)}>{tr("Remove", "移除")}</button>}
               </div>
             </article>})}</div>
           )}

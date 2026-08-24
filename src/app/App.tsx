@@ -6,6 +6,7 @@ import type {
   PracticeQuestion,
   RelatedVocabulary,
   TranslationRequest,
+  TranslationProviderId,
   UserSettings,
   VocabularyEntry,
 } from "../contracts/ipc";
@@ -26,13 +27,16 @@ import "../styles/app.css";
 import { getWindowMode, type WindowMode } from "./windowMode";
 
 const defaultSettings: UserSettings = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   enabled: true,
   sourceLanguage: "auto",
   targetLanguage: "en",
   startAtLogin: false,
   theme: "system",
   maxSelectionCodePoints: 5_000,
+  uiLocale: "en",
+  translationProvider: "google",
+  microsoftCloud: "global",
 };
 
 const ignore = () => undefined;
@@ -64,9 +68,10 @@ export interface AppProps {
   onSpeak?: (text: string, language: LanguageCode) => void;
   onDismiss?: () => void;
   onSaveSettings?: (settings: UserSettings) => void;
-  onSaveCredential?: () => void;
-  onTestCredential?: () => void;
-  onRemoveCredential?: () => void;
+  onSaveCredential?: (provider: TranslationProviderId, field: "api-key" | "app-id") => void;
+  onProviderChange?: (provider: TranslationProviderId) => void;
+  onTestCredential?: (provider: TranslationProviderId) => void;
+  onRemoveCredential?: (provider: TranslationProviderId) => void;
   onOpenSystemSettings?: () => void;
   onQuit?: () => void;
 }
@@ -99,12 +104,14 @@ export default function App({
   onDismiss = ignore,
   onSaveSettings = ignore,
   onSaveCredential = ignore,
+  onProviderChange = ignore,
   onTestCredential = ignore,
   onRemoveCredential = ignore,
   onOpenSystemSettings = ignore,
   onQuit = ignore,
 }: AppProps) {
   const [settings, setSettings] = useState(initialSettings);
+  document.documentElement.lang = settings.uiLocale;
 
   if (mode === "overlay") {
     const surfaceClass =
@@ -112,9 +119,10 @@ export default function App({
         ? "app-surface app-surface--overlay app-surface--trigger"
         : "app-surface app-surface--overlay";
     return (
-      <div className={surfaceClass} data-theme={settings.theme}>
+      <div className={surfaceClass} data-theme={settings.theme} data-locale={settings.uiLocale}>
         <ContextualOverlay
           state={overlayState}
+          locale={settings.uiLocale}
           sourceLanguage={settings.sourceLanguage}
           targetLanguage={settings.targetLanguage}
           speechAvailability={speechAvailability}
@@ -129,9 +137,10 @@ export default function App({
 
   if (mode === "quick") {
     return (
-      <div className="app-surface app-surface--quick" data-theme={settings.theme}>
+      <div className="app-surface app-surface--quick" data-theme={settings.theme} data-locale={settings.uiLocale}>
         <QuickTranslatePanel
           status={quickStatus}
+          locale={settings.uiLocale}
           sourceLanguage={settings.sourceLanguage}
           targetLanguage={settings.targetLanguage}
           speechAvailability={speechAvailability}
@@ -144,8 +153,9 @@ export default function App({
 
   if (mode === "study") {
     return (
-      <div className="app-surface app-surface--study" data-theme={settings.theme}>
+      <div className="app-surface app-surface--study" data-theme={settings.theme} data-locale={settings.uiLocale}>
         <VocabularyWindow
+          locale={settings.uiLocale}
           entries={vocabularyEntries}
           loading={vocabularyLoading}
           error={vocabularyError}
@@ -166,7 +176,7 @@ export default function App({
   }
 
   return (
-    <div className="app-surface app-surface--settings" data-theme={settings.theme}>
+    <div className="app-surface app-surface--settings" data-theme={settings.theme} data-locale={settings.uiLocale}>
       <SettingsPanel
         settings={settings}
         credentialStatus={credentialStatus}
@@ -176,6 +186,7 @@ export default function App({
           onSaveSettings(nextSettings);
         }}
         onSaveCredential={onSaveCredential}
+        onProviderChange={onProviderChange}
         onTestCredential={onTestCredential}
         onRemoveCredential={onRemoveCredential}
         onOpenSystemSettings={onOpenSystemSettings}

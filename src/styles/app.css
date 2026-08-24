@@ -155,7 +155,7 @@ input:focus-visible,
 .study-notice { margin-bottom: 20px; border-radius: var(--radius-sm); padding: 12px 14px; }
 .study-notice--error { border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); background: var(--danger-soft); color: var(--danger); }
 .study-empty { display: grid; min-height: 280px; place-content: center; gap: 8px; border: 1px dashed var(--study-rule); border-radius: var(--radius-md); color: var(--ink-muted); text-align: center; }
-.study-empty strong { color: var(--study-ink); font-family: Georgia, serif; font-size: 1.35rem; font-weight: 500; }
+.study-empty strong { color: var(--study-ink); font-family: var(--font-lexical); font-size: 1.35rem; font-weight: 500; }
 .study-empty__action { justify-self: center; margin-top: 10px; }
 
 .vocabulary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 14px; }
@@ -178,7 +178,7 @@ input:focus-visible,
 .vocabulary-card__open:focus-visible { border-radius: var(--radius-sm); outline: 2px solid var(--accent); outline-offset: 5px; }
 .vocabulary-card__copy { display: grid; align-content: start; gap: 5px; min-width: 0; }
 .vocabulary-card__word-row { display: grid; grid-template-columns: 36px minmax(0, 1fr); min-height: 38px; align-items: center; gap: 6px; min-width: 0; }
-.vocabulary-card__copy strong { color: var(--study-ink); font-family: Georgia, serif; font-size: clamp(1.05rem, 1.7vw, 1.35rem); font-weight: 500; }
+.vocabulary-card__copy strong { color: var(--study-ink); font-family: var(--font-lexical); font-size: clamp(1.05rem, 1.7vw, 1.35rem); font-weight: 500; }
 .vocabulary-card__copy span { color: var(--ink-muted); }
 .vocabulary-card__copy small { color: var(--ink-muted); font-family: var(--font-utility); font-size: 0.65rem; text-transform: uppercase; }
 .vocabulary-card__lexeme { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 4px 7px; }
@@ -208,7 +208,7 @@ input:focus-visible,
 
 .relation-list { display: grid; gap: 10px; }
 .relation-list article { display: grid; grid-template-columns: 120px minmax(120px, 0.7fr) minmax(0, 1fr) auto; align-items: center; gap: 16px; border-bottom: 1px solid var(--study-rule); padding: 16px 4px; }
-.relation-list article strong { color: var(--study-ink); font-family: Georgia, serif; font-size: 1.2rem; font-weight: 500; }
+.relation-list article strong { color: var(--study-ink); font-family: var(--font-lexical); font-size: 1.2rem; font-weight: 500; }
 .relation-lexeme, .textbook-entry__lexeme { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 5px 8px; }
 .relation-badge { width: fit-content; border-radius: 999px; padding: 5px 9px; font-size: 0.65rem; font-weight: 700; }
 .relation-badge--root { background: var(--accent-soft); color: var(--accent-strong); }
@@ -292,7 +292,7 @@ input:focus-visible,
 .textbook-entry-list { border-top: 1px solid var(--study-rule); }
 .textbook-entry { display: grid; grid-template-columns: minmax(140px, 0.8fr) minmax(160px, 1fr) auto; align-items: center; gap: 18px; min-height: 74px; border-bottom: 1px solid var(--study-rule); padding: 10px 4px; }
 .textbook-entry > div { display: grid; gap: 4px; }
-.textbook-entry strong { color: var(--study-ink); font-family: Georgia, serif; font-size: 1.12rem; font-weight: 500; }
+.textbook-entry strong { color: var(--study-ink); font-family: var(--font-lexical); font-size: 1.12rem; font-weight: 500; }
 .textbook-entry small { color: var(--accent-strong); font-family: var(--font-utility); font-size: 0.68rem; }
 .textbook-pagination { position: sticky; z-index: 5; bottom: 0; isolation: isolate; display: flex; min-height: 66px; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--study-rule); padding: 10px 4px; background: var(--study-paper); color: var(--ink-muted); font-size: 0.72rem; }
 .textbook-pagination::before { position: absolute; z-index: -1; top: -22px; right: 0; bottom: -40px; left: 0; background: var(--study-paper); box-shadow: 0 -12px 18px var(--study-paper); content: ""; pointer-events: none; }
@@ -305,7 +305,7 @@ input:focus-visible,
 .practice-prompt { display: grid; gap: 9px; margin: 0; border-bottom: 1px solid var(--study-rule); padding-bottom: 18px; }
 .practice-prompt > span { width: fit-content; border: 1px solid var(--study-rule); border-radius: 999px; padding: 4px 8px; background: var(--surface); color: var(--ink-muted); font-family: var(--font-utility); font-size: 0.64rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 .practice-prompt__lexeme { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; }
-.practice-prompt strong { color: var(--study-ink); font-family: Georgia, serif; font-size: clamp(1.75rem, 4.2vw, 3rem); font-weight: 500; line-height: 1.06; }
+.practice-prompt strong { color: var(--study-ink); font-family: var(--font-lexical); font-size: clamp(1.75rem, 4.2vw, 3rem); font-weight: 500; line-height: 1.14; }
 .practice-prompt strong.lexical-text--long { font-size: clamp(1.45rem, 3.7vw, 2.6rem); letter-spacing: -0.018em; }
 .practice-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin-top: 16px; counter-reset: answer; }
 .practice-choice { display: grid; min-width: 0; min-height: 52px; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid transparent; border-bottom-color: var(--study-rule); border-radius: 0; padding: 7px 8px; background: transparent; color: var(--ink); cursor: pointer; text-align: left; transition: border-color 140ms ease, background-color 140ms ease; }
@@ -1085,6 +1085,36 @@ input:focus-visible,
   font-size: 0.78rem;
 }
 
+.field input {
+  width: 100%;
+  min-height: var(--target);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 0 11px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.settings-card--appearance {
+  grid-template-columns: 1fr;
+  margin-bottom: 10px;
+}
+
+.settings-card--appearance .theme-picker {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.provider-card {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 14px;
+}
+
 .field select:hover {
   border-color: var(--accent);
 }
@@ -1197,9 +1227,11 @@ input:focus-visible,
 
 .credential-card {
   display: flex;
+  grid-column: 2;
   min-height: 76px;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 14px;
   padding: 13px 14px;
 }
@@ -1247,6 +1279,8 @@ input:focus-visible,
 
 .button-group {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 7px;
 }
 
@@ -1352,6 +1386,10 @@ input:focus-visible,
   .permission-banner {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .credential-card {
+    grid-column: 1;
   }
 
   .button-group {

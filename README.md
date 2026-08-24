@@ -15,6 +15,8 @@
 
 </div>
 
+<div align="center"><a href="README.zh-CN.md">简体中文</a> · English</div>
+
 Highlight a word or a sentence in any application. When you release the mouse, a
 small translate button appears beside the selection; click it and the
 translation opens right there, without stealing focus from what you were
@@ -42,8 +44,11 @@ tab.
   discovery, downloaded textbooks, and bidirectional practice.
 - **Stays out of the way.** Lives in the menu bar with no Dock icon, and can
   start at login.
-- **Bring your own key.** Your Google Cloud Translation API key is stored in the
-  system Keychain and never reaches the interface layer.
+- **English and Simplified Chinese UI.** Switch immediately from Settings or
+  the menu-bar menu, with CJK typography tuned for desktop reading.
+- **Choose your translation service.** Google Cloud, Baidu Translate, and
+  Microsoft Translator (global or China cloud) share one provider-neutral
+  native boundary. Provider credentials stay in isolated system-vault slots.
 
 Languages: English, Chinese (Simplified), Japanese, Korean, French, German and
 Spanish, in any direction, plus automatic detection of the source.
@@ -62,7 +67,8 @@ The study window brings four tools together:
 - **My wordbook** keeps the source and translation, language direction, lookup
   demand, recall score, pronunciation controls, and provenance-backed
   part-of-speech metadata. Entries can be corrected or removed.
-- **Downloaded textbooks** provide five Simplified Chinese learning paths,
+- **Downloaded textbooks** start with an embedded offline Simplified Chinese
+  starter and provide five additional learning paths,
   including everyday, academic, TOEIC, business, and general-reference
   vocabulary. A textbook hit is copied into your personal wordbook.
 - **Related words** combines roots and shared meanings across your wordbook and
@@ -119,7 +125,9 @@ runs natively on both Apple Silicon and Intel Macs.
 
 ## Setup
 
-Two things are needed before the first translation.
+Two things are needed before the first online translation. Vocabulary Study is
+usable immediately because its starter English → Simplified Chinese textbook is
+embedded in the app.
 
 **1. Grant Accessibility permission.** The app reads the selected text and its
 on-screen position through the macOS Accessibility API. On first launch it will
@@ -139,17 +147,23 @@ already running, which is why the warning can remain after the switch is on.
 > No screen capture is involved and no Screen Recording permission is requested.
 > The app reads only the text you selected, only after you finish selecting it.
 
-**2. Add a Google Cloud Translation API key.** Open Settings from the menu-bar
-menu and choose *Save API Key*. You will need a key from Google Cloud with the
-Cloud Translation API enabled and billing configured.
+**2. Choose and configure a translation provider.** Open Settings from the
+menu-bar menu, choose a service, and use its native credential prompt:
+
+| Provider | Configuration | Network note |
+| --- | --- | --- |
+| Baidu Translate | APP ID + secret key | Recommended for users in mainland China |
+| Microsoft Translator | Subscription key, cloud profile, optional region | China cloud requires an Azure China account |
+| Google Cloud | Cloud Translation API key | Availability depends on the user's network |
 
 > [!TIP]
-> Restrict the key to the Cloud Translation API and set a quota or budget in
-> Google Cloud. The key is yours and every request is billed to your account.
+> Restrict each credential to translation, and set the provider's quota or
+> budget. Requests use only the service currently selected in Settings; the app
+> never silently falls back to another online provider.
 
-The key is entered in a native secure prompt and stored in the macOS Keychain.
-It never passes through the user interface layer, is never written to the
-settings file, and is sent only in the `x-goog-api-key` header over HTTPS.
+Credentials are entered in native secure prompts and stored in the macOS
+Keychain. They never pass through the WebView and are never written to the
+settings file.
 
 ## Usage
 
@@ -161,7 +175,7 @@ settings file, and is sent only in the `x-goog-api-key` header over HTTPS.
 | Click the speaker icon | Speaks the text with a system voice |
 | Click the menu-bar icon | Opens the quick translate panel for typed text |
 | Open Vocabulary Study from the menu-bar menu | Reviews your wordbook, textbooks, connections, and practice queue |
-| Menu-bar right-click | Settings, enable/disable, start at login, quit |
+| Menu-bar right-click | Settings, UI language, enable/disable, start at login, quit |
 
 Nothing is sent anywhere until you click the translate button. Selections in
 password and other secure fields are ignored. Eligible words and short lexical
@@ -226,10 +240,12 @@ src-tauri/src/
 docs/                       Platform qualification and development notes
 ```
 
-The renderer is never given the API key, never reads the selection itself, and
+The renderer is never given provider credentials, never reads the selection itself, and
 communicates only through a narrow set of validated commands.
 
 ## Acknowledgements
 
-Built with [Tauri 2](https://tauri.app), React and Rust. Translation is provided
-by the [Google Cloud Translation API](https://cloud.google.com/translate).
+Built with [Tauri 2](https://tauri.app), React and Rust. Online translation
+adapters support [Google Cloud](https://cloud.google.com/translate),
+[Baidu Translate](https://fanyi-api.baidu.com/), and
+[Microsoft Translator](https://learn.microsoft.com/azure/ai-services/translator/).

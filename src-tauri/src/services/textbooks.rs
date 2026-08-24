@@ -31,6 +31,25 @@ const CURRENT_IMPORT_REVISION: i64 = 1;
 const WIKDICT_URL: &str =
     "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-zh.sqlite3";
 const WIKDICT_SHA256: &str = "16cf69dc8037a8d4dc6bde260142bf0181f9ff0a008d457f26452f1d80ca5ecd";
+const BUNDLED_STARTER_ID: &str = "starter-en-zh-cn-1";
+const BUNDLED_STARTER_BYTES: &[u8] =
+    include_bytes!("../../resources/textbooks/starter-en-zh.sqlite3");
+
+fn bundled_starter_item() -> TextbookCatalogItem {
+    TextbookCatalogItem {
+        id: BUNDLED_STARTER_ID.into(),
+        title: "Everyday English Starter · 日常英语入门".into(),
+        source_language: "en".into(),
+        target_language: "zh-CN".into(),
+        version: "1.0 bundled".into(),
+        download_url: "https://download.wikdict.com/bundled/starter-en-zh.sqlite3".into(),
+        expected_bytes: 12_288,
+        sha256: "5c99f10fb3b4b1eea5212a81cc20e87b391eac2cd60cc2277fc1795feab0acd9".into(),
+        license: "CC0-1.0".into(),
+        attribution: "Desktop Translator contributors".into(),
+        source_url: "https://github.com/Ldsystem/desktop-translator".into(),
+    }
+}
 
 #[derive(Clone, Copy)]
 enum ScopeFormat {
@@ -86,6 +105,10 @@ fn catalog_definitions() -> Vec<CatalogDefinition> {
     let wikdict = "WikDict, Wiktionary and DBnary contributors";
     let ngsl_source = "https://www.newgeneralservicelist.com/word-lists";
     vec![
+        CatalogDefinition {
+            item: bundled_starter_item(),
+            scope: CatalogScope::All,
+        },
         CatalogDefinition {
             item: catalog_item(
                 "wikdict-en-zh-2026-06",
@@ -188,6 +211,17 @@ impl TextbookStore {
         })
     }
 
+    /// Installs the small offline starter on first run and makes it active when no book is active.
+    pub fn ensure_bundled_starter(&self, now_ms: u64) -> Result<(), AppError> {
+        if self.get_installed(BUNDLED_STARTER_ID)?.is_none() {
+            self.install_verified_bytes(&bundled_starter_item(), BUNDLED_STARTER_BYTES, now_ms)?;
+        }
+        if !self.list_installed()?.iter().any(|book| book.active) {
+            self.set_active(Some(BUNDLED_STARTER_ID))?;
+        }
+        Ok(())
+    }
+
     /// Validates a pinned WikDict SQLite artifact before atomically replacing a version.
     pub fn install_sqlite(
         &self,
@@ -217,6 +251,12 @@ impl TextbookStore {
             .find(|definition| definition.item.id == catalog_id)
             .ok_or_else(|| internal("Textbook catalog item was not found"))?;
         let catalog = definition.item;
+        if catalog.id == BUNDLED_STARTER_ID {
+            self.ensure_bundled_starter(now_ms)?;
+            return self
+                .get_installed(BUNDLED_STARTER_ID)?
+                .ok_or_else(|| internal("Bundled textbook could not be installed"));
+        }
         validate_catalog(&catalog)?;
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -1596,21 +1636,40 @@ mod tests {
     }
 
     #[test]
-    fn curated_catalog_offers_five_pinned_simplified_chinese_choices() {
+    fn curated_catalog_offers_bundled_and_five_pinned_simplified_chinese_choices() {
         let catalog = curated_catalog();
-        assert_eq!(catalog.len(), 5);
+        assert_eq!(catalog.len(), 6);
+        assert_eq!(catalog[0].id, BUNDLED_STARTER_ID);
+        assert_eq!(
+            catalog[0].expected_bytes,
+            BUNDLED_STARTER_BYTES.len() as u64
+        );
         assert!(catalog.iter().any(|item| item.id.starts_with("ngsl-")));
         assert!(catalog.iter().any(|item| item.id.starts_with("nawl-")));
         assert!(catalog.iter().any(|item| item.id.starts_with("tsl-")));
         assert!(catalog.iter().any(|item| item.id.starts_with("bsl-")));
-        assert_eq!(catalog[0].expected_bytes, 5_169_152);
+        assert_eq!(catalog[1].expected_bytes, 5_169_152);
         assert_eq!(
-            catalog[0].sha256,
+            catalog[1].sha256,
             "16cf69dc8037a8d4dc6bde260142bf0181f9ff0a008d457f26452f1d80ca5ecd"
         );
-        assert!(catalog[0]
+        assert!(catalog[1]
             .download_url
             .starts_with("https://download.wikdict.com/"));
+    }
+
+    #[test]
+    fn bundled_starter_installs_offline_and_becomes_active() {
+        let app_db = NamedTempFile::new().expect("app db");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        store.ensure_bundled_starter(10).expect("bundled install");
+        let installed = store
+            .get_installed(BUNDLED_STARTER_ID)
+            .expect("query")
+            .expect("installed");
+        assert!(installed.active);
+        assert_eq!(installed.target_language, "zh-CN");
+        assert!(installed.entry_count >= 75);
     }
 
     #[test]

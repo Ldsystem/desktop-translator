@@ -2,7 +2,13 @@
 //!
 //! This module intentionally emits no request, response, credential, or text logs.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use reqwest::{Client, StatusCode};
@@ -10,10 +16,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, LanguageCode, TranslationRequest, TranslationResult,
-        ValidateContract,
+        AppError, AppErrorCode, LanguageCode, MicrosoftCloud, TranslationProviderId,
+        TranslationRequest, TranslationResult, ValidateContract,
     },
-    services::{CredentialStore, TranslationProvider},
+    services::{
+        credentials::{ProviderCredentialStore, ProviderSecretField},
+        CredentialStore, SettingsStore, TranslationProvider,
+    },
 };
 
 const TRANSLATE_ENDPOINT: &str = "https://translation.googleapis.com/language/translate/v2";
@@ -459,6 +468,427 @@ fn internal_error(message: &'static str) -> AppError {
     AppError::new(AppErrorCode::Internal, message, false)
 }
 
+const BAIDU_ENDPOINT: &str = "https://fanyi-api.baidu.com/api/trans/vip/translate";
+const MICROSOFT_GLOBAL_ENDPOINT: &str = "https://api.cognitive.microsofttranslator.com";
+const MICROSOFT_CHINA_ENDPOINT: &str = "https://api.translator.azure.cn";
+static BAIDU_SALT: AtomicU64 = AtomicU64::new(1_726_000_000);
+
+fn microsoft_endpoint(cloud: MicrosoftCloud) -> &'static str {
+    match cloud {
+        MicrosoftCloud::Global => MICROSOFT_GLOBAL_ENDPOINT,
+        MicrosoftCloud::China => MICROSOFT_CHINA_ENDPOINT,
+    }
+}
+
+fn microsoft_translation_url(
+    cloud: MicrosoftCloud,
+    source_language: &str,
+    target_language: &str,
+) -> Result<reqwest::Url, AppError> {
+    let mut url = reqwest::Url::parse(&format!("{}/translate", microsoft_endpoint(cloud)))
+        .map_err(|_| internal_error("Microsoft Translator endpoint is invalid"))?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("api-version", "3.0");
+        query.append_pair("to", target_language);
+        if !source_language.eq_ignore_ascii_case("auto") {
+            query.append_pair("from", source_language);
+        }
+    }
+    Ok(url)
+}
+
+/// Selects one explicit provider per request. It never silently changes provider.
+pub struct ProviderRouter {
+    settings: Arc<dyn SettingsStore>,
+    google: Arc<GoogleTranslationProvider>,
+    baidu: Arc<BaiduTranslationProvider>,
+    microsoft: Arc<MicrosoftTranslationProvider>,
+}
+
+impl ProviderRouter {
+    pub fn new(
+        settings: Arc<dyn SettingsStore>,
+        credentials: Arc<ProviderCredentialStore>,
+    ) -> Result<Self, AppError> {
+        let google_credentials: Arc<dyn CredentialStore> = Arc::new(
+            super::credentials::GoogleCredentialView::new(credentials.clone()),
+        );
+        Ok(Self {
+            google: Arc::new(GoogleTranslationProvider::new(google_credentials)?),
+            baidu: Arc::new(BaiduTranslationProvider::new(credentials.clone())?),
+            microsoft: Arc::new(MicrosoftTranslationProvider::new(
+                credentials,
+                settings.clone(),
+            )?),
+            settings,
+        })
+    }
+
+    fn selected(&self) -> Result<TranslationProviderId, AppError> {
+        Ok(self.settings.load()?.translation_provider)
+    }
+
+    pub async fn test(&self, provider: TranslationProviderId) -> Result<(), AppError> {
+        let request = TranslationRequest {
+            selection_id: 0,
+            text: "hello".to_owned(),
+            source_language: "en".to_owned(),
+            target_language: "zh-CN".to_owned(),
+        };
+        match provider {
+            TranslationProviderId::Google => self.google.translate(&request).await,
+            TranslationProviderId::Baidu => self.baidu.translate(&request).await,
+            TranslationProviderId::Microsoft => self.microsoft.translate(&request).await,
+        }
+        .map(|_| ())
+    }
+}
+
+#[async_trait]
+impl TranslationProvider for ProviderRouter {
+    async fn translate(&self, request: &TranslationRequest) -> Result<TranslationResult, AppError> {
+        match self.selected()? {
+            TranslationProviderId::Google => self.google.translate(request).await,
+            TranslationProviderId::Baidu => self.baidu.translate(request).await,
+            TranslationProviderId::Microsoft => self.microsoft.translate(request).await,
+        }
+    }
+
+    async fn supported_languages(&self) -> Result<Vec<LanguageCode>, AppError> {
+        match self.selected()? {
+            TranslationProviderId::Google => self.google.supported_languages().await,
+            TranslationProviderId::Baidu => self.baidu.supported_languages().await,
+            TranslationProviderId::Microsoft => self.microsoft.supported_languages().await,
+        }
+    }
+}
+
+pub struct BaiduTranslationProvider {
+    client: Client,
+    credentials: Arc<ProviderCredentialStore>,
+    endpoint: String,
+}
+
+impl BaiduTranslationProvider {
+    pub fn new(credentials: Arc<ProviderCredentialStore>) -> Result<Self, AppError> {
+        Ok(Self {
+            client: GoogleTranslationProvider::build_client()?,
+            credentials,
+            endpoint: BAIDU_ENDPOINT.to_owned(),
+        })
+    }
+
+    fn credential(
+        &self,
+        field: ProviderSecretField,
+        label: &'static str,
+    ) -> Result<String, AppError> {
+        self.credentials
+            .get(TranslationProviderId::Baidu, field)?
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| AppError::new(AppErrorCode::MissingCredential, label, false))
+    }
+}
+
+#[derive(Deserialize)]
+struct BaiduResponse {
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    trans_result: Vec<BaiduTranslation>,
+    error_code: Option<String>,
+    #[serde(default)]
+    error_msg: String,
+}
+
+#[derive(Deserialize)]
+struct BaiduTranslation {
+    dst: String,
+}
+
+fn baidu_language(value: &str) -> &str {
+    match value {
+        "zh-CN" | "zh-Hans" => "zh",
+        "zh-TW" | "zh-Hant" => "cht",
+        value => value,
+    }
+}
+
+#[async_trait]
+impl TranslationProvider for BaiduTranslationProvider {
+    async fn translate(&self, request: &TranslationRequest) -> Result<TranslationResult, AppError> {
+        request.validate()?;
+        let app_id = self.credential(ProviderSecretField::AppId, "Add your Baidu APP ID.")?;
+        let api_key = self.credential(ProviderSecretField::ApiKey, "Add your Baidu secret key.")?;
+        let salt = BAIDU_SALT.fetch_add(1, Ordering::Relaxed).to_string();
+        let sign = format!(
+            "{:x}",
+            md5::compute(format!("{app_id}{}{salt}{api_key}", request.text))
+        );
+        let params = [
+            ("q", request.text.as_str()),
+            ("from", baidu_language(&request.source_language)),
+            ("to", baidu_language(&request.target_language)),
+            ("appid", app_id.as_str()),
+            ("salt", salt.as_str()),
+            ("sign", sign.as_str()),
+        ];
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|error| map_transport_error_named(&error, "Baidu Translate"))?;
+        let status = response.status();
+        let body = read_bounded_body(response).await?;
+        if !status.is_success() {
+            return Err(map_generic_http_error(status, "Baidu Translate"));
+        }
+        let envelope: BaiduResponse = serde_json::from_slice(&body)
+            .map_err(|_| internal_error("Baidu Translate returned an invalid response"))?;
+        if let Some(code) = envelope.error_code.as_deref() {
+            return Err(map_baidu_error(code, &envelope.error_msg));
+        }
+        let translated_text = envelope
+            .trans_result
+            .into_iter()
+            .map(|item| item.dst)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if translated_text.trim().is_empty() {
+            return Err(internal_error("Baidu Translate returned no translation"));
+        }
+        let detected = (!envelope.from.trim().is_empty()).then_some(envelope.from);
+        Ok(TranslationResult {
+            selection_id: request.selection_id,
+            translated_text,
+            detected_source_language: detected.clone(),
+            effective_source_language: if request.source_language.eq_ignore_ascii_case("auto") {
+                detected.unwrap_or_else(|| "auto".to_owned())
+            } else {
+                request.source_language.clone()
+            },
+            target_language: request.target_language.clone(),
+            part_of_speech: None,
+        })
+    }
+
+    async fn supported_languages(&self) -> Result<Vec<LanguageCode>, AppError> {
+        Ok(vec!["auto", "en", "zh-CN", "ja", "ko", "fr", "de", "es"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect())
+    }
+}
+
+fn map_baidu_error(code: &str, _provider_message: &str) -> AppError {
+    match code {
+        "52001" => AppError::new(AppErrorCode::Timeout, "Baidu Translate timed out.", true),
+        "54003" => AppError::new(
+            AppErrorCode::QuotaExceeded,
+            "Baidu request frequency is limited.",
+            true,
+        ),
+        "54004" => AppError::new(
+            AppErrorCode::BillingRequired,
+            "Baidu Translate balance is insufficient.",
+            false,
+        ),
+        "58001" => AppError::new(
+            AppErrorCode::InvalidLanguagePair,
+            "Baidu rejected the language pair.",
+            false,
+        ),
+        "52003" | "54001" => AppError::new(
+            AppErrorCode::InvalidCredential,
+            "Baidu rejected the credentials.",
+            false,
+        ),
+        _ => AppError::new(
+            AppErrorCode::ServiceUnavailable,
+            "Baidu Translate rejected the request.",
+            false,
+        ),
+    }
+}
+
+pub struct MicrosoftTranslationProvider {
+    client: Client,
+    credentials: Arc<ProviderCredentialStore>,
+    settings: Arc<dyn SettingsStore>,
+}
+
+impl MicrosoftTranslationProvider {
+    pub fn new(
+        credentials: Arc<ProviderCredentialStore>,
+        settings: Arc<dyn SettingsStore>,
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            client: GoogleTranslationProvider::build_client()?,
+            credentials,
+            settings,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct MicrosoftRequest<'a> {
+    text: &'a str,
+}
+
+#[derive(Deserialize)]
+struct MicrosoftResponse {
+    #[serde(default)]
+    detected_language: Option<MicrosoftDetected>,
+    translations: Vec<MicrosoftTranslation>,
+}
+#[derive(Deserialize)]
+struct MicrosoftDetected {
+    language: String,
+}
+#[derive(Deserialize)]
+struct MicrosoftTranslation {
+    text: String,
+}
+
+#[async_trait]
+impl TranslationProvider for MicrosoftTranslationProvider {
+    async fn translate(&self, request: &TranslationRequest) -> Result<TranslationResult, AppError> {
+        request.validate()?;
+        let key = self
+            .credentials
+            .get(
+                TranslationProviderId::Microsoft,
+                ProviderSecretField::ApiKey,
+            )?
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::new(
+                    AppErrorCode::MissingCredential,
+                    "Add a Microsoft Translator key.",
+                    false,
+                )
+            })?;
+        let settings = self.settings.load()?;
+        let url = microsoft_translation_url(
+            settings.microsoft_cloud,
+            &request.source_language,
+            &request.target_language,
+        )?;
+        let mut outbound = self
+            .client
+            .post(url)
+            .header("Ocp-Apim-Subscription-Key", key)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(&[MicrosoftRequest {
+                text: &request.text,
+            }]);
+        if let Some(region) = settings
+            .microsoft_region
+            .filter(|value| !value.trim().is_empty())
+        {
+            outbound = outbound.header("Ocp-Apim-Subscription-Region", region);
+        }
+        let response = outbound
+            .send()
+            .await
+            .map_err(|error| map_transport_error_named(&error, "Microsoft Translator"))?;
+        let status = response.status();
+        let body = read_bounded_body(response).await?;
+        if !status.is_success() {
+            return Err(map_generic_http_error(status, "Microsoft Translator"));
+        }
+        let first: MicrosoftResponse = serde_json::from_slice::<Vec<MicrosoftResponse>>(&body)
+            .map_err(|_| internal_error("Microsoft Translator returned an invalid response"))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| internal_error("Microsoft Translator returned no translation"))?;
+        let translated_text = first
+            .translations
+            .into_iter()
+            .next()
+            .map(|item| item.text)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| internal_error("Microsoft Translator returned no translation"))?;
+        let detected = first.detected_language.map(|item| item.language);
+        Ok(TranslationResult {
+            selection_id: request.selection_id,
+            translated_text,
+            detected_source_language: detected.clone(),
+            effective_source_language: if request.source_language.eq_ignore_ascii_case("auto") {
+                detected.unwrap_or_else(|| "auto".to_owned())
+            } else {
+                request.source_language.clone()
+            },
+            target_language: request.target_language.clone(),
+            part_of_speech: None,
+        })
+    }
+
+    async fn supported_languages(&self) -> Result<Vec<LanguageCode>, AppError> {
+        Ok(vec!["auto", "en", "zh-CN", "ja", "ko", "fr", "de", "es"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect())
+    }
+}
+
+fn map_transport_error_named(error: &reqwest::Error, provider: &'static str) -> AppError {
+    let (code, suffix) = if error.is_timeout() {
+        (AppErrorCode::Timeout, "timed out")
+    } else if error.is_connect() {
+        (AppErrorCode::Offline, "could not be reached")
+    } else {
+        (
+            AppErrorCode::ServiceUnavailable,
+            "is temporarily unavailable",
+        )
+    };
+    AppError::new(code, format!("{provider} {suffix}."), true)
+}
+
+fn map_generic_http_error(status: StatusCode, provider: &'static str) -> AppError {
+    if status == StatusCode::UNAUTHORIZED {
+        AppError::new(
+            AppErrorCode::InvalidCredential,
+            format!("{provider} rejected the credential."),
+            false,
+        )
+    } else if status == StatusCode::FORBIDDEN {
+        AppError::new(
+            AppErrorCode::ApiRestricted,
+            format!("{provider} rejected this account or region."),
+            false,
+        )
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        AppError::new(
+            AppErrorCode::QuotaExceeded,
+            format!("{provider} quota is exhausted."),
+            false,
+        )
+    } else if status == StatusCode::BAD_REQUEST {
+        AppError::new(
+            AppErrorCode::InvalidLanguagePair,
+            format!("{provider} rejected the language pair."),
+            false,
+        )
+    } else if status.is_server_error() {
+        AppError::new(
+            AppErrorCode::ServiceUnavailable,
+            format!("{provider} is temporarily unavailable."),
+            true,
+        )
+    } else {
+        AppError::new(
+            AppErrorCode::Internal,
+            format!("{provider} rejected the request."),
+            false,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -852,6 +1282,46 @@ mod tests {
             0,
         );
         assert_eq!(provider.max_attempts, 1);
+    }
+
+    #[test]
+    fn china_provider_language_and_endpoint_profiles_are_explicit() {
+        assert_eq!(baidu_language("zh-CN"), "zh");
+        assert_eq!(baidu_language("zh-TW"), "cht");
+        assert_eq!(baidu_language("en"), "en");
+        assert_eq!(
+            microsoft_endpoint(MicrosoftCloud::China),
+            "https://api.translator.azure.cn"
+        );
+        assert_eq!(
+            microsoft_endpoint(MicrosoftCloud::Global),
+            "https://api.cognitive.microsofttranslator.com"
+        );
+        let url = microsoft_translation_url(MicrosoftCloud::China, "en&category=x", "zh-CN")
+            .expect("encoded Microsoft URL");
+        assert_eq!(url.host_str(), Some("api.translator.azure.cn"));
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![
+                ("api-version".into(), "3.0".into()),
+                ("to".into(), "zh-CN".into()),
+                ("from".into(), "en&category=x".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn microsoft_and_baidu_success_envelopes_are_provider_local() {
+        let microsoft: Vec<MicrosoftResponse> = serde_json::from_str(
+            r#"[{"detectedLanguage":{"language":"en"},"translations":[{"text":"你好"}]}]"#,
+        )
+        .expect("Microsoft envelope");
+        assert_eq!(microsoft[0].translations[0].text, "你好");
+        let baidu: BaiduResponse = serde_json::from_str(
+            r#"{"from":"en","to":"zh","trans_result":[{"src":"hello","dst":"你好"}]}"#,
+        )
+        .expect("Baidu envelope");
+        assert_eq!(baidu.trans_result[0].dst, "你好");
     }
 
     /// Networks that reach Google only through a local proxy expose whether the

@@ -100,4 +100,23 @@ describe("QuickTranslatePanel", () => {
     expect(container.textContent).toContain("You’re Offline");
     expect(container.querySelector("textarea")).not.toBeNull();
   });
+
+  it("localizes quick translation controls in Simplified Chinese", () => {
+    render({ mode: "idle" }, { locale: "zh-CN" });
+
+    expect(container.textContent).toContain("源语言");
+    expect(container.textContent).toContain("目标语言");
+    expect(container.querySelector("textarea")?.placeholder).toBe("输入或粘贴要翻译的文本");
+  });
+
+  it("localizes quick-translation error copy in Simplified Chinese", () => {
+    render({
+      mode: "error",
+      error: { code: "missing-credential", message: "Missing key", retryable: false },
+    }, { locale: "zh-CN" });
+
+    expect(container.textContent).toContain("需要 API 密钥");
+    expect(container.textContent).toContain("请在设置中保存 API 密钥。");
+    expect(container.textContent).not.toContain("API Key Required");
+  });
 });

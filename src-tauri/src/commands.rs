@@ -16,9 +16,9 @@ use crate::{
     contracts::{
         AppError, AppErrorCode, InstalledTextbook, PracticeDirection, PracticePreferences,
         RelatedWord, SelectionSnapshot, StudyPracticeOutcome, StudyPracticeQuestion,
-        TextbookCatalogItem, TextbookEntryPage, TextbookPromotionResult, TranslationRequest,
-        TranslationResult, UserSettings, ValidateContract, VocabularyEntry, VocabularyProvenance,
-        VocabularyRevision, VocabularyRevisionKind,
+        TextbookCatalogItem, TextbookEntryPage, TextbookPromotionResult, TranslationProviderId,
+        TranslationRequest, TranslationResult, UserSettings, ValidateContract, VocabularyEntry,
+        VocabularyProvenance, VocabularyRevision, VocabularyRevisionKind,
     },
     coordinator::{CoordinatorEvent, OverlayState},
     platform::{
@@ -26,16 +26,16 @@ use crate::{
         SpeechAdapter,
     },
     services::{
-        credentials::{KeyringVault, VaultCredentialStore},
+        credentials::{ProviderCredentialStore, ProviderSecretField},
         settings::JsonSettingsStore,
         study::StudyService,
         textbooks::{curated_catalog, TextbookStore},
-        translation::GoogleTranslationProvider,
+        translation::ProviderRouter,
         vocabulary::{
             is_vocabulary_eligible, TextbookTranslationProvider, VocabularyStore,
             VocabularyTranslationProvider,
         },
-        CredentialStore, SettingsStore, TranslationProvider,
+        SettingsStore, TranslationProvider,
     },
 };
 
@@ -361,7 +361,8 @@ impl ApplicationCoordinator {
 /// Long-lived native services shared by validated commands.
 pub struct RuntimeState {
     settings: Arc<JsonSettingsStore>,
-    credentials: Arc<VaultCredentialStore<KeyringVault>>,
+    credentials: Arc<ProviderCredentialStore>,
+    provider_router: Arc<ProviderRouter>,
     coordinator: Arc<ApplicationCoordinator>,
     overlay: Arc<crate::overlay::TauriOverlayController>,
     vocabulary: Arc<VocabularyStore>,
@@ -381,10 +382,10 @@ impl RuntimeState {
             .map_err(|_| internal_error("Application settings path is unavailable"))?
             .join("settings.json");
         let settings = Arc::new(JsonSettingsStore::with_application_defaults(settings_path));
-        let credentials = Arc::new(VaultCredentialStore::application_default()?);
-        let credential_provider: Arc<dyn CredentialStore> = credentials.clone();
-        let upstream: Arc<dyn TranslationProvider> =
-            Arc::new(GoogleTranslationProvider::new(credential_provider)?);
+        let credentials = Arc::new(ProviderCredentialStore::new());
+        let settings_service: Arc<dyn SettingsStore> = settings.clone();
+        let provider_router = Arc::new(ProviderRouter::new(settings_service, credentials.clone())?);
+        let upstream: Arc<dyn TranslationProvider> = provider_router.clone();
         let vocabulary_directory = app
             .path()
             .app_data_dir()
@@ -394,6 +395,7 @@ impl RuntimeState {
         let database_path = vocabulary_directory.join("vocabulary.sqlite3");
         let vocabulary = Arc::new(VocabularyStore::open(&database_path)?);
         let textbooks = Arc::new(TextbookStore::open(&database_path)?);
+        textbooks.ensure_bundled_starter(now_epoch_ms())?;
         let study = Arc::new(StudyService::open(
             &database_path,
             vocabulary.clone(),
@@ -435,6 +437,7 @@ impl RuntimeState {
         Ok(Self {
             settings,
             credentials,
+            provider_router,
             coordinator,
             overlay,
             vocabulary,
@@ -540,6 +543,8 @@ pub async fn save_settings(
         let _ = sync_start_at_login(&app, previous.start_at_login);
         return Err(error);
     }
+    let _ = app.emit("settings-changed", &settings);
+    crate::tray::refresh_window_titles(&app, settings.ui_locale);
     state.coordinator.update_policy(selection_policy(&settings));
     if settings.enabled {
         if let Err(error) = crate::start_global_monitor(&app) {
@@ -559,8 +564,12 @@ pub async fn save_settings(
 
 /// Reports only whether a key exists; the key never crosses IPC.
 #[tauri::command]
-pub fn get_credential_status(state: State<'_, RuntimeState>) -> Result<&'static str, AppError> {
-    Ok(if state.credentials.get_api_key()?.is_some() {
+pub fn get_credential_status(
+    state: State<'_, RuntimeState>,
+    provider: Option<TranslationProviderId>,
+) -> Result<&'static str, AppError> {
+    let selected = provider.unwrap_or(state.settings.load()?.translation_provider);
+    Ok(if state.credentials.configured(selected)? {
         "ready"
     } else {
         "missing"
@@ -569,29 +578,60 @@ pub fn get_credential_status(state: State<'_, RuntimeState>) -> Result<&'static 
 
 /// Opens a native secure prompt and stores the entered key directly in the OS vault.
 #[tauri::command]
-pub fn prompt_and_save_credential(state: State<'_, RuntimeState>) -> Result<bool, AppError> {
+pub fn prompt_and_save_credential(
+    state: State<'_, RuntimeState>,
+    provider: TranslationProviderId,
+    field: String,
+) -> Result<bool, AppError> {
+    let secret_field = match field.as_str() {
+        "api-key" => ProviderSecretField::ApiKey,
+        "app-id" if provider == TranslationProviderId::Baidu => ProviderSecretField::AppId,
+        _ => {
+            return Err(AppError::new(
+                AppErrorCode::InvalidCredential,
+                "Unsupported credential field.",
+                false,
+            ))
+        }
+    };
+    let title = match (provider, secret_field) {
+        (TranslationProviderId::Baidu, ProviderSecretField::AppId) => "Baidu Translation APP ID",
+        (TranslationProviderId::Baidu, ProviderSecretField::ApiKey) => {
+            "Baidu Translation Secret Key"
+        }
+        (TranslationProviderId::Microsoft, _) => "Microsoft Translator Subscription Key",
+        _ => "Google Cloud Translation API Key",
+    };
     let Some(mut api_key) = crate::credential_prompt::prompt_secure_text(
-        "Google Cloud Translation API Key",
+        title,
         "The key is stored directly in the operating-system credential vault.",
     )?
     else {
         return Ok(false);
     };
-    let result = state.credentials.set_api_key(&api_key);
+    let result = state.credentials.set(provider, secret_field, &api_key);
     api_key.zeroize();
     result.map(|_| true)
 }
 
 /// Validates the stored credential without returning credential material.
 #[tauri::command]
-pub async fn test_credential(state: State<'_, RuntimeState>) -> Result<(), AppError> {
-    state.credentials.test_api_key().await
+pub async fn test_credential(
+    state: State<'_, RuntimeState>,
+    provider: Option<TranslationProviderId>,
+) -> Result<(), AppError> {
+    let selected = provider.unwrap_or(state.settings.load()?.translation_provider);
+    state.provider_router.test(selected).await
 }
 
 /// Removes the stored credential.
 #[tauri::command]
-pub fn remove_credential(state: State<'_, RuntimeState>) -> Result<(), AppError> {
-    state.credentials.remove_api_key()
+pub fn remove_credential(
+    state: State<'_, RuntimeState>,
+    provider: Option<TranslationProviderId>,
+) -> Result<(), AppError> {
+    let selected = provider.unwrap_or(state.settings.load()?.translation_provider);
+    state.credentials.remove_provider(selected)
 }
 
 /// Translates only after the renderer's explicit Translate action.
