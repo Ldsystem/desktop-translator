@@ -87,12 +87,14 @@ function EntryCard({
   onOpen,
   onPronounce,
   onManage,
+  managed,
 }: {
   entry: VocabularyEntry;
   speechAvailability: Readonly<Record<string, boolean>>;
   onOpen: () => void;
   onPronounce: (text: string, language: VocabularyEntry["effectiveSourceLanguage"]) => void;
-  onManage: () => void;
+  onManage: (trigger: HTMLButtonElement) => void;
+  managed: boolean;
 }) {
   const speak = (text: string, language: string) => {
     const availability = speechAvailability[language];
@@ -117,7 +119,7 @@ function EntryCard({
           <span>{entry.lookupCount} {entry.lookupCount === 1 ? "lookup" : "lookups"}</span>
           <span>{familiarityNames[entry.familiarityLevel] ?? "New"}</span>
         </span>
-        <button className="text-button" type="button" onClick={onManage}>Manage</button>
+        <button className="text-button" type="button" aria-controls={`word-manage-${entry.id}`} aria-expanded={managed} onClick={(event) => onManage(event.currentTarget)}>Manage</button>
         <button className="text-button" type="button" aria-label={`Open related words for ${entry.sourceText}`} onClick={onOpen}>Related</button>
       </div>
     </article>
@@ -150,6 +152,8 @@ export function VocabularyWindow({
   const [correction, setCorrection] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [manageError, setManageError] = useState<string>();
+  const manageTrigger = useRef<HTMLButtonElement | null>(null);
+  const manageCloseButton = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (view === "library") searchInput.current?.focus();
@@ -160,6 +164,16 @@ export function VocabularyWindow({
   useEffect(() => {
     if (outcome) nextWordButton.current?.focus();
   }, [outcome]);
+
+  useEffect(() => {
+    if (managedEntry) manageCloseButton.current?.focus();
+  }, [managedEntry]);
+
+  const closeManage = () => {
+    setManagedEntry(undefined);
+    setConfirmDelete(false);
+    manageTrigger.current?.focus();
+  };
 
   const navigate = (next: StudyView) => {
     setView(next);
@@ -201,9 +215,9 @@ export function VocabularyWindow({
             ) : entries.length === 0 ? (
               <div className="study-empty"><strong>Translate a word to begin.</strong><span>Eligible words and short phrases will appear here automatically.</span></div>
             ) : (
-              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} onManage={() => { setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
+              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} managed={managedEntry?.id === entry.id} onManage={(trigger) => { manageTrigger.current = trigger; setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
             )}
-            {managedEntry && studyApi && <section className="word-manage" aria-label={`Manage ${managedEntry.sourceText}`}><header><strong>Manage {managedEntry.sourceText}</strong><button className="text-button" type="button" onClick={() => setManagedEntry(undefined)}>Close</button></header>{manageError && <p className="study-notice study-notice--error" role="alert">{manageError}</p>}<label className="field">Source language<select value={correction} onChange={(event) => setCorrection(event.target.value)}>{["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "fr", "de", "es"].map((language) => <option key={language} value={language}>{language.toUpperCase()}</option>)}</select></label><div className="word-manage__actions"><button className="button button--secondary" type="button" onClick={() => { void studyApi.correctVocabularySourceLanguage(managedEntry.id, correction).then(() => { studyApi.refreshPersonal(); setManagedEntry(undefined); }).catch(() => setManageError("The language correction could not be saved.")); }}>Save language</button>{confirmDelete ? <><span>Delete this word?</span><button className="button button--danger" type="button" onClick={() => { void studyApi.deleteVocabularyEntry(managedEntry.id).then(() => { studyApi.refreshPersonal(); setManagedEntry(undefined); }).catch(() => setManageError("This word could not be deleted.")); }}>Confirm delete</button></> : <button className="text-button is-danger" type="button" onClick={() => setConfirmDelete(true)}>Delete word</button>}</div></section>}
+            {managedEntry && studyApi && <section id={`word-manage-${managedEntry.id}`} className="word-manage word-manage--drawer" role="dialog" data-placement="drawer" aria-labelledby={`word-manage-title-${managedEntry.id}`} onKeyDown={(event) => { if (event.key === "Escape") closeManage(); }}><header><strong id={`word-manage-title-${managedEntry.id}`}>Manage {managedEntry.sourceText}</strong><button ref={manageCloseButton} className="text-button" type="button" onClick={closeManage}>Close</button></header>{manageError && <p className="study-notice study-notice--error" role="alert">{manageError}</p>}<label className="field">Source language<select value={correction} onChange={(event) => setCorrection(event.target.value)}>{["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "fr", "de", "es"].map((language) => <option key={language} value={language}>{language.toUpperCase()}</option>)}</select></label><div className="word-manage__actions"><button className="button button--secondary" type="button" onClick={() => { void studyApi.correctVocabularySourceLanguage(managedEntry.id, correction).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError("The language correction could not be saved.")); }}>Save language</button>{confirmDelete ? <><span>Delete this word?</span><button className="button button--danger" type="button" onClick={() => { void studyApi.deleteVocabularyEntry(managedEntry.id).then(() => { studyApi.refreshPersonal(); closeManage(); }).catch(() => setManageError("This word could not be deleted.")); }}>Confirm delete</button></> : <button className="text-button is-danger" type="button" onClick={() => setConfirmDelete(true)}>Delete word</button>}</div></section>}
           </>
         )}
 

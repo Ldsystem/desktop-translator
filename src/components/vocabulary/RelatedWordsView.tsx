@@ -55,7 +55,7 @@ export function RelatedWordsView({ anchor, api, revision }: RelatedWordsViewProp
     {error && <div className="study-notice study-notice--error" role="alert">{error}</div>}
     {!anchor ? <div className="study-empty"><strong>Choose a word first.</strong><span>Open a card in My wordbook to make it the connection anchor.</span></div> : loading ? <div className="study-empty" role="status"><strong>Tracing connections…</strong></div> : items.length === 0 ? <div className="study-empty"><strong>No compatible connections yet.</strong><span>Try another word as your local collection grows.</span></div> : <div className="relation-list">{items.map((item) => <article key={`${item.kind}-${item.vocabularyEntryId ?? item.textbookEntryId}-${item.reason}`}>
       <span className={`relation-badge relation-badge--${item.reason}`}>{item.reason === "root" ? "shared root" : "shared meaning"}</span><strong>{item.sourceText}</strong><span>{item.translatedText}</span>
-      <span className="relation-origins">{item.origins.map((origin) => <span className="relation-origin" key={`${origin.kind}-${origin.textbookId ?? "personal"}`}>{origin.kind === "personal" ? "Personal" : origin.textbookTitle}</span>)}</span>
+      <span className="relation-tail"><span className="relation-origins">{item.origins.map((origin) => <span className="relation-origin" key={`${origin.kind}-${origin.textbookId ?? "personal"}`}>{origin.kind === "personal" ? "Personal" : origin.textbookTitle}</span>)}</span>
       {item.kind === "textbook" && <button className="button button--secondary relation-add" type="button" disabled={adding === item.textbookEntryId} onClick={() => {
         if (item.promoted || !item.textbookEntryId) return;
         setAdding(item.textbookEntryId);
@@ -64,7 +64,7 @@ export function RelatedWordsView({ anchor, api, revision }: RelatedWordsViewProp
           setItems((current) => current.map((candidate) => candidate.textbookEntryId === item.textbookEntryId ? { ...candidate, promoted: true } : candidate));
           api.refreshPersonal();
         }).catch(() => setError("This related word could not be added.")).finally(() => setAdding(undefined));
-      }}>{item.promoted ? "Added" : adding === item.textbookEntryId ? "Adding…" : "Add"}</button>}
+      }}>{item.promoted ? "Added" : adding === item.textbookEntryId ? "Adding…" : "Add"}</button>}</span>
     </article>)}</div>}
   </section>;
 }

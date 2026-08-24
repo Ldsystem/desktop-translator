@@ -52,7 +52,9 @@ export function PracticeView({ api, revision }: PracticeViewProps) {
   }, [api]);
 
   useEffect(() => { if (outcome) nextButton.current?.focus(); }, [outcome]);
-  useEffect(() => { if (revision > 0) loadQuestion(); }, [revision]);
+  useEffect(() => {
+    if (revision > 0 && !submittingRef.current && !outcome) loadQuestion();
+  }, [revision]);
 
   const chooseDirection = (next: PracticeDirection) => {
     if (submittingRef.current) return;

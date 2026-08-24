@@ -221,6 +221,32 @@ describe("VocabularyWindow", () => {
     expect(deleteVocabularyEntry).toHaveBeenCalledWith(1);
   });
 
+  it("opens management as one non-reflowing drawer linked to its card even in a long wordbook", () => {
+    const entries = Array.from({ length: 18 }, (_, index) => ({
+      ...entry,
+      id: index + 1,
+      sourceText: `word-${index + 1}`,
+      translatedText: `meaning-${index + 1}`,
+    }));
+    const api = makeStudyApi();
+    act(() => root.render(<VocabularyWindow entries={entries} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+
+    const manageButtons = [...container.querySelectorAll<HTMLButtonElement>(".vocabulary-card button")].filter((button) => button.textContent === "Manage");
+    const lastManage = manageButtons.at(-1)!;
+    act(() => lastManage.click());
+
+    const drawer = container.querySelector<HTMLElement>('[role="dialog"][data-placement="drawer"]');
+    expect(drawer?.id).toBe("word-manage-18");
+    expect(lastManage.getAttribute("aria-controls")).toBe("word-manage-18");
+    expect(lastManage.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelectorAll(".word-manage")).toHaveLength(1);
+    expect(document.activeElement?.textContent).toBe("Close");
+
+    act(() => drawer?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container.querySelector(".word-manage")).toBeNull();
+    expect(document.activeElement).toBe(lastManage);
+  });
+
   it("does not reveal correctness until an answer is submitted", () => {
     const question: PracticeQuestion = { entryId: 1, sourceText: "hello", effectiveSourceLanguage: "en", targetLanguage: "es", choices: ["hola", "mundo"] };
     const submit = vi.fn();
@@ -325,6 +351,11 @@ describe("VocabularyWindow", () => {
     expect(container.querySelector(".source-selector")).toBeNull();
     expect(container.textContent).toContain("helpful");
     expect(container.textContent).toContain(installedBook.title);
+    const relatedRow = container.querySelector(".relation-list article")!;
+    const tail = relatedRow.querySelector(":scope > .relation-tail");
+    expect(relatedRow.children).toHaveLength(4);
+    expect(tail?.querySelector(":scope > .relation-origins")).not.toBeNull();
+    expect(tail?.querySelector(":scope > .relation-add")).not.toBeNull();
     await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Add")?.click());
     expect(addTextbookEntry).toHaveBeenCalledWith(81);
     expect(container.textContent).toContain("Added");
@@ -418,6 +449,34 @@ describe("VocabularyWindow", () => {
     expect(submitPracticeAnswer).toHaveBeenCalledTimes(1);
     expect(check.disabled).toBe(true);
     await act(async () => pending.resolve({ correct: true, correctAnswer: "hola", direction: "source-to-target", entry }));
+  });
+
+  it("keeps scored feedback until Next when its revision event arrives during submit", async () => {
+    const pending = deferred<Awaited<ReturnType<StudyApi["submitPracticeAnswer"]>>>();
+    const first = { entryId: 1, direction: "source-to-target" as const, prompt: "hello", promptLanguage: "en", answerLanguage: "es", choices: ["hola", "mundo"] };
+    const second = { entryId: 2, direction: "source-to-target" as const, prompt: "world", promptLanguage: "en", answerLanguage: "es", choices: ["mundo", "hola"] };
+    const getPracticeQuestion = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const api = makeStudyApi({ getPracticeQuestion, submitPracticeAnswer: vi.fn().mockReturnValue(pending.promise) });
+    const props = { entries: [entry], loading: false, related: [], question: undefined, onSearch: vi.fn(), onSelectEntry: vi.fn(), onStartPractice: vi.fn(), onSubmitAnswer: vi.fn(), studyApi: api };
+    act(() => root.render(<VocabularyWindow {...props} revision={0} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Practice")?.click());
+    await flushEffects();
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".practice-choice")].find((button) => button.textContent === "hola")?.click());
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Check answer")?.click());
+
+    act(() => root.render(<VocabularyWindow {...props} revision={1} />));
+    await act(async () => pending.resolve({ correct: true, correctAnswer: "hola", direction: "source-to-target", entry: { ...entry, effectiveRecall: 100 } }));
+
+    expect(getPracticeQuestion).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Correct");
+    expect(container.textContent).toContain("Recall is now 100.");
+    expect(container.textContent).toContain("hello");
+
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Next word")?.click());
+    await flushEffects();
+    expect(getPracticeQuestion).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("world");
+    expect(container.textContent).not.toContain("Recall is now 100.");
   });
 
   it("keeps direction controls locked to the question while scoring is pending", async () => {
