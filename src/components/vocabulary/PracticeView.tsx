@@ -5,6 +5,7 @@ import type { StudyApi } from "./VocabularyWindow";
 
 interface PracticeViewProps {
   api: StudyApi;
+  revision: number;
 }
 
 const directions: { value: PracticeDirection; label: string; note: string }[] = [
@@ -13,7 +14,7 @@ const directions: { value: PracticeDirection; label: string; note: string }[] = 
   { value: "target-to-source", label: "Meaning → word", note: "Production" },
 ];
 
-export function PracticeView({ api }: PracticeViewProps) {
+export function PracticeView({ api, revision }: PracticeViewProps) {
   const [direction, setDirection] = useState<PracticeDirection>("random");
   const [question, setQuestion] = useState<StudyPracticeQuestion | null>();
   const [outcome, setOutcome] = useState<StudyPracticeOutcome>();
@@ -51,6 +52,7 @@ export function PracticeView({ api }: PracticeViewProps) {
   }, [api]);
 
   useEffect(() => { if (outcome) nextButton.current?.focus(); }, [outcome]);
+  useEffect(() => { if (revision > 0) loadQuestion(); }, [revision]);
 
   const chooseDirection = (next: PracticeDirection) => {
     if (submittingRef.current) return;
@@ -84,7 +86,7 @@ export function PracticeView({ api }: PracticeViewProps) {
     <header className="study-header"><div><p className="eyebrow">Practice</p><h2 id="practice-title">Choose the answer</h2><p>Questions come from your wordbook. The active textbook supplies choices first.</p></div></header>
     <fieldset className="direction-selector" disabled={saving || submitting}><legend>Practice direction</legend>{directions.map((item) => <label key={item.value} className={direction === item.value ? "is-active" : ""}><input type="radio" name="practice-direction" value={item.value} checked={direction === item.value} onChange={() => chooseDirection(item.value)} /><span><strong>{item.label}</strong><small>{item.note}</small></span></label>)}</fieldset>
     {error && <div className="study-notice study-notice--error" role="alert">{error} <button className="text-button" type="button" onClick={() => failedDirection ? chooseDirection(failedDirection) : loadQuestion()}>{failedDirection ? "Try saving again" : "Try again"}</button></div>}
-    {question === undefined ? <div className="study-empty" role="status"><strong>Choosing what needs attention…</strong></div> : question === null ? <div className="study-empty"><strong>Add at least one word and one distinct choice.</strong><span>Download and activate a textbook to widen the local choice pool.</span></div> : <section className="practice-card">
+    {question === undefined ? <div className="study-empty" role="status"><strong>Choosing what needs attention…</strong></div> : question === null ? <div className="study-empty study-empty--complete"><strong>You have practised every available word.</strong><span>Come back after recall has faded, or add another word to continue.</span></div> : <section className="practice-card">
       <div className="practice-prompt"><span>{question.promptLanguage.toUpperCase()} → {question.answerLanguage.toUpperCase()}</span><strong>{question.prompt}</strong></div>
       <div className="practice-choices" role="radiogroup" aria-label="Answer choices">{question.choices.map((choice) => <button key={choice} className={selected === choice ? "practice-choice is-selected" : "practice-choice"} type="button" role="radio" aria-checked={selected === choice} disabled={Boolean(outcome) || submitting} onClick={() => setSelected(choice)}>{choice}</button>)}</div>
       <div className="practice-actions">{outcome ? <><div className={outcome.correct ? "practice-feedback is-correct" : "practice-feedback is-wrong"} role="status"><span className="practice-feedback__mark" aria-hidden="true">{outcome.correct ? "✓" : "↺"}</span><span className="practice-feedback__copy"><strong>{outcome.correct ? "Correct" : "Review this answer"}</strong><span>{outcome.correct ? `Recall is now ${Math.round(outcome.entry.effectiveRecall)}.` : `The answer is “${outcome.correctAnswer}”.`}</span></span></div><button ref={nextButton} className="button button--primary practice-next" type="button" onClick={loadQuestion}>Next word</button></> : <button className="button button--primary practice-submit" type="button" disabled={!selected || submitting} onClick={() => selected && submit(question, selected)}>{submitting ? "Checking…" : "Check answer"}</button>}</div>

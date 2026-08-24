@@ -167,7 +167,8 @@ input:focus-visible,
 .vocabulary-card:hover, .vocabulary-card:focus-within { border-color: var(--accent); transform: translateY(-2px); }
 .vocabulary-card__open { min-width: 0; border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; text-align: left; }
 .vocabulary-card__open:focus-visible { border-radius: var(--radius-sm); outline: 2px solid var(--accent); outline-offset: 5px; }
-.vocabulary-card__copy { display: grid; align-content: start; gap: 7px; min-width: 0; }
+.vocabulary-card__copy { display: grid; align-content: start; gap: 9px; min-width: 0; }
+.vocabulary-card__word-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; }
 .vocabulary-card__copy strong { overflow: hidden; color: var(--study-ink); font-family: Georgia, serif; font-size: 1.35rem; font-weight: 500; text-overflow: ellipsis; }
 .vocabulary-card__copy span { overflow: hidden; color: var(--ink-muted); text-overflow: ellipsis; white-space: nowrap; }
 .vocabulary-card__copy small { color: var(--ink-muted); font-family: var(--font-utility); font-size: 0.65rem; text-transform: uppercase; }
@@ -191,6 +192,11 @@ input:focus-visible,
 .relation-badge--root { background: var(--accent-soft); color: var(--accent-strong); }
 .relation-badge--meaning { background: var(--warning-soft); color: var(--warning); }
 .relation-add { min-width: 78px; }
+.relation-origins { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
+.relation-origin { border: 1px solid var(--study-rule); border-radius: 999px; padding: 4px 7px; color: var(--accent-strong); font-family: var(--font-utility); font-size: 0.62rem; font-weight: 700; white-space: nowrap; }
+.word-manage { display: grid; gap: 12px; max-width: 560px; margin-top: 16px; border: 1px solid var(--study-rule); border-left: 3px solid var(--accent); border-radius: var(--radius-md); padding: 16px; background: var(--surface); }
+.word-manage header, .word-manage__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.word-manage .study-notice { margin: 0; }
 .word-provenance { display: grid; gap: 9px; margin-bottom: 18px; padding: 16px 18px; border: 1px solid var(--study-rule); border-radius: 16px; background: color-mix(in srgb, var(--study-accent) 7%, transparent); }
 .word-provenance > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
 .word-provenance a, .textbook-volume__copy a { color: var(--study-accent); text-underline-offset: 3px; }
@@ -296,6 +302,7 @@ input:focus-visible,
   .study-content { padding: 28px 18px 40px; }
   .practice-choices { grid-template-columns: 1fr; }
   .relation-list article { grid-template-columns: 1fr; gap: 6px; }
+  .relation-origins { justify-content: start; }
   .source-selector, .direction-selector { display: grid; width: 100%; grid-template-columns: 1fr; }
   .direction-selector label { min-width: 0; }
   .textbook-entry { grid-template-columns: 1fr; align-items: start; padding-block: 16px; }

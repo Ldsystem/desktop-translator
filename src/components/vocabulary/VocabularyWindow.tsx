@@ -5,7 +5,6 @@ import type {
   PracticePreferences,
   PracticeOutcome,
   PracticeQuestion,
-  RelatedSource,
   RelatedWord,
   RelatedVocabulary,
   StudyPracticeOutcome,
@@ -26,6 +25,7 @@ interface VocabularyWindowProps {
   entries: readonly VocabularyEntry[];
   loading: boolean;
   error?: string;
+  revision?: number;
   related: readonly RelatedVocabulary[];
   question: PracticeQuestion | null | undefined;
   outcome?: PracticeOutcome;
@@ -47,7 +47,9 @@ export interface StudyApi {
   listTextbookEntries: (textbookId: string, search: string, offset: number, limit: number) => Promise<TextbookEntryPage>;
   addTextbookEntry: (textbookEntryId: number) => Promise<TextbookPromotionResult>;
   listVocabularyProvenance: (entryId: number) => Promise<VocabularyProvenance[]>;
-  listRelated: (entryId: number, source: RelatedSource) => Promise<RelatedWord[]>;
+  listRelated: (entryId: number, seed?: number) => Promise<RelatedWord[]>;
+  deleteVocabularyEntry: (entryId: number) => Promise<void>;
+  correctVocabularySourceLanguage: (entryId: number, sourceLanguage: string) => Promise<VocabularyEntry>;
   getPracticePreferences: () => Promise<PracticePreferences>;
   savePracticePreferences: (preferences: PracticePreferences) => Promise<void>;
   getPracticeQuestion: () => Promise<StudyPracticeQuestion | null>;
@@ -84,39 +86,39 @@ function EntryCard({
   speechAvailability,
   onOpen,
   onPronounce,
+  onManage,
 }: {
   entry: VocabularyEntry;
   speechAvailability: Readonly<Record<string, boolean>>;
   onOpen: () => void;
   onPronounce: (text: string, language: VocabularyEntry["effectiveSourceLanguage"]) => void;
+  onManage: () => void;
 }) {
-  const availability = speechAvailability[entry.effectiveSourceLanguage];
-  const pronunciationTitle = availability === true
-    ? `Pronounce ${entry.sourceText}`
+  const speak = (text: string, language: string) => {
+    const availability = speechAvailability[language];
+    const title = availability === true
+    ? `Pronounce ${text}`
     : availability === false
       ? "No installed voice supports this language"
       : "Checking installed voice availability";
+    return <span className="vocabulary-card__speak-state" title={title} tabIndex={availability === true ? undefined : 0} aria-label={availability === true ? undefined : `${title} for ${text}`}><button className="icon-button vocabulary-card__speak" type="button" aria-label={`Pronounce ${text}`} title={title} disabled={availability !== true} onClick={() => onPronounce(text, language)}><SpeakerIcon /></button></span>;
+  };
 
   return (
     <article className="vocabulary-card">
       <RecallRuler entry={entry} />
-      <button className="vocabulary-card__open" type="button" aria-label={`Open related words for ${entry.sourceText}`} onClick={onOpen}>
-        <span className="vocabulary-card__copy">
-          <strong>{entry.sourceText}</strong>
-          <span>{entry.translatedText}</span>
-          <small>{entry.effectiveSourceLanguage} → {entry.targetLanguage}</small>
-        </span>
-      </button>
+      <div className="vocabulary-card__copy">
+        <span className="vocabulary-card__word-row">{speak(entry.sourceText, entry.effectiveSourceLanguage)}<strong>{entry.sourceText}</strong></span>
+        <span className="vocabulary-card__word-row">{speak(entry.translatedText, entry.targetLanguage)}<span>{entry.translatedText}</span></span>
+        <small>{entry.effectiveSourceLanguage} → {entry.targetLanguage}</small>
+      </div>
       <div className="vocabulary-card__meta">
         <span className="vocabulary-card__signals">
           <span>{entry.lookupCount} {entry.lookupCount === 1 ? "lookup" : "lookups"}</span>
           <span>{familiarityNames[entry.familiarityLevel] ?? "New"}</span>
         </span>
-        <span className="vocabulary-card__speak-state" title={pronunciationTitle} tabIndex={availability === true ? undefined : 0} aria-label={availability === true ? undefined : `${pronunciationTitle} for ${entry.sourceText}`}>
-          <button className="icon-button vocabulary-card__speak" type="button" aria-label={`Pronounce ${entry.sourceText}`} title={pronunciationTitle} disabled={availability !== true} onClick={() => onPronounce(entry.sourceText, entry.effectiveSourceLanguage)}>
-            <SpeakerIcon />
-          </button>
-        </span>
+        <button className="text-button" type="button" onClick={onManage}>Manage</button>
+        <button className="text-button" type="button" aria-label={`Open related words for ${entry.sourceText}`} onClick={onOpen}>Related</button>
       </div>
     </article>
   );
@@ -126,6 +128,7 @@ export function VocabularyWindow({
   entries,
   loading,
   error,
+  revision = 0,
   related,
   question,
   outcome,
@@ -143,6 +146,10 @@ export function VocabularyWindow({
   const searchInput = useRef<HTMLInputElement>(null);
   const nextWordButton = useRef<HTMLButtonElement>(null);
   const [relatedAnchor, setRelatedAnchor] = useState<VocabularyEntry>();
+  const [managedEntry, setManagedEntry] = useState<VocabularyEntry>();
+  const [correction, setCorrection] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [manageError, setManageError] = useState<string>();
 
   useEffect(() => {
     if (view === "library") searchInput.current?.focus();
@@ -194,12 +201,13 @@ export function VocabularyWindow({
             ) : entries.length === 0 ? (
               <div className="study-empty"><strong>Translate a word to begin.</strong><span>Eligible words and short phrases will appear here automatically.</span></div>
             ) : (
-              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
+              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} onManage={() => { setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
             )}
+            {managedEntry && studyApi && <section className="word-manage" aria-label={`Manage ${managedEntry.sourceText}`}><header><strong>Manage {managedEntry.sourceText}</strong><button className="text-button" type="button" onClick={() => setManagedEntry(undefined)}>Close</button></header>{manageError && <p className="study-notice study-notice--error" role="alert">{manageError}</p>}<label className="field">Source language<select value={correction} onChange={(event) => setCorrection(event.target.value)}>{["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "fr", "de", "es"].map((language) => <option key={language} value={language}>{language.toUpperCase()}</option>)}</select></label><div className="word-manage__actions"><button className="button button--secondary" type="button" onClick={() => { void studyApi.correctVocabularySourceLanguage(managedEntry.id, correction).then(() => { studyApi.refreshPersonal(); setManagedEntry(undefined); }).catch(() => setManageError("The language correction could not be saved.")); }}>Save language</button>{confirmDelete ? <><span>Delete this word?</span><button className="button button--danger" type="button" onClick={() => { void studyApi.deleteVocabularyEntry(managedEntry.id).then(() => { studyApi.refreshPersonal(); setManagedEntry(undefined); }).catch(() => setManageError("This word could not be deleted.")); }}>Confirm delete</button></> : <button className="text-button is-danger" type="button" onClick={() => setConfirmDelete(true)}>Delete word</button>}</div></section>}
           </>
         )}
 
-        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} />}
+        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} revision={revision} />}
 
         {view === "related" && !studyApi && (
           <>
@@ -212,7 +220,7 @@ export function VocabularyWindow({
           </>
         )}
 
-        {view === "practice" && studyApi && <PracticeView api={studyApi} />}
+        {view === "practice" && studyApi && <PracticeView api={studyApi} revision={revision} />}
 
         {view === "practice" && !studyApi && (
           <>

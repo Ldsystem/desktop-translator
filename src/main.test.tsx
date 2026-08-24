@@ -25,7 +25,9 @@ describe("application bootstrap", () => {
     await api.setActiveTextbook(undefined);
     await api.listTextbookEntries("wikdict-en-zh", "hello", 40, 40);
     await api.addTextbookEntry(81);
-    await api.listRelated(1, { kind: "textbook", textbookId: "wikdict-en-zh" });
+    await api.listRelated(1, 7);
+    await api.deleteVocabularyEntry(1);
+    await api.correctVocabularySourceLanguage(1, "en");
     await api.savePracticePreferences({ direction: "target-to-source" });
     await api.submitPracticeAnswer(1, "target-to-source", "hello");
 
@@ -36,7 +38,9 @@ describe("application bootstrap", () => {
       ["set_active_textbook", { textbookId: null }],
       ["list_textbook_entries", { textbookId: "wikdict-en-zh", search: "hello", offset: 40, limit: 40 }],
       ["add_textbook_entry_to_personal", { textbookEntryId: 81 }],
-      ["get_related_vocabulary", { entryId: 1, source: { kind: "textbook", textbookId: "wikdict-en-zh" } }],
+      ["get_related_vocabulary", { entryId: 1, seed: 7 }],
+      ["delete_vocabulary_entry", { entryId: 1 }],
+      ["correct_vocabulary_source_language", { entryId: 1, sourceLanguage: "en" }],
       ["save_practice_preferences", { preferences: { direction: "target-to-source" } }],
       ["submit_practice_answer", { entryId: 1, direction: "target-to-source", selectedAnswer: "hello" }],
     ]);

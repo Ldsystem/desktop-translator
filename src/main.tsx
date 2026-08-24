@@ -14,7 +14,6 @@ import type {
   PracticePreferences,
   PracticeOutcome,
   PracticeQuestion,
-  RelatedSource,
   RelatedWord,
   RelatedVocabulary,
   SelectionSnapshot,
@@ -28,6 +27,7 @@ import type {
   UserSettings,
   VocabularyEntry,
   VocabularyProvenance,
+  VocabularyRevision,
 } from "./contracts/ipc";
 import {
   initialOverlayState,
@@ -84,7 +84,9 @@ export function createStudyApi(refreshPersonal: () => void): StudyApi {
     listTextbookEntries: (textbookId, search, offset, limit) => invoke<TextbookEntryPage>("list_textbook_entries", { textbookId, search: search || null, offset, limit }),
     addTextbookEntry: (textbookEntryId) => invoke<TextbookPromotionResult>("add_textbook_entry_to_personal", { textbookEntryId }),
     listVocabularyProvenance: (entryId) => invoke<VocabularyProvenance[]>("list_vocabulary_provenance", { entryId }),
-    listRelated: (entryId, source: RelatedSource) => invoke<RelatedWord[]>("get_related_vocabulary", { entryId, source }),
+    listRelated: (entryId, seed?: number) => invoke<RelatedWord[]>("get_related_vocabulary", { entryId, seed }),
+    deleteVocabularyEntry: (entryId) => invoke<void>("delete_vocabulary_entry", { entryId }),
+    correctVocabularySourceLanguage: (entryId, sourceLanguage) => invoke<VocabularyEntry>("correct_vocabulary_source_language", { entryId, sourceLanguage }),
     getPracticePreferences: () => invoke<PracticePreferences>("get_practice_preferences"),
     savePracticePreferences: (preferences) => invoke<void>("save_practice_preferences", { preferences }),
     getPracticeQuestion: () => invoke<StudyPracticeQuestion | null>("get_practice_question"),
@@ -111,6 +113,9 @@ export function Bootstrap() {
   const [vocabularyEntries, setVocabularyEntries] = useState<VocabularyEntry[]>([]);
   const [vocabularyLoading, setVocabularyLoading] = useState(mode === "study");
   const [vocabularyError, setVocabularyError] = useState<string>();
+  const [vocabularyRevision, setVocabularyRevision] = useState(0);
+  const vocabularySearch = useRef("");
+  const vocabularyRequest = useRef(0);
   const [relatedVocabulary, setRelatedVocabulary] = useState<RelatedVocabulary[]>([]);
   const [practiceQuestion, setPracticeQuestion] = useState<PracticeQuestion | null>();
   const [practiceOutcome, setPracticeOutcome] = useState<PracticeOutcome>();
@@ -191,16 +196,18 @@ export function Bootstrap() {
   }, [mode]);
 
   const loadVocabulary = useCallback((search?: string) => {
+    if (search !== undefined) vocabularySearch.current = search;
+    const request = ++vocabularyRequest.current;
     if (!runningInTauri()) {
       setVocabularyLoading(false);
       return;
     }
     setVocabularyLoading(true);
     setVocabularyError(undefined);
-    void invoke<VocabularyEntry[]>("list_vocabulary", { search: search || null })
-      .then(setVocabularyEntries)
-      .catch(() => setVocabularyError("Your local wordbook could not be opened."))
-      .finally(() => setVocabularyLoading(false));
+    void invoke<VocabularyEntry[]>("list_vocabulary", { search: vocabularySearch.current || null })
+      .then((entries) => { if (request === vocabularyRequest.current) setVocabularyEntries(entries); })
+      .catch(() => { if (request === vocabularyRequest.current) setVocabularyError("Your local wordbook could not be opened."); })
+      .finally(() => { if (request === vocabularyRequest.current) setVocabularyLoading(false); });
   }, []);
 
   const studyApi = useMemo(() => createStudyApi(() => loadVocabulary()), [loadVocabulary]);
@@ -210,12 +217,33 @@ export function Bootstrap() {
   }, [mode]);
 
   useEffect(() => {
+    if (!runningInTauri() || mode !== "study") return;
+    let disposed = false;
+    const refresh = () => { setVocabularyRevision((current) => current + 1); loadVocabulary(); };
+    const subscription = listen<VocabularyRevision>("vocabulary-revision", ({ payload }) => {
+      if (disposed) return;
+      setVocabularyRevision(payload.revision);
+      loadVocabulary();
+    });
+    const onFocus = () => refresh();
+    const onVisibility = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, [mode, loadVocabulary]);
+
+  useEffect(() => {
     if (!runningInTauri() || mode !== "study" || vocabularyEntries.length === 0) {
       return;
     }
 
     let disposed = false;
-    const languages = [...new Set(vocabularyEntries.map((entry) => entry.effectiveSourceLanguage))];
+    const languages = [...new Set(vocabularyEntries.flatMap((entry) => [entry.effectiveSourceLanguage, entry.targetLanguage]))];
     void Promise.all(
       languages.map(async (language) => [
         language,
@@ -345,6 +373,7 @@ export function Bootstrap() {
       vocabularyEntries={vocabularyEntries}
       vocabularyLoading={vocabularyLoading}
       vocabularyError={vocabularyError}
+      vocabularyRevision={vocabularyRevision}
       relatedVocabulary={relatedVocabulary}
       practiceQuestion={practiceQuestion}
       practiceOutcome={practiceOutcome}

@@ -48,6 +48,7 @@ export interface AppProps {
   vocabularyEntries?: readonly VocabularyEntry[];
   vocabularyLoading?: boolean;
   vocabularyError?: string;
+  vocabularyRevision?: number;
   relatedVocabulary?: readonly RelatedVocabulary[];
   practiceQuestion?: PracticeQuestion | null;
   practiceOutcome?: PracticeOutcome;
@@ -81,6 +82,7 @@ export default function App({
   vocabularyEntries = [],
   vocabularyLoading = false,
   vocabularyError,
+  vocabularyRevision = 0,
   relatedVocabulary = [],
   practiceQuestion,
   practiceOutcome,
@@ -147,6 +149,7 @@ export default function App({
           entries={vocabularyEntries}
           loading={vocabularyLoading}
           error={vocabularyError}
+          revision={vocabularyRevision}
           related={relatedVocabulary}
           question={practiceQuestion}
           outcome={practiceOutcome}
