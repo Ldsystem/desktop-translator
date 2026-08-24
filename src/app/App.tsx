@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type {
   LanguageCode,
@@ -111,6 +111,9 @@ export default function App({
   onQuit = ignore,
 }: AppProps) {
   const [settings, setSettings] = useState(initialSettings);
+  useEffect(() => {
+    setSettings(initialSettings);
+  }, [initialSettings]);
   document.documentElement.lang = settings.uiLocale;
 
   if (mode === "overlay") {

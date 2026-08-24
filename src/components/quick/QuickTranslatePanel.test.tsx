@@ -68,6 +68,21 @@ describe("QuickTranslatePanel", () => {
     });
   });
 
+  it("adopts a later default target language from settings", () => {
+    const onTranslate = vi.fn();
+    render({ mode: "idle" }, { onTranslate, targetLanguage: "en" });
+    render({ mode: "idle" }, { onTranslate, targetLanguage: "zh-CN" });
+    typeInto("retrieval");
+    submit();
+
+    expect(onTranslate).toHaveBeenCalledWith({
+      selectionId: 0,
+      text: "retrieval",
+      sourceLanguage: "auto",
+      targetLanguage: "zh-CN",
+    });
+  });
+
   it("does not translate blank input", () => {
     const props = render();
     typeInto("   ");

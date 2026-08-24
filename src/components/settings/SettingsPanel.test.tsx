@@ -119,6 +119,37 @@ describe("SettingsPanel", () => {
     );
   });
 
+  it("persists the target language when the dropdown changes", () => {
+    const onSave = vi.fn();
+    act(() =>
+      root.render(
+        <SettingsPanel
+          settings={settings}
+          credentialStatus="ready"
+          permissionStatus="granted"
+          onSave={onSave}
+          onSaveCredential={vi.fn()}
+          onTestCredential={vi.fn()}
+          onRemoveCredential={vi.fn()}
+          onOpenSystemSettings={vi.fn()}
+          onQuit={vi.fn()}
+        />,
+      ),
+    );
+
+    const target = container.querySelector<HTMLSelectElement>("#target-language");
+    act(() => {
+      if (target) {
+        target.value = "zh-CN";
+        target.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ targetLanguage: "zh-CN", sourceLanguage: "auto" }),
+    );
+  });
+
   it("explains privacy, explicit sending, and API cost constraints", () => {
     act(() =>
       root.render(
