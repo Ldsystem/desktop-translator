@@ -141,6 +141,18 @@ describe("VocabularyWindow", () => {
     expect(ruler?.querySelector(".recall-ruler__label")).toBeNull();
   });
 
+  it("localizes word-card learning and action labels in Simplified Chinese", () => {
+    act(() => root.render(<VocabularyWindow locale="zh-CN" entries={[entry]} loading={false} error={undefined} related={[]} question={undefined} outcome={undefined} speechAvailability={{ en: true, es: false }} onPronounce={vi.fn()} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
+
+    expect(container.textContent).toContain("4 次查词");
+    expect(container.textContent).toContain("正在形成");
+    expect(container.querySelector(".recall-ruler .sr-only")?.textContent).toBe("记忆度 43/100");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="朗读 hello"]')?.title).toBe("朗读 hello");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="朗读 hola"]')?.title).toBe("没有已安装的语音支持此语言");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="管理 hello"]')?.title).toBe("管理词汇");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="查看 hello 的相关词"]')?.title).toBe("查找相关词");
+  });
+
   it("keeps the frame fixed and gives the active content one explicit scroll owner", () => {
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
 
@@ -561,7 +573,7 @@ describe("VocabularyWindow", () => {
   it("localizes the card-scoped related view in Simplified Chinese", async () => {
     const api = makeStudyApi();
     act(() => root.render(<VocabularyWindow locale="zh-CN" entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello")?.click());
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "查看 hello 的相关词")?.click());
     await flushEffects();
 
     expect(container.textContent).toContain("返回我的词汇本");

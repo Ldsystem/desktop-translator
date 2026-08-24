@@ -62,6 +62,7 @@ export function ContextualOverlay({
   onDismiss,
 }: ContextualOverlayProps) {
   const zh = locale === "zh-CN";
+  const errors = errorCopy(locale);
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && state.mode !== "idle" && state.mode !== "disabled") {
@@ -194,9 +195,9 @@ export function ContextualOverlay({
         <div className="error-state" role="alert">
           <span className="error-state__mark" aria-hidden="true">!</span>
           <div>
-            <h2>{errorCopy[state.error.code].title}</h2>
+            <h2>{errors[state.error.code].title}</h2>
             <p>{state.error.message}</p>
-            <p className="error-state__guidance">{errorCopy[state.error.code].guidance}</p>
+            <p className="error-state__guidance">{errors[state.error.code].guidance}</p>
           </div>
           {state.error.retryable && (
             <button className="button button--secondary" type="button" onClick={() => onTranslate(request())}>

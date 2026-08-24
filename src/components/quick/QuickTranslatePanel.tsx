@@ -47,6 +47,7 @@ export function QuickTranslatePanel({
   onSpeak,
 }: QuickTranslatePanelProps) {
   const zh = locale === "zh-CN";
+  const errors = errorCopy(locale);
   const [text, setText] = useState("");
   const [source, setSource] = useState<"auto" | LanguageCode>(sourceLanguage);
   const [target, setTarget] = useState<LanguageCode>(targetLanguage);
@@ -161,8 +162,8 @@ export function QuickTranslatePanel({
 
       {status.mode === "error" && (
         <div className="quick-panel__error" role="alert">
-          <strong>{errorCopy[status.error.code].title}</strong>
-          <span>{errorCopy[status.error.code].guidance}</span>
+          <strong>{errors[status.error.code].title}</strong>
+          <span>{errors[status.error.code].guidance}</span>
         </div>
       )}
     </section>

@@ -166,4 +166,18 @@ describe("ContextualOverlay", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain("正在翻译…");
     expect(container.querySelector('aside[aria-label="翻译"]')).not.toBeNull();
   });
+
+  it("localizes stable error copy in Simplified Chinese", () => {
+    render({
+      mode: "error-visible",
+      selection,
+      generation: 1,
+      error: { code: "offline", message: "You are offline", retryable: true },
+    }, { locale: "zh-CN" });
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("当前处于离线状态");
+    expect(alert?.textContent).toContain("请重新连接网络后重试。");
+    expect(alert?.textContent).not.toContain("You’re Offline");
+  });
 });

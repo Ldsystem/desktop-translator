@@ -59,14 +59,17 @@ export interface StudyApi {
   refreshPersonal: () => void;
 }
 
-const familiarityNames = ["New", "Fragile", "Forming", "Steady", "Strong", "Fluent"];
+const familiarityNames = {
+  en: ["New", "Fragile", "Forming", "Steady", "Strong", "Fluent"],
+  "zh-CN": ["新词", "生疏", "正在形成", "稳定", "熟练", "流利"],
+} as const;
 
-function RecallRuler({ entry }: { entry: VocabularyEntry }) {
+function RecallRuler({ entry, locale }: { entry: VocabularyEntry; locale: UiLocale }) {
   const recall = Math.round(entry.effectiveRecall);
 
   return (
     <div className="recall-ruler">
-      <span className="sr-only">Recall {recall} out of 100</span>
+      <span className="sr-only">{locale === "zh-CN" ? `记忆度 ${recall}/100` : `Recall ${recall} out of 100`}</span>
       <span className="recall-ruler__track" aria-hidden="true">
         <span style={{ height: `${entry.effectiveRecall}%` }} />
       </span>
@@ -97,6 +100,7 @@ function lexicalTextClass(value: string) {
 
 function EntryCard({
   entry,
+  locale,
   speechAvailability,
   onOpen,
   onPronounce,
@@ -104,25 +108,28 @@ function EntryCard({
   managed,
 }: {
   entry: VocabularyEntry;
+  locale: UiLocale;
   speechAvailability: Readonly<Record<string, boolean>>;
   onOpen: () => void;
   onPronounce: (text: string, language: VocabularyEntry["effectiveSourceLanguage"]) => void;
   onManage: (trigger: HTMLButtonElement) => void;
   managed: boolean;
 }) {
+  const zh = locale === "zh-CN";
   const speak = (text: string, language: string) => {
     const availability = speechAvailability[language];
     const title = availability === true
-    ? `Pronounce ${text}`
+    ? (zh ? `朗读 ${text}` : `Pronounce ${text}`)
     : availability === false
-      ? "No installed voice supports this language"
-      : "Checking installed voice availability";
-    return <span className="vocabulary-card__speak-state" title={title} tabIndex={availability === true ? undefined : 0} aria-label={availability === true ? undefined : `${title} for ${text}`}><button className="icon-button vocabulary-card__speak" type="button" aria-label={`Pronounce ${text}`} title={title} disabled={availability !== true} onClick={() => onPronounce(text, language)}><SpeakerIcon /></button></span>;
+      ? (zh ? "没有已安装的语音支持此语言" : "No installed voice supports this language")
+      : (zh ? "正在检查已安装语音" : "Checking installed voice availability");
+    const unavailableLabel = zh ? `${text}：${title}` : `${title} for ${text}`;
+    return <span className="vocabulary-card__speak-state" title={title} tabIndex={availability === true ? undefined : 0} aria-label={availability === true ? undefined : unavailableLabel}><button className="icon-button vocabulary-card__speak" type="button" aria-label={zh ? `朗读 ${text}` : `Pronounce ${text}`} title={title} disabled={availability !== true} onClick={() => onPronounce(text, language)}><SpeakerIcon /></button></span>;
   };
 
   return (
     <article className="vocabulary-card">
-      <RecallRuler entry={entry} />
+      <RecallRuler entry={entry} locale={locale} />
       <div className="vocabulary-card__copy">
         <span className="vocabulary-card__word-row">{speak(entry.sourceText, entry.effectiveSourceLanguage)}<span className="vocabulary-card__lexeme"><strong className={lexicalTextClass(entry.sourceText)}>{entry.sourceText}</strong><PartOfSpeechBadge value={entry.partOfSpeech} /></span></span>
         <span className="vocabulary-card__word-row">{speak(entry.translatedText, entry.targetLanguage)}<span className={lexicalTextClass(entry.translatedText)}>{entry.translatedText}</span></span>
@@ -130,12 +137,12 @@ function EntryCard({
       </div>
       <div className="vocabulary-card__meta">
         <span className="vocabulary-card__signals">
-          <span>{entry.lookupCount} {entry.lookupCount === 1 ? "lookup" : "lookups"}</span>
-          <span>{familiarityNames[entry.familiarityLevel] ?? "New"}</span>
+          <span>{zh ? `${entry.lookupCount} 次查词` : `${entry.lookupCount} ${entry.lookupCount === 1 ? "lookup" : "lookups"}`}</span>
+          <span>{familiarityNames[locale][entry.familiarityLevel] ?? familiarityNames[locale][0]}</span>
         </span>
         <span className="vocabulary-card__actions">
-          <button className="icon-button vocabulary-card__action" type="button" aria-label={`Manage ${entry.sourceText}`} title="Manage word" aria-controls={`word-manage-${entry.id}`} aria-expanded={managed} onClick={(event) => onManage(event.currentTarget)}><PencilIcon /></button>
-          <button className="icon-button vocabulary-card__action" type="button" aria-label={`Open related words for ${entry.sourceText}`} title="Find related words" onClick={onOpen}><BranchIcon /></button>
+          <button className="icon-button vocabulary-card__action" type="button" aria-label={zh ? `管理 ${entry.sourceText}` : `Manage ${entry.sourceText}`} title={zh ? "管理词汇" : "Manage word"} aria-controls={`word-manage-${entry.id}`} aria-expanded={managed} onClick={(event) => onManage(event.currentTarget)}><PencilIcon /></button>
+          <button className="icon-button vocabulary-card__action" type="button" aria-label={zh ? `查看 ${entry.sourceText} 的相关词` : `Open related words for ${entry.sourceText}`} title={zh ? "查找相关词" : "Find related words"} onClick={onOpen}><BranchIcon /></button>
         </span>
       </div>
     </article>
@@ -282,7 +289,7 @@ export function VocabularyWindow({
             ) : entries.length === 0 ? (
               <div className="study-empty"><strong>{zh ? "翻译一个单词即可开始。" : "Translate a word to begin."}</strong><span>{zh ? "符合条件的单词和短语会自动出现在这里。" : "Eligible words and short phrases will appear here automatically."}</span></div>
             ) : (
-              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} speechAvailability={speechAvailability} onPronounce={onPronounce} managed={managedEntry?.id === entry.id} onManage={(trigger) => { manageTrigger.current = trigger; setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
+              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} locale={locale} speechAvailability={speechAvailability} onPronounce={onPronounce} managed={managedEntry?.id === entry.id} onManage={(trigger) => { manageTrigger.current = trigger; setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
             )}
           </>
         )}
