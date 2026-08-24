@@ -365,6 +365,14 @@ describe("VocabularyWindow", () => {
     expect(appCss).toMatch(/\.practice-actions\s*\{[^}]*position:\s*static/s);
   });
 
+  it("styles practice as an editorial exercise sheet instead of a floating form", () => {
+    expect(appCss).toMatch(/\.practice-card\s*\{[^}]*border-left:\s*4px\s+solid\s+var\(--accent\)[^}]*box-shadow:\s*var\(--shadow-panel\)/s);
+    expect(appCss).toMatch(/\.practice-choices\s*\{[^}]*counter-reset:\s*answer/s);
+    expect(appCss).toMatch(/\.practice-choice::before\s*\{[^}]*counter-increment:\s*answer[^}]*content:\s*counter\(answer,\s*upper-alpha\)/s);
+    expect(appCss).toMatch(/\.practice-actions\s*\{[^}]*border-top:\s*1px\s+solid\s+var\(--study-rule\)/s);
+    expect(appCss).toMatch(/\.practice-submit\.button--primary[^}]*\{[^}]*background:\s*var\(--study-ink\)/s);
+  });
+
   it("does not reveal correctness until an answer is submitted", () => {
     const question: PracticeQuestion = { entryId: 1, sourceText: "hello", effectiveSourceLanguage: "en", targetLanguage: "es", choices: ["hola", "mundo"] };
     const submit = vi.fn();
