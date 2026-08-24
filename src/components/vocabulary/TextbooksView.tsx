@@ -10,6 +10,24 @@ import type { StudyApi } from "./VocabularyWindow";
 type ShelfTab = "discover" | "downloaded";
 const PAGE_SIZE = 40;
 
+const catalogPresentation: Record<string, { description: string; scope: string; count: number }> = {
+  "wikdict-en-zh-2026-06": { description: "A broad English reference for lookup, discovery, and uncommon words.", scope: "General reference", count: 30_518 },
+  "ngsl-en-zh-1-2": { description: "High-frequency vocabulary for daily reading and conversation.", scope: "Everyday · NGSL", count: 2_809 },
+  "nawl-en-zh-1-2": { description: "Vocabulary with high coverage across general academic texts.", scope: "Academic · NAWL", count: 957 },
+  "tsl-en-zh-1-2": { description: "A focused service list for TOEIC listening and reading preparation.", scope: "TOEIC · TSL", count: 1_250 },
+  "bsl-en-zh-1-20": { description: "High-frequency vocabulary for workplace and business communication.", scope: "Business · BSL", count: 1_744 },
+};
+
+function presentation(item: TextbookCatalogItem) {
+  const curated = catalogPresentation[item.id];
+  return {
+    description: item.description ?? curated?.description ?? "A curated English vocabulary reference.",
+    scope: item.scope ?? curated?.scope ?? "Curated vocabulary",
+    count: item.estimatedEntryCount ?? curated?.count,
+    script: item.script ?? "Simplified Chinese",
+  };
+}
+
 interface TextbooksViewProps {
   api: StudyApi;
 }
@@ -173,7 +191,7 @@ export function TextbooksView({ api }: TextbooksViewProps) {
   return (
     <section aria-labelledby="textbook-shelf-title">
       <header className="study-header textbook-shelf__header">
-        <div><p className="eyebrow">Textbooks</p><h2 id="textbook-shelf-title">Textbook shelf</h2><p>Bring a curated dictionary into your local study desk, then choose one active source.</p></div>
+        <div><p className="eyebrow">Textbooks</p><h2 id="textbook-shelf-title">Textbook shelf</h2><p>Choose a learning path with clear Simplified Chinese meanings, then make one book active.</p></div>
         <div className="shelf-tabs" aria-label="Textbook shelf sections">
           <button type="button" aria-pressed={tab === "discover"} className={tab === "discover" ? "is-active" : ""} onClick={() => setTab("discover")}>Discover</button>
           <button type="button" aria-pressed={tab === "downloaded"} className={tab === "downloaded" ? "is-active" : ""} onClick={() => setTab("downloaded")}>Downloaded</button>
@@ -187,9 +205,21 @@ export function TextbooksView({ api }: TextbooksViewProps) {
             <div className="textbook-grid">{catalog.map((item) => {
               const installed = installedById.get(item.id);
               const update = installed && installed.version !== item.version;
+              const details = presentation(item);
               return <article className="textbook-volume" key={item.id}>
-                <span className="textbook-volume__spine" aria-hidden="true">{item.sourceLanguage.toUpperCase()}<br />{item.targetLanguage.toUpperCase()}</span>
-                <div className="textbook-volume__copy"><p className="eyebrow">{item.version}</p><h3>{item.title}</h3><p>{item.attribution}</p><small>{item.license}</small><a href={item.sourceUrl} target="_blank" rel="noreferrer">View source</a></div>
+                <span className="textbook-volume__spine" aria-hidden="true">{details.scope}</span>
+                <div className="textbook-volume__copy">
+                  <p className="eyebrow">{item.sourceLanguage.toUpperCase()} → 简体中文</p>
+                  <h3>{item.title}</h3>
+                  <p className="textbook-volume__description">{details.description}</p>
+                  <div className="textbook-volume__facts" aria-label="Textbook details">
+                    <span>{details.scope}</span>
+                    {details.count && <span>{details.count.toLocaleString()} words</span>}
+                    <span>{details.script}</span>
+                  </div>
+                  <p className="textbook-volume__credit">{item.attribution}</p>
+                  <div className="textbook-volume__source"><small>{item.license} · {item.version}</small><a href={item.sourceUrl} target="_blank" rel="noreferrer">View source</a></div>
+                </div>
                 <button className="button button--primary" type="button" disabled={busyBook === item.id || Boolean(installed && !update)} onClick={() => install(item)}>{busyBook === item.id ? "Downloading…" : update ? "Update" : installed ? "Downloaded" : "Download"}</button>
               </article>;
             })}</div>

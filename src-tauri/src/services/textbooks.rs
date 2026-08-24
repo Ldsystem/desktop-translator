@@ -25,23 +25,149 @@ const MAX_SOURCE_BYTES: usize = 2_048;
 const MAX_TRANSLATION_BYTES: usize = 8_192;
 const MAX_PAGE_SIZE: u64 = 500;
 const WIKDICT_HOST: &str = "download.wikdict.com";
+const SCOPE_HOST: &str = "static1.squarespace.com";
+const MAX_SCOPE_BYTES: u64 = 512 * 1024;
+const WIKDICT_URL: &str =
+    "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-zh.sqlite3";
+const WIKDICT_SHA256: &str = "16cf69dc8037a8d4dc6bde260142bf0181f9ff0a008d457f26452f1d80ca5ecd";
+
+#[derive(Clone, Copy)]
+enum ScopeFormat {
+    TeachingCsv,
+    DescriptionList,
+    NumberedList,
+}
+
+#[derive(Clone, Copy)]
+struct ScopeArtifact {
+    url: &'static str,
+    expected_bytes: u64,
+    sha256: &'static str,
+    format: ScopeFormat,
+    expected_entries: usize,
+}
+
+#[derive(Clone, Copy)]
+enum CatalogScope {
+    All,
+    Words(ScopeArtifact),
+}
+
+#[derive(Clone)]
+struct CatalogDefinition {
+    item: TextbookCatalogItem,
+    scope: CatalogScope,
+}
+
+fn catalog_item(
+    id: &str,
+    title: &str,
+    version: &str,
+    attribution: &str,
+    source_url: &str,
+) -> TextbookCatalogItem {
+    TextbookCatalogItem {
+        id: id.into(),
+        title: title.into(),
+        source_language: "en".into(),
+        target_language: "zh-CN".into(),
+        version: version.into(),
+        download_url: WIKDICT_URL.into(),
+        expected_bytes: 5_169_152,
+        sha256: WIKDICT_SHA256.into(),
+        license: "CC BY-SA 4.0".into(),
+        attribution: attribution.into(),
+        source_url: source_url.into(),
+    }
+}
+
+fn catalog_definitions() -> Vec<CatalogDefinition> {
+    let wikdict = "WikDict, Wiktionary and DBnary contributors";
+    let ngsl_source = "https://www.newgeneralservicelist.com/word-lists";
+    vec![
+        CatalogDefinition {
+            item: catalog_item(
+                "wikdict-en-zh-2026-06",
+                "General English Dictionary",
+                "WikDict 2026.06",
+                wikdict,
+                "https://www.wikdict.com/page/download",
+            ),
+            scope: CatalogScope::All,
+        },
+        CatalogDefinition {
+            item: catalog_item(
+                "ngsl-en-zh-1-2",
+                "Everyday English",
+                "NGSL 1.2 · WikDict 2026.06",
+                "NGSL Project; WikDict, Wiktionary and DBnary contributors",
+                ngsl_source,
+            ),
+            scope: CatalogScope::Words(ScopeArtifact {
+                url: "https://static1.squarespace.com/static/64336926d7c6bb38965fdf3b/t/66e83ec996b2ac4b2637bff9/1726496458266/NGSL_1.2_lemmatized_for_teaching.csv",
+                expected_bytes: 73_146,
+                sha256: "b54e297244988237457e04f823aa8dca68e3d646938dc76d383e099f04cb7666",
+                format: ScopeFormat::TeachingCsv,
+                expected_entries: 2_809,
+            }),
+        },
+        CatalogDefinition {
+            item: catalog_item(
+                "nawl-en-zh-1-2",
+                "Academic English",
+                "NAWL 1.2 · WikDict 2026.06",
+                "NGSL Project; WikDict, Wiktionary and DBnary contributors",
+                ngsl_source,
+            ),
+            scope: CatalogScope::Words(ScopeArtifact {
+                url: "https://static1.squarespace.com/static/64336926d7c6bb38965fdf3b/t/644e0e936f1c072f5a0503f8/1682837139514/NAWL_1.2_alphabetized_description.txt",
+                expected_bytes: 10_340,
+                sha256: "88a99099e10010ea40992cca4a5119102d05a0f2888ee5d43d4c8b4afd597fef",
+                format: ScopeFormat::DescriptionList,
+                expected_entries: 957,
+            }),
+        },
+        CatalogDefinition {
+            item: catalog_item(
+                "tsl-en-zh-1-2",
+                "TOEIC English",
+                "TSL 1.2 · WikDict 2026.06",
+                "NGSL Project; WikDict, Wiktionary and DBnary contributors",
+                ngsl_source,
+            ),
+            scope: CatalogScope::Words(ScopeArtifact {
+                url: "https://static1.squarespace.com/static/64336926d7c6bb38965fdf3b/t/644e131e4a9322006209c72a/1682838302275/TSL_1.2_alphabetized_description.txt",
+                expected_bytes: 20_990,
+                sha256: "935b89bdad27755b91f5b1b49b755af3dd7ee60c50d7b899f36520691c88eea8",
+                format: ScopeFormat::NumberedList,
+                expected_entries: 1_250,
+            }),
+        },
+        CatalogDefinition {
+            item: catalog_item(
+                "bsl-en-zh-1-20",
+                "Business English",
+                "BSL 1.20 · WikDict 2026.06",
+                "NGSL Project; WikDict, Wiktionary and DBnary contributors",
+                ngsl_source,
+            ),
+            scope: CatalogScope::Words(ScopeArtifact {
+                url: "https://static1.squarespace.com/static/64336926d7c6bb38965fdf3b/t/6445196c96519e3f970be88a/1682250092935/BSL_1.20_alphabetized_description.txt",
+                expected_bytes: 18_215,
+                sha256: "8a17b77465ecb382b33af4567ab1427c0950e2c0db8490cb83abf286bf9379ac",
+                format: ScopeFormat::DescriptionList,
+                expected_entries: 1_744,
+            }),
+        },
+    ]
+}
 
 /// Returns the deliberately small, pinned catalog compiled into the application.
 pub fn curated_catalog() -> Vec<TextbookCatalogItem> {
-    vec![TextbookCatalogItem {
-        id: "wikdict-en-zh-2026-06".into(),
-        title: "WikDict English - Chinese".into(),
-        source_language: "en".into(),
-        target_language: "zh-CN".into(),
-        version: "2_2026-06".into(),
-        download_url: "https://download.wikdict.com/dictionaries/sqlite/2_2026-06/en-zh.sqlite3"
-            .into(),
-        expected_bytes: 5_169_152,
-        sha256: "16cf69dc8037a8d4dc6bde260142bf0181f9ff0a008d457f26452f1d80ca5ecd".into(),
-        license: "CC BY-SA 4.0".into(),
-        attribution: "WikDict, Wiktionary and DBnary contributors".into(),
-        source_url: "https://www.wikdict.com/page/download".into(),
-    }]
+    catalog_definitions()
+        .into_iter()
+        .map(|definition| definition.item)
+        .collect()
 }
 
 /// Versioned application-local textbook database. Source artifact paths never cross IPC.
@@ -85,10 +211,11 @@ impl TextbookStore {
         staging_directory: &Path,
         now_ms: u64,
     ) -> Result<InstalledTextbook, AppError> {
-        let catalog = curated_catalog()
+        let definition = catalog_definitions()
             .into_iter()
-            .find(|item| item.id == catalog_id)
+            .find(|definition| definition.item.id == catalog_id)
             .ok_or_else(|| internal("Textbook catalog item was not found"))?;
+        let catalog = definition.item;
         validate_catalog(&catalog)?;
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -96,49 +223,47 @@ impl TextbookStore {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(download_error)?;
-        let mut response = client
-            .get(&catalog.download_url)
-            .send()
-            .await
-            .map_err(download_error)?;
-        if !response.status().is_success()
-            || response
-                .content_length()
-                .is_some_and(|length| length > catalog.expected_bytes)
-        {
-            return Err(download_error_message());
-        }
         fs::create_dir_all(staging_directory).map_err(|_| download_error_message())?;
-        let mut staged = tempfile::NamedTempFile::new_in(staging_directory)
-            .map_err(|_| download_error_message())?;
-        let mut received = 0_u64;
-        while let Some(chunk) = response.chunk().await.map_err(download_error)? {
-            received = received
-                .checked_add(chunk.len() as u64)
-                .ok_or_else(download_error_message)?;
-            if received > catalog.expected_bytes || received > MAX_ARTIFACT_BYTES {
-                return Err(invalid_package());
+        let bytes = download_exact(
+            &client,
+            &catalog.download_url,
+            catalog.expected_bytes,
+            MAX_ARTIFACT_BYTES,
+            staging_directory,
+        )
+        .await?;
+        let scope = match definition.scope {
+            CatalogScope::All => None,
+            CatalogScope::Words(artifact) => {
+                validate_scope_artifact(&artifact)?;
+                let scope_bytes = download_exact(
+                    &client,
+                    artifact.url,
+                    artifact.expected_bytes,
+                    MAX_SCOPE_BYTES,
+                    staging_directory,
+                )
+                .await?;
+                Some(verified_scope_words(&scope_bytes, &artifact)?)
             }
-            staged
-                .write_all(&chunk)
-                .map_err(|_| download_error_message())?;
-        }
-        if received != catalog.expected_bytes {
-            return Err(invalid_package());
-        }
-        staged.flush().map_err(|_| download_error_message())?;
-        staged
-            .as_file()
-            .sync_all()
-            .map_err(|_| download_error_message())?;
-        let bytes = fs::read(staged.path()).map_err(|_| download_error_message())?;
-        self.install_verified_bytes(&catalog, &bytes, now_ms)
+        };
+        self.install_verified_bytes_scoped(&catalog, &bytes, scope.as_ref(), now_ms)
     }
 
     fn install_verified_bytes(
         &self,
         catalog: &TextbookCatalogItem,
         bytes: &[u8],
+        now_ms: u64,
+    ) -> Result<InstalledTextbook, AppError> {
+        self.install_verified_bytes_scoped(catalog, bytes, None, now_ms)
+    }
+
+    fn install_verified_bytes_scoped(
+        &self,
+        catalog: &TextbookCatalogItem,
+        bytes: &[u8],
+        scope: Option<&HashSet<String>>,
         now_ms: u64,
     ) -> Result<InstalledTextbook, AppError> {
         if bytes.len() as u64 != catalog.expected_bytes || bytes.len() as u64 > MAX_ARTIFACT_BYTES {
@@ -153,7 +278,13 @@ impl TextbookStore {
             .write_all(bytes)
             .map_err(|_| invalid_package())?;
         private_artifact.flush().map_err(|_| invalid_package())?;
-        let imported = read_wikdict(private_artifact.path())?;
+        let mut imported = read_wikdict(private_artifact.path())?;
+        if let Some(scope) = scope {
+            imported.retain(|entry| scope.contains(&entry.normalized_source));
+            if imported.is_empty() {
+                return Err(invalid_package());
+            }
+        }
         let mut connection = self
             .connection
             .lock()
@@ -549,6 +680,141 @@ struct LegacyProvenance {
     source_text: String,
     translated_text: String,
     promoted_at_epoch_ms: i64,
+}
+
+async fn download_exact(
+    client: &reqwest::Client,
+    url: &str,
+    expected_bytes: u64,
+    maximum_bytes: u64,
+    staging_directory: &Path,
+) -> Result<Vec<u8>, AppError> {
+    if expected_bytes == 0 || expected_bytes > maximum_bytes {
+        return Err(invalid_package());
+    }
+    let mut response = client.get(url).send().await.map_err(download_error)?;
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|length| length > expected_bytes)
+    {
+        return Err(download_error_message());
+    }
+    let mut staged =
+        tempfile::NamedTempFile::new_in(staging_directory).map_err(|_| download_error_message())?;
+    let mut received = 0_u64;
+    while let Some(chunk) = response.chunk().await.map_err(download_error)? {
+        received = received
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(download_error_message)?;
+        if received > expected_bytes || received > maximum_bytes {
+            return Err(invalid_package());
+        }
+        staged
+            .write_all(&chunk)
+            .map_err(|_| download_error_message())?;
+    }
+    if received != expected_bytes {
+        return Err(invalid_package());
+    }
+    staged.flush().map_err(|_| download_error_message())?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|_| download_error_message())?;
+    fs::read(staged.path()).map_err(|_| download_error_message())
+}
+
+fn validate_scope_artifact(artifact: &ScopeArtifact) -> Result<(), AppError> {
+    let url = Url::parse(artifact.url).map_err(|_| invalid_package())?;
+    if url.scheme() != "https"
+        || url.host_str() != Some(SCOPE_HOST)
+        || url.username() != ""
+        || url.password().is_some()
+        || url.port().is_some()
+        || artifact.expected_bytes == 0
+        || artifact.expected_bytes > MAX_SCOPE_BYTES
+        || artifact.sha256.len() != 64
+        || !artifact.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || artifact.expected_entries == 0
+        || artifact.expected_entries as u64 > MAX_ENTRIES
+    {
+        return Err(invalid_package());
+    }
+    Ok(())
+}
+
+fn parse_scope_words(
+    bytes: &[u8],
+    format: ScopeFormat,
+    expected_entries: usize,
+) -> Result<HashSet<String>, AppError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid_package())?;
+    let mut words = HashSet::with_capacity(expected_entries);
+    let mut after_references = false;
+    let mut collecting_description_list = false;
+    for raw_line in text.lines() {
+        let line = raw_line.trim().trim_start_matches('\u{feff}');
+        let word = match format {
+            ScopeFormat::TeachingCsv => {
+                if line.is_empty() || line.starts_with('#') {
+                    None
+                } else {
+                    line.split(',').next()
+                }
+            }
+            ScopeFormat::DescriptionList => {
+                if collecting_description_list {
+                    (!line.is_empty()).then_some(line)
+                } else {
+                    if line == "References" {
+                        after_references = true;
+                    } else if after_references && line.is_empty() {
+                        collecting_description_list = true;
+                    }
+                    None
+                }
+            }
+            ScopeFormat::NumberedList => line.split_once('.').and_then(|(number, word)| {
+                number
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit())
+                    .then_some(word.trim())
+            }),
+        };
+        if let Some(word) = word {
+            let normalized = normalize(word);
+            if normalized.is_empty()
+                || normalized.len() > MAX_SOURCE_BYTES
+                || !normalized.chars().all(|character| {
+                    character.is_alphabetic()
+                        || character == '-'
+                        || character == '\''
+                        || character == ' '
+                })
+                || !words.insert(normalized)
+            {
+                return Err(invalid_package());
+            }
+        }
+    }
+    if words.len() != expected_entries {
+        return Err(invalid_package());
+    }
+    Ok(words)
+}
+
+fn verified_scope_words(
+    bytes: &[u8],
+    artifact: &ScopeArtifact,
+) -> Result<HashSet<String>, AppError> {
+    validate_scope_artifact(artifact)?;
+    if bytes.len() as u64 != artifact.expected_bytes
+        || format!("{:x}", Sha256::digest(bytes)) != artifact.sha256
+    {
+        return Err(invalid_package());
+    }
+    parse_scope_words(bytes, artifact.format, artifact.expected_entries)
 }
 
 fn validate_catalog(catalog: &TextbookCatalogItem) -> Result<(), AppError> {
@@ -1006,9 +1272,13 @@ mod tests {
     }
 
     #[test]
-    fn curated_catalog_pins_the_verified_wikdict_artifact() {
+    fn curated_catalog_offers_five_pinned_simplified_chinese_choices() {
         let catalog = curated_catalog();
-        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog.len(), 5);
+        assert!(catalog.iter().any(|item| item.id.starts_with("ngsl-")));
+        assert!(catalog.iter().any(|item| item.id.starts_with("nawl-")));
+        assert!(catalog.iter().any(|item| item.id.starts_with("tsl-")));
+        assert!(catalog.iter().any(|item| item.id.starts_with("bsl-")));
         assert_eq!(catalog[0].expected_bytes, 5_169_152);
         assert_eq!(
             catalog[0].sha256,
@@ -1017,6 +1287,87 @@ mod tests {
         assert!(catalog[0]
             .download_url
             .starts_with("https://download.wikdict.com/"));
+    }
+
+    #[test]
+    fn parses_each_official_learning_scope_format() {
+        let ngsl = parse_scope_words(
+            b"## notes\na,an\nabandon,abandons,abandoned\n",
+            ScopeFormat::TeachingCsv,
+            2,
+        )
+        .expect("NGSL");
+        assert_eq!(ngsl, HashSet::from(["a".into(), "abandon".into()]));
+
+        let plain = parse_scope_words(
+            b"Description\n\nReferences\nCitation\n\nabdominal\nabsorb\n",
+            ScopeFormat::DescriptionList,
+            2,
+        )
+        .expect("NAWL/BSL");
+        assert_eq!(plain, HashSet::from(["abdominal".into(), "absorb".into()]));
+
+        let numbered = parse_scope_words(
+            b"TOEIC Service List\n\n1.  abide\n2.  aboard\n",
+            ScopeFormat::NumberedList,
+            2,
+        )
+        .expect("TSL");
+        assert_eq!(numbered, HashSet::from(["abide".into(), "aboard".into()]));
+    }
+
+    #[test]
+    fn focused_install_keeps_only_declared_scope_words() {
+        let app_db = NamedTempFile::new().expect("app db");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let fixture = wikdict_fixture(&[
+            ("abandon", "放弃"),
+            ("academic", "学术的"),
+            ("zoo", "动物园"),
+        ]);
+        let catalog = test_catalog(fixture.path(), "focused", "1");
+        let bytes = std::fs::read(fixture.path()).expect("fixture bytes");
+        let scope = HashSet::from(["abandon".into(), "academic".into()]);
+
+        let installed = store
+            .install_verified_bytes_scoped(&catalog, &bytes, Some(&scope), 10)
+            .expect("focused install");
+        assert_eq!(installed.entry_count, 2);
+        assert_eq!(
+            store
+                .list_entries("focused", None, 0, 50)
+                .expect("page")
+                .total,
+            2
+        );
+    }
+
+    #[test]
+    fn invalid_scope_artifact_cannot_replace_an_installed_version() {
+        let app_db = NamedTempFile::new().expect("app db");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let fixture = wikdict_fixture(&[("abandon", "放弃"), ("academic", "学术的")]);
+        let catalog = test_catalog(fixture.path(), "focused", "1");
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("install v1");
+
+        let valid = b"## notes\nabandon,abandoned\n";
+        let artifact = ScopeArtifact {
+            url: "https://static1.squarespace.com/scope.csv",
+            expected_bytes: valid.len() as u64,
+            sha256: "be08b297c68ef379557fb26ff08a376986e9eec37a5bb6fb4f128719508a9bed",
+            format: ScopeFormat::TeachingCsv,
+            expected_entries: 1,
+        };
+        assert!(verified_scope_words(b"tampered", &artifact).is_err());
+
+        let installed = store
+            .get_installed("focused")
+            .expect("query")
+            .expect("v1 remains");
+        assert_eq!(installed.version, "1");
+        assert_eq!(installed.entry_count, 2);
     }
 
     #[test]

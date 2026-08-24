@@ -92,6 +92,10 @@ export interface PracticeOutcome {
 export interface TextbookCatalogItem {
   id: string;
   title: string;
+  description?: string;
+  scope?: string;
+  script?: string;
+  estimatedEntryCount?: number;
   sourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
   version: string;
@@ -330,6 +334,12 @@ export function isTextbookCatalogItem(value: unknown): value is TextbookCatalogI
     isHttpsUrl(value.sourceUrl) &&
     isNonNegativeInteger(value.expectedBytes) &&
     Number(value.expectedBytes) > 0 &&
+    (value.description === undefined || isNonEmptyString(value.description)) &&
+    (value.scope === undefined || isNonEmptyString(value.scope)) &&
+    (value.script === undefined || isNonEmptyString(value.script)) &&
+    (value.estimatedEntryCount === undefined ||
+      (isNonNegativeInteger(value.estimatedEntryCount) &&
+        Number(value.estimatedEntryCount) > 0)) &&
     isSha256(value.sha256)
   );
 }

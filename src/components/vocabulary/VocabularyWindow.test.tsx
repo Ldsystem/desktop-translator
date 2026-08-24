@@ -33,6 +33,10 @@ const entry: VocabularyEntry = {
 const catalogItem: TextbookCatalogItem = {
   id: "wikdict-en-zh",
   title: "Everyday English · Chinese",
+  description: "High-frequency English for daily communication.",
+  scope: "Everyday · NGSL",
+  script: "Simplified Chinese",
+  estimatedEntryCount: 2809,
   sourceLanguage: "en",
   targetLanguage: "zh-CN",
   version: "2026.08",
@@ -43,6 +47,14 @@ const catalogItem: TextbookCatalogItem = {
   attribution: "WikDict",
   sourceUrl: "https://www.wikdict.com/",
 };
+
+const catalogChoices: TextbookCatalogItem[] = [
+  catalogItem,
+  { ...catalogItem, id: "academic", title: "Academic English", scope: "Academic · NAWL", estimatedEntryCount: 957 },
+  { ...catalogItem, id: "toeic", title: "TOEIC English", scope: "TOEIC · TSL", estimatedEntryCount: 1250 },
+  { ...catalogItem, id: "business", title: "Business English", scope: "Business · BSL", estimatedEntryCount: 1744 },
+  { ...catalogItem, id: "general", title: "General English Dictionary", scope: "General reference", estimatedEntryCount: 30518 },
+];
 
 const installedBook: InstalledTextbook = {
   id: catalogItem.id,
@@ -227,7 +239,7 @@ describe("VocabularyWindow", () => {
   });
 
   it("offers a fourth Textbooks destination with stable Discover and Downloaded pages", async () => {
-    const api = makeStudyApi();
+    const api = makeStudyApi({ listCatalog: vi.fn().mockResolvedValue(catalogChoices) });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
 
     const textbooks = [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Textbooks");
@@ -236,6 +248,12 @@ describe("VocabularyWindow", () => {
 
     expect(container.textContent).toContain("Textbook shelf");
     expect(container.textContent).toContain("Everyday English · Chinese");
+    expect(container.textContent).toContain("Academic English");
+    expect(container.textContent).toContain("TOEIC English");
+    expect(container.textContent).toContain("Business English");
+    expect(container.textContent).toContain("General English Dictionary");
+    expect(container.textContent).toContain("Simplified Chinese");
+    expect(container.textContent).toContain("2,809 words");
     expect(container.textContent).toContain("Download");
     const downloaded = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Downloaded");
     act(() => downloaded?.click());
