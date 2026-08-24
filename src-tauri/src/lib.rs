@@ -106,7 +106,7 @@ fn builder() -> tauri::Builder<tauri::Wry> {
             }
             tauri::WindowEvent::Focused(true) if window.label() == "vocabulary" => {
                 window.state::<RuntimeState>().emit_vocabulary_revision(
-                    &window.app_handle(),
+                    window.app_handle(),
                     crate::contracts::VocabularyRevisionKind::Activated,
                     None,
                 );

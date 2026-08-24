@@ -272,7 +272,23 @@ impl StudyService {
         if entries.is_empty() {
             return Ok(None);
         }
-        let candidate_rotation = seed as usize % entries.len();
+        let total_weight = entries
+            .iter()
+            .map(|entry| practice_weight(entry.effective_recall, entry.lookup_count))
+            .sum::<u64>();
+        let mut draw = seeded_hash(seed, "study-selection") % total_weight;
+        let candidate_rotation = entries
+            .iter()
+            .position(|entry| {
+                let weight = practice_weight(entry.effective_recall, entry.lookup_count);
+                if draw < weight {
+                    true
+                } else {
+                    draw -= weight;
+                    false
+                }
+            })
+            .unwrap_or_default();
         entries.rotate_left(candidate_rotation);
         let mut installed_entries = Vec::new();
         for book in self.textbooks.list_installed()? {
@@ -510,6 +526,11 @@ fn seeded_hash(seed: u64, value: &str) -> u64 {
         .fold(seed ^ 0xcbf2_9ce4_8422_2325, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x1000_0000_01b3)
         })
+}
+
+fn practice_weight(effective_recall: f64, lookup_count: u64) -> u64 {
+    let recall_need = (100.0 - effective_recall).clamp(0.0, 100.0).round() as u64;
+    recall_need.saturating_add(lookup_count.min(100)).max(1)
 }
 
 fn storage_error(_: rusqlite::Error) -> AppError {
@@ -808,6 +829,41 @@ mod tests {
         assert_ne!(
             first.entry_id, second.entry_id,
             "seeds should vary candidate selection when the pool permits"
+        );
+    }
+
+    #[test]
+    fn practice_candidate_frequencies_weight_recall_need_and_lookup_demand() {
+        let (_file, service) = seeded_service();
+        service
+            .save_preferences(PracticePreferences {
+                direction: PracticeDirection::SourceToTarget,
+            })
+            .expect("forward");
+        service.preferences.lock().expect("connection").execute_batch(
+            "UPDATE vocabulary_entries SET recall_score = 0, lookup_count = 1 WHERE source_text = 'ephemeral';
+             UPDATE vocabulary_entries SET recall_score = 80, lookup_count = 1 WHERE source_text = 'supersede';
+             UPDATE vocabulary_entries SET recall_score = 80, lookup_count = 50 WHERE source_text = 'predeclare';",
+        ).expect("weighted candidates");
+
+        let mut frequencies = HashMap::<String, usize>::new();
+        for seed in 0..384 {
+            let prompt = service
+                .question(100, seed)
+                .expect("question")
+                .expect("candidate")
+                .prompt;
+            *frequencies.entry(prompt).or_default() += 1;
+        }
+
+        let low_weight = frequencies["supersede"];
+        assert!(
+            frequencies["ephemeral"] > low_weight * 2,
+            "greater recall need should materially increase frequency: {frequencies:?}"
+        );
+        assert!(
+            frequencies["predeclare"] > low_weight * 2,
+            "greater lookup demand should materially increase frequency: {frequencies:?}"
         );
     }
 
