@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import rustCommands from "../src-tauri/src/commands.rs?raw";
 
 const invoke = vi.hoisted(() => vi.fn());
 
@@ -40,9 +41,23 @@ describe("application bootstrap", () => {
       ["add_textbook_entry_to_personal", { textbookEntryId: 81 }],
       ["get_related_vocabulary", { entryId: 1, seed: 7 }],
       ["delete_vocabulary_entry", { entryId: 1 }],
-      ["correct_vocabulary_source_language", { entryId: 1, sourceLanguage: "en" }],
+      ["correct_vocabulary_source_language", { entryId: 1, effectiveSourceLanguage: "en" }],
       ["save_practice_preferences", { preferences: { direction: "target-to-source" } }],
       ["submit_practice_answer", { entryId: 1, direction: "target-to-source", selectedAnswer: "hello" }],
     ]);
+  });
+
+  it("keeps the language-correction IPC argument aligned with the Rust command", async () => {
+    expect(rustCommands).toMatch(
+      /correct_vocabulary_source_language[\s\S]*?effective_source_language:\s*String/,
+    );
+    invoke.mockResolvedValue(undefined);
+
+    await createStudyApi(vi.fn()).correctVocabularySourceLanguage(7, "fr");
+
+    expect(invoke).toHaveBeenCalledWith("correct_vocabulary_source_language", {
+      entryId: 7,
+      effectiveSourceLanguage: "fr",
+    });
   });
 });
