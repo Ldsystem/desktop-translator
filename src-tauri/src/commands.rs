@@ -579,6 +579,7 @@ pub fn get_credential_status(
 /// Opens a native secure prompt and stores the entered key directly in the OS vault.
 #[tauri::command]
 pub fn prompt_and_save_credential(
+    window: WebviewWindow,
     state: State<'_, RuntimeState>,
     provider: TranslationProviderId,
     field: String,
@@ -602,16 +603,28 @@ pub fn prompt_and_save_credential(
         (TranslationProviderId::Microsoft, _) => "Microsoft Translator Subscription Key",
         _ => "Google Cloud Translation API Key",
     };
-    let Some(mut api_key) = crate::credential_prompt::prompt_secure_text(
-        title,
-        "The key is stored directly in the operating-system credential vault.",
-    )?
-    else {
+    let Some(mut api_key) = prompt_credential_secret(&window, title)? else {
         return Ok(false);
     };
     let result = state.credentials.set(provider, secret_field, &api_key);
     api_key.zeroize();
     result.map(|_| true)
+}
+
+fn prompt_credential_secret(
+    window: &WebviewWindow,
+    title: &str,
+) -> Result<Option<String>, AppError> {
+    const MESSAGE: &str = "The key is stored directly in the operating-system credential vault.";
+    #[cfg(target_os = "windows")]
+    {
+        crate::credential_prompt::prompt_secure_text_for_window(window, title, MESSAGE)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        crate::credential_prompt::prompt_secure_text(title, MESSAGE)
+    }
 }
 
 /// Validates the stored credential without returning credential material.
