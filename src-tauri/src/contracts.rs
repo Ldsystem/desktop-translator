@@ -170,6 +170,16 @@ pub struct UserSettings {
     pub microsoft_region: Option<String>,
 }
 
+impl UserSettings {
+    /// Selection overlay has no target picker; the saved default is authoritative.
+    pub fn apply_to_selection_request(&self, request: TranslationRequest) -> TranslationRequest {
+        TranslationRequest {
+            target_language: self.target_language.clone(),
+            ..request
+        }
+    }
+}
+
 /// Validated request passed to a translation provider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -703,5 +713,24 @@ mod tests {
           "partOfSpeech": "oracle"
         }"#;
         assert!(serde_json::from_str::<TranslationResult>(unknown_part_of_speech).is_err());
+    }
+
+    #[test]
+    fn selection_translation_uses_the_saved_target_language() {
+        let raw = include_str!("../../src/contracts/fixtures.json");
+        let fixtures: Fixtures = serde_json::from_str(raw).expect("fixtures must deserialize");
+        let mut settings = fixtures.settings;
+        settings.target_language = "zh-CN".into();
+        let request = TranslationRequest {
+            selection_id: 7,
+            text: "persistence".into(),
+            source_language: "auto".into(),
+            target_language: "en".into(),
+        };
+
+        let applied = settings.apply_to_selection_request(request);
+        assert_eq!(applied.target_language, "zh-CN");
+        assert_eq!(applied.source_language, "auto");
+        assert_eq!(applied.text, "persistence");
     }
 }

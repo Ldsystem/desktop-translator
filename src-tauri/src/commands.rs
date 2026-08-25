@@ -538,14 +538,17 @@ pub async fn save_settings(
         ));
     }
     let previous = state.settings.load()?;
-    sync_start_at_login(&app, settings.start_at_login)?;
     if let Err(error) = state.settings.save(&settings) {
-        let _ = sync_start_at_login(&app, previous.start_at_login);
         return Err(error);
     }
     let _ = app.emit("settings-changed", &settings);
     crate::tray::refresh_window_titles(&app, settings.ui_locale);
     state.coordinator.update_policy(selection_policy(&settings));
+    if start_at_login_changed(&previous, &settings) {
+        if let Err(error) = sync_start_at_login(&app, settings.start_at_login) {
+            return Err(error);
+        }
+    }
     if settings.enabled {
         if let Err(error) = crate::start_global_monitor(&app) {
             let _ = state.settings.save(&previous);
@@ -654,6 +657,8 @@ pub async fn translate_selection(
     state: State<'_, RuntimeState>,
     request: TranslationRequest,
 ) -> Result<TranslationResult, AppError> {
+    let settings = state.settings.load()?;
+    let request = settings.apply_to_selection_request(request);
     let tracks_vocabulary = is_vocabulary_eligible(&request.text);
     let result = state.coordinator.translate(request).await?;
     if tracks_vocabulary {
@@ -1017,6 +1022,10 @@ fn sync_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
     .map_err(|_| internal_error("Start-at-login setting could not be updated"))
 }
 
+fn start_at_login_changed(previous: &UserSettings, next: &UserSettings) -> bool {
+    previous.start_at_login != next.start_at_login
+}
+
 fn internal_error(message: &'static str) -> AppError {
     AppError::new(AppErrorCode::Internal, message, false)
 }
@@ -1061,5 +1070,27 @@ fn platform_permission_granted() -> bool {
     #[cfg(target_os = "windows")]
     {
         true
+    }
+}
+
+#[cfg(test)]
+mod save_settings_tests {
+    use super::start_at_login_changed;
+    use crate::services::settings::default_user_settings;
+
+    #[test]
+    fn language_only_changes_do_not_sync_autostart() {
+        let previous = default_user_settings();
+        let mut next = previous.clone();
+        next.target_language = "zh-CN".into();
+        assert!(!start_at_login_changed(&previous, &next));
+    }
+
+    #[test]
+    fn toggling_start_at_login_does_sync_autostart() {
+        let previous = default_user_settings();
+        let mut next = previous.clone();
+        next.start_at_login = true;
+        assert!(start_at_login_changed(&previous, &next));
     }
 }

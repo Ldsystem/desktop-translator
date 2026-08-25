@@ -338,4 +338,17 @@ mod tests {
         assert!(routing.should_forward_press(false));
         assert!(routing.should_forward_release());
     }
+
+    #[test]
+    fn windows_release_hides_the_console_subsystem() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("windows_subsystem = \"windows\""),
+            "Windows release builds must use the windows subsystem so Explorer does not attach a console"
+        );
+        assert!(
+            source.contains("cfg_attr(not(debug_assertions)"),
+            "debug builds should keep a console for logs"
+        );
+    }
 }
