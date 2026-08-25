@@ -560,7 +560,7 @@ input:focus-visible,
   flex-direction: column;
   max-height: 100%;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
   border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-panel);
@@ -656,7 +656,7 @@ input:focus-visible,
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
-  box-shadow: var(--shadow-card);
+  box-shadow: var(--shadow-overlay);
   animation: card-enter 160ms ease-out both;
 }
 

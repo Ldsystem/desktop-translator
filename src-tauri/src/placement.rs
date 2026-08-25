@@ -434,13 +434,7 @@ mod tests {
             6.0,
         );
 
-        assert_eq!(
-            point,
-            PhysicalPoint {
-                x: 0.0,
-                y: 34.0
-            }
-        );
+        assert_eq!(point, PhysicalPoint { x: 0.0, y: 34.0 });
     }
 
     #[test]

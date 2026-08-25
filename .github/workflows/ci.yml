@@ -105,6 +105,9 @@ jobs:
       - name: Build renderer
         run: pnpm build
 
+      - name: Test renderer and release audit
+        run: pnpm test
+
       - name: Format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 

@@ -101,6 +101,7 @@ jobs:
 
   windows:
     name: Windows x64
+    needs: macos
     runs-on: windows-latest
     permissions:
       contents: write
@@ -147,22 +148,16 @@ jobs:
           ) | Set-Content -Encoding ascii "windows-sha256.txt"
           Get-Content "windows-sha256.txt"
 
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: Desktop Translator ${{ github.event.inputs.tag || github.ref_name }}
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: false
-          args: --bundles nsis
-
-      - name: Upload Windows checksums
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.event.inputs.tag || github.ref_name }}" windows-sha256.txt --clobber
-
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: src-tauri/target/release/bundle/nsis/*_x64-setup.exe
+
+      - name: Upload audited Windows artifacts
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*_x64-setup.exe" | Select-Object -First 1
+          $exe = Get-Item "src-tauri/target/release/desktop-translator.exe"
+          gh release upload "$env:RELEASE_TAG" $nsis.FullName $exe.FullName "windows-sha256.txt" --clobber

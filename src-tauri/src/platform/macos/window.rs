@@ -174,6 +174,19 @@ pub struct NonActivatingPanelPolicy {
     pub becomes_key_only_if_needed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeConfigurationPlan {
+    apply_nonactivating_panel_style: bool,
+    set_becomes_key_only_if_needed: bool,
+}
+
+fn native_configuration_plan(supports_panel_only_policy: bool) -> NativeConfigurationPlan {
+    NativeConfigurationPlan {
+        apply_nonactivating_panel_style: supports_panel_only_policy,
+        set_becomes_key_only_if_needed: supports_panel_only_policy,
+    }
+}
+
 impl Default for NonActivatingPanelPolicy {
     fn default() -> Self {
         Self {
@@ -181,7 +194,10 @@ impl Default for NonActivatingPanelPolicy {
             collection_behavior: CAN_JOIN_ALL_SPACES | IGNORES_CYCLE | FULL_SCREEN_AUXILIARY,
             level: STATUS_WINDOW_LEVEL,
             opaque: false,
-            has_shadow: true,
+            // The transparent WebView draws the card shadow itself. A native
+            // NSWindow shadow follows the full window bounds and creates a
+            // second, conspicuous outline around the floating surface.
+            has_shadow: false,
             hides_on_deactivate: false,
             released_when_closed: false,
             becomes_key_only_if_needed: true,
@@ -276,43 +292,57 @@ impl OverlayController for MacOverlayWindow {
     }
 }
 
-/// Applies the non-activating policy to an NSPanel.
+/// Applies the non-activating policy to an NSWindow-compatible object.
 ///
 /// # Safety
 ///
-/// `panel` must be a live NSPanel pointer and this function must execute on the
-/// AppKit main thread. The function does not retain the panel.
+/// `window` must be a live NSWindow-compatible pointer and this function must
+/// execute on the AppKit main thread. The function does not retain the window.
 pub unsafe fn configure_nonactivating_panel(
-    panel: *mut c_void,
+    window: *mut c_void,
     policy: NonActivatingPanelPolicy,
 ) -> Result<(), &'static str> {
-    if panel.is_null() {
-        return Err("NSPanel pointer is null");
+    if window.is_null() {
+        return Err("NSWindow pointer is null");
     }
 
-    // SAFETY: caller guarantees a live NSPanel on the AppKit main thread; each
-    // selector has the exact ABI represented by the typed helper.
+    // Tauri supplies its own NSWindow subclass (`TaoWindow`) rather than an
+    // NSPanel. NSNonactivatingPanelMask and setBecomesKeyOnlyIfNeeded: are
+    // NSPanel-only policy and raise an Objective-C exception when sent to that
+    // object. Preserve the policy when a future native host really is an
+    // NSPanel, while configuring only shared NSWindow behavior today.
+    let supports_panel_only_policy =
+        unsafe { responds_to_selector(window, "setBecomesKeyOnlyIfNeeded:")? };
+    let plan = native_configuration_plan(supports_panel_only_policy);
+
+    // SAFETY: caller guarantees a live NSWindow-compatible object on the
+    // AppKit main thread; each selector has the exact ABI represented by the
+    // typed helper.
     unsafe {
-        send_usize(panel, "setStyleMask:", policy.style_mask)?;
-        send_usize(panel, "setCollectionBehavior:", policy.collection_behavior)?;
-        send_isize(panel, "setLevel:", policy.level)?;
-        send_bool(panel, "setOpaque:", objc_bool(policy.opaque))?;
-        send_bool(panel, "setHasShadow:", objc_bool(policy.has_shadow))?;
+        if plan.apply_nonactivating_panel_style {
+            send_usize(window, "setStyleMask:", policy.style_mask)?;
+        }
+        send_usize(window, "setCollectionBehavior:", policy.collection_behavior)?;
+        send_isize(window, "setLevel:", policy.level)?;
+        send_bool(window, "setOpaque:", objc_bool(policy.opaque))?;
+        send_bool(window, "setHasShadow:", objc_bool(policy.has_shadow))?;
         send_bool(
-            panel,
+            window,
             "setHidesOnDeactivate:",
             objc_bool(policy.hides_on_deactivate),
         )?;
         send_bool(
-            panel,
+            window,
             "setReleasedWhenClosed:",
             objc_bool(policy.released_when_closed),
         )?;
-        send_bool(
-            panel,
-            "setBecomesKeyOnlyIfNeeded:",
-            objc_bool(policy.becomes_key_only_if_needed),
-        )?;
+        if plan.set_becomes_key_only_if_needed {
+            send_bool(
+                window,
+                "setBecomesKeyOnlyIfNeeded:",
+                objc_bool(policy.becomes_key_only_if_needed),
+            )?;
+        }
     }
     Ok(())
 }
@@ -393,6 +423,15 @@ unsafe fn send_bool(object: Id, name: &str, value: ObjcBool) -> Result<(), &'sta
     Ok(())
 }
 
+unsafe fn responds_to_selector(object: Id, name: &str) -> Result<bool, &'static str> {
+    let candidate = selector(name)?;
+    let responds_to_selector = selector("respondsToSelector:")?;
+    type Send = unsafe extern "C" fn(Id, Sel, Sel) -> ObjcBool;
+    // SAFETY: respondsToSelector: accepts one selector and returns Objective-C BOOL.
+    let send: Send = unsafe { mem::transmute(objc_msgSend as *const ()) };
+    Ok(unsafe { send(object, responds_to_selector, candidate) } != NO)
+}
+
 unsafe fn send_no_args(object: Id, name: &str) -> Result<(), &'static str> {
     let selector = selector(name)?;
     type Send = unsafe extern "C" fn(Id, Sel);
@@ -421,9 +460,10 @@ mod tests {
     };
 
     use super::{
-        logical_window_bounds, place_overlay_in_screen_points, point_is_inside_overlay,
-        MacOverlayWindow, MacScreenGeometry, NonActivatingPanelPolicy, OverlayCommand,
-        CAN_JOIN_ALL_SPACES, FULL_SCREEN_AUXILIARY, IGNORES_CYCLE, NONACTIVATING_PANEL_MASK,
+        logical_window_bounds, native_configuration_plan, place_overlay_in_screen_points,
+        point_is_inside_overlay, MacOverlayWindow, MacScreenGeometry, NonActivatingPanelPolicy,
+        OverlayCommand, CAN_JOIN_ALL_SPACES, FULL_SCREEN_AUXILIARY, IGNORES_CYCLE,
+        NONACTIVATING_PANEL_MASK,
     };
 
     #[test]
@@ -509,8 +549,17 @@ mod tests {
         assert_ne!(policy.collection_behavior & CAN_JOIN_ALL_SPACES, 0);
         assert_ne!(policy.collection_behavior & FULL_SCREEN_AUXILIARY, 0);
         assert_ne!(policy.collection_behavior & IGNORES_CYCLE, 0);
+        assert!(!policy.has_shadow);
         assert!(!policy.hides_on_deactivate);
         assert!(policy.becomes_key_only_if_needed);
+    }
+
+    #[test]
+    fn tauri_nswindow_skips_ns_panel_only_configuration() {
+        let plan = native_configuration_plan(false);
+
+        assert!(!plan.apply_nonactivating_panel_style);
+        assert!(!plan.set_becomes_key_only_if_needed);
     }
 
     #[tokio::test]

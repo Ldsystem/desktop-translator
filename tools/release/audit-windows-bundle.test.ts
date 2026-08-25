@@ -1,12 +1,14 @@
 // @vitest-environment node
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "audit-windows-bundle.ps1");
+const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const describeWindows = process.platform === "win32" ? describe : describe.skip;
 
 function runAudit(releaseDir: string) {
   return spawnSync(
@@ -43,7 +45,7 @@ function makeReleaseLayout(options: {
   return root;
 }
 
-describe("Windows bundle audit", () => {
+describeWindows("Windows bundle audit", () => {
   it("fails when the NSIS x64 installer is missing", () => {
     const root = makeReleaseLayout({ setup: false });
     try {
@@ -97,5 +99,28 @@ describe("Windows bundle audit", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Windows workflow integration", () => {
+  it("runs the PowerShell audit tests on the Windows CI host", () => {
+    const workflow = readFileSync(join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
+    const windowsJob = workflow.split("\n  windows:")[1] ?? "";
+
+    expect(windowsJob).toContain("pnpm test");
+  });
+
+  it("uploads the exact audited Windows artifacts after one NSIS build", () => {
+    const workflow = readFileSync(
+      join(repositoryRoot, ".github", "workflows", "release.yml"),
+      "utf8",
+    );
+    const windowsJob = workflow.split("\n  windows:")[1] ?? "";
+
+    expect(windowsJob.match(/pnpm tauri build --bundles nsis/g)).toHaveLength(1);
+    expect(windowsJob).not.toContain("tauri-apps/tauri-action");
+    expect(windowsJob).toContain("gh release upload");
+    expect(windowsJob).toContain("desktop-translator.exe");
+    expect(windowsJob).toContain("windows-sha256.txt");
   });
 });
