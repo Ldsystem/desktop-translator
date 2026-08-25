@@ -351,4 +351,16 @@ mod tests {
             "debug builds should keep a console for logs"
         );
     }
+
+    #[test]
+    fn windows_tests_receive_the_common_controls_manifest() {
+        let build_script = include_str!("../build.rs");
+        let manifest = include_str!("../windows-app-manifest.xml");
+
+        assert!(build_script.contains("new_without_app_manifest"));
+        assert!(build_script.contains("cargo:rustc-link-arg=/MANIFEST:EMBED"));
+        assert!(build_script.contains("cargo:rustc-link-arg=/MANIFESTINPUT:"));
+        assert!(manifest.contains("Microsoft.Windows.Common-Controls"));
+        assert!(manifest.contains("version=\"6.0.0.0\""));
+    }
 }
