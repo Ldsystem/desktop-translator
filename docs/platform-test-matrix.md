@@ -1,6 +1,6 @@
 # Platform Qualification Matrix
 
-Updated: 2026-08-13
+Updated: 2026-08-24
 
 This matrix separates deterministic automated evidence from real-host evidence. A row is
 `Passed` only when the stated fixture was exercised on the named host. `Pending` is not
@@ -10,27 +10,28 @@ treated as release evidence.
 
 - **macOS host:** macOS 26.5.2 (25F84), Apple silicon arm64, 16 GiB RAM,
   Node.js 20.20.0, pnpm 10.30.2, rustc 1.97.1.
-- **Windows host:** pending access to a Windows 10/11 x64 host with a normal
-  unelevated session and UI Automation enabled.
+- **Windows host:** Windows 11 25H2 x64 (build 26200.9168), unelevated session,
+  Node.js via Volta, pnpm 11.20.0, rustc 1.98.0. Display topology is a single
+  primary 1536×960 32-bit surface (`\\.\DISPLAY1`); mixed-DPI and multi-monitor
+  placement were **not** available on this host.
 
-> The Windows target does not compile. The non-gating `windows-latest` job in
-> `.github/workflows/ci.yml` first ran on 2026-08-13 and reported drift against
-> `windows` crate 0.62: `apply_non_activating_tool_window` is not exported from
-> `platform::windows` (`overlay.rs:365`), `LOCALE_NAME_MAX_LENGTH` is no longer
-> under `Win32::Globalization` (`speech.rs:16`), argument types changed at
-> `selection.rs:304` and `speech.rs:183`, and `SPEAKFLAGS` no longer implements
-> `BitOr` (`speech.rs:219`). Windows qualification therefore starts from a
-> compile repair, not from host fixtures.
+> Compile against locked `windows` 0.62 is repaired. Gating Windows CI now runs
+> renderer build, `cargo fmt`, Clippy `-D warnings`, `cargo test`, NSIS package,
+> and `tools/release/audit-windows-bundle.ps1`. Real-host UI Automation selection,
+> overlay against a second app, SAPI, credential prompt, start-at-login, and
+> Vocabulary Study chrome remain **manual-only** until those fixtures are run
+> interactively. See [`windows-signing-and-supply-chain.md`](windows-signing-and-supply-chain.md).
 
 ## Deterministic gates
 
 | Gate | macOS result | Windows result | Evidence |
 | --- | --- | --- | --- |
-| Frontend typecheck, tests, production build | Passed | Pending | `pnpm check`; 6 files and 22 tests passed |
-| Rust unit and integration suite | Passed | Pending | `cargo test --manifest-path src-tauri/Cargo.toml`; 73 passed and 6 explicit manual fixtures ignored |
-| Strict Rust lint and formatting | Passed | Pending | `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings` |
-| Native unsigned release build | Passed | Pending | `pnpm tauri build` on macOS |
-| Performance harness parser and budgets | Passed | Pending | `pnpm test:perf`; process-tree parsing, percentile calculation, CLI forwarding, and multi-budget failures |
+| Frontend typecheck, tests, production build | Passed | Passed | `pnpm check` on this Windows host; 12 files and 80 tests passed including the NSIS audit suite |
+| Rust unit and integration suite | Passed | Passed | `cargo test --manifest-path src-tauri/Cargo.toml`; 135 passed, 1 ignored network fixture |
+| Strict Rust lint and formatting | Passed | Passed | `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings` |
+| Native unsigned release build | Passed | Passed | `pnpm tauri build --bundles nsis`; `Desktop Translator_0.3.0_x64-setup.exe` 3 589 056 bytes SHA-256 `9DD565CF2FA5487D90EDD3B8638C92C76B88C32CBEBED1054A885CD0D799DCC5`; exe 9 397 248 bytes SHA-256 `FF33835546FF6A6F6D4DAE30241DA3871956D6C9D08C3D46AE601AFB53A21ECF` |
+| Installer silent install / launch / reinstall / uninstall | n/a | Passed | NSIS `/S` current-user install to `%LOCALAPPDATA%\Desktop Translator`, process started, `/S` reinstall, `uninstall.exe /S` removed the directory |
+| Performance harness parser and budgets | Passed | Passed (parser) | `pnpm test:perf` is included in `pnpm check`; warmed RSS/latency on Windows remain pending |
 
 ## Selection and lifecycle fixtures
 
@@ -48,7 +49,7 @@ treated as release evidence.
 | Protected/secure field suppression | Pending | Pending | Run the ignored secure-field fixture and verify no overlay, log, or request |
 | Unsupported canvas/PDF control | Pending | Pending | Verify no overlay when AX/UIA exposes no selected range and geometry |
 | Permission denied or elevated target | Pending | Pending | Revoke macOS Accessibility and test guidance; test a Windows elevated target from an unelevated app |
-| Mixed-DPI, multi-monitor, and work-area edges | Automated | Pending | Placement and macOS display-normalization tests pass; real multi-display placement remains pending |
+| Mixed-DPI, multi-monitor, and work-area edges | Automated | Topology limited | Windows unit placement tests pass; this host has one 1536×960 display so mixed-DPI/multi-monitor was not exercised |
 | Display topology change | Automated | Pending | Pure placement recomputation test passes; real hot-plug remains pending |
 | Sleep/wake and observer restart | Automated | Pending | Observer stop/restart lifecycle tests pass; real sleep/wake remains pending |
 | Double/triple-click word or paragraph selection | Automated | Pending | macOS gesture-state tests pass; real-host fixture remains pending |
@@ -105,9 +106,14 @@ Current macOS pre-WebView release measurement:
 
 ## Release blockers
 
+Windows compile, NSIS packaging, gating CI, and silent installer smoke passed on
+Windows 11 25H2 x64. Interactive UI Automation selection, overlay, SAPI,
+credential prompt, start-at-login, and Vocabulary Study chrome are still
+manual-only.
+
 Task 008 cannot be accepted until:
 
-1. the Windows deterministic build and real-host fixture rows pass on Windows 10/11;
+1. remaining Windows real-host UI fixture rows are executed on Windows 10/11;
 2. pending macOS real-host fixtures are executed;
 3. warmed resource measurements and externally observed latency samples pass;
 4. manual theme, reduced-motion, and real multi-display checks are recorded.

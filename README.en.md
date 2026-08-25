@@ -24,3 +24,9 @@ involved. Textbook attribution and source links remain visible in the study UI.
 Translation lookup follows this order: personal wordbook, active downloaded
 textbook, then the configured online translation provider. A textbook hit is
 promoted into the personal wordbook for later study.
+
+Windows 10/11 x64 is distributed as an unsigned NSIS installer. Compile, gating
+CI, and silent install/launch/uninstall were recorded on Windows 11 25H2 x64;
+interactive overlay and speech fixtures remain manual-only. See
+[README.md](README.md) and
+[docs/windows-signing-and-supply-chain.md](docs/windows-signing-and-supply-chain.md).

@@ -98,17 +98,22 @@ The study window brings four tools together:
 | Platform | Status |
 | --- | --- |
 | macOS 11+ | Supported |
-| Windows 10/11 | Implemented but unqualified — not distributed yet |
+| Windows 10/11 x64 | Packaged (unsigned NSIS) — compile, CI, and installer smoke passed; interactive UI fixtures remain manual-only |
 | Linux | Not planned |
 
 > [!NOTE]
-> The Windows adapters (UI Automation selection, low-level mouse hook, SAPI
-> speech) are written and compile in CI, but they have never been exercised on a
-> real Windows host, so no Windows build is published. See
-> [`docs/platform-test-matrix.md`](docs/platform-test-matrix.md) for what is and
-> is not qualified.
+> Windows 11 25H2 x64 (build 26200.9168) produced
+> `Desktop Translator_0.3.0_x64-setup.exe` via `pnpm tauri build --bundles nsis`.
+> Silent current-user install, launch, reinstall, and uninstall succeeded.
+> UI Automation selection, the non-activating overlay against another app, SAPI,
+> the credential prompt, start-at-login, and Vocabulary Study chrome were **not**
+> exercised interactively on this host. See
+> [`docs/platform-test-matrix.md`](docs/platform-test-matrix.md) and
+> [`docs/windows-signing-and-supply-chain.md`](docs/windows-signing-and-supply-chain.md).
 
 ## Install
+
+### macOS
 
 Download the `.dmg` from the
 [latest release](https://github.com/Ldsystem/desktop-translator/releases/latest)
@@ -122,6 +127,18 @@ runs natively on both Apple Silicon and Intel Macs.
 > ```sh
 > xattr -dr com.apple.quarantine "/Applications/Desktop Translator.app"
 > ```
+
+### Windows 10/11 x64
+
+Download `Desktop Translator_*_x64-setup.exe` from the same Releases page and
+run it. The installer is NSIS, current-user, and fetches WebView2 with the
+Microsoft download bootstrapper when the runtime is missing. It does not
+require Node.js, Rust, Python, or an administrator account.
+
+> [!IMPORTANT]
+> Windows builds are **not Authenticode-signed**. SmartScreen may warn on first
+> run; use **More info → Run anyway**. See
+> [`docs/windows-signing-and-supply-chain.md`](docs/windows-signing-and-supply-chain.md).
 
 ## Setup
 
@@ -162,8 +179,8 @@ menu-bar menu, choose a service, and use its native credential prompt:
 > never silently falls back to another online provider.
 
 Credentials are entered in native secure prompts and stored in the macOS
-Keychain. They never pass through the WebView and are never written to the
-settings file.
+Keychain or Windows Credential Manager. They never pass through the WebView and
+are never written to the settings file.
 
 ## Usage
 
@@ -214,7 +231,8 @@ pnpm tauri dev
 | `pnpm tauri dev` | Run the app against a live-reloading renderer |
 | `pnpm check` | Typecheck, frontend tests, and renderer build |
 | `pnpm test:platform` | Rust unit and integration tests |
-| `pnpm tauri build` | Produce a `.app` and `.dmg` |
+| `pnpm tauri build` | Produce a `.app` and `.dmg` on macOS |
+| `pnpm tauri build --bundles nsis` | Produce the Windows x64 NSIS setup exe |
 
 > [!TIP]
 > On macOS, run [`tools/macos/create-dev-signing-identity.sh`](tools/macos/create-dev-signing-identity.sh)

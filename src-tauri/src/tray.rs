@@ -160,10 +160,14 @@ pub fn install(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             SETTINGS_ID => {
-                let _ = show_settings(app);
+                if let Err(error) = show_settings(app) {
+                    eprintln!("settings tray action failed: {}", error.message);
+                }
             }
             STUDY_ID => {
-                let _ = show_study(app);
+                if let Err(error) = show_study(app) {
+                    eprintln!("vocabulary tray action failed: {}", error.message);
+                }
             }
             LOCALE_EN_ID => {
                 let _ = set_locale(app, UiLocale::English);
@@ -206,7 +210,9 @@ pub fn install(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } = event
             {
-                let _ = crate::quick_translate::toggle(tray.app_handle(), position);
+                if let Err(error) = crate::quick_translate::toggle(tray.app_handle(), position) {
+                    eprintln!("quick translation tray action failed: {}", error.message);
+                }
             }
         });
     if let Some(icon) = tray_icon() {

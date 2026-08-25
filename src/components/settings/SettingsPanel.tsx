@@ -45,13 +45,23 @@ export function SettingsPanel({
 
   useEffect(() => setDraft(settings), [settings]);
 
+  const persist = (next: UserSettings) => {
+    onSave({ ...next, enabled: permissionStatus !== "denied" && next.enabled });
+  };
+
   const update = <Key extends keyof UserSettings>(key: Key, value: UserSettings[Key]) => {
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
+  const updateLanguage = (key: "sourceLanguage" | "targetLanguage", value: string) => {
+    const next = { ...draft, [key]: value };
+    setDraft(next);
+    persist(next);
+  };
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    onSave({ ...draft, enabled: monitoringEnabled });
+    persist(draft);
   };
 
   return (
@@ -137,7 +147,7 @@ export function SettingsPanel({
                 id="source-language"
                 name="sourceLanguage"
                 value={draft.sourceLanguage}
-                onChange={(event) => update("sourceLanguage", event.currentTarget.value)}
+                onChange={(event) => updateLanguage("sourceLanguage", event.currentTarget.value)}
               >
                 <option value="auto">{copy.detectAutomatically}</option>
                 {defaultLanguages.map((language) => (
@@ -152,7 +162,7 @@ export function SettingsPanel({
                 id="target-language"
                 name="targetLanguage"
                 value={draft.targetLanguage}
-                onChange={(event) => update("targetLanguage", event.currentTarget.value)}
+                onChange={(event) => updateLanguage("targetLanguage", event.currentTarget.value)}
               >
                 {defaultLanguages.map((language) => (
                   <option key={language.code} value={language.code}>{language.label}</option>

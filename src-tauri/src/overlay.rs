@@ -453,9 +453,7 @@ fn position_overlay(
     let work_area = monitor_work_area_for(anchor)?;
     let placement = place_overlay_on_monitors(anchor, &[work_area], logical_size, OVERLAY_GAP)
         .ok_or_else(|| overlay_error("Overlay position could not be resolved"))?;
-    let hwnd = window
-        .hwnd()
-        .map_err(|_| overlay_error("Native overlay handle is unavailable"))?;
+    let hwnd = overlay_hwnd(window)?;
     position_non_activating_tool_window(hwnd, &placement)
 }
 
@@ -538,13 +536,20 @@ fn position_overlay(
 }
 
 #[cfg(target_os = "windows")]
+fn overlay_hwnd(window: &WebviewWindow) -> Result<windows::Win32::Foundation::HWND, AppError> {
+    use crate::platform::windows::hwnd_from_raw_pointer;
+
+    let handle = window
+        .hwnd()
+        .map_err(|_| overlay_error("Native overlay handle is unavailable"))?;
+    Ok(hwnd_from_raw_pointer(handle.0))
+}
+
+#[cfg(target_os = "windows")]
 fn configure_native_nonactivation(window: &WebviewWindow) -> Result<(), AppError> {
     use crate::platform::windows::apply_non_activating_tool_window;
 
-    let hwnd = window
-        .hwnd()
-        .map_err(|_| overlay_error("Native overlay handle is unavailable"))?;
-    apply_non_activating_tool_window(hwnd)
+    apply_non_activating_tool_window(overlay_hwnd(window)?)
 }
 
 fn overlay_error(message: &'static str) -> AppError {

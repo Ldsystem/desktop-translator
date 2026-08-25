@@ -538,11 +538,12 @@ pub async fn save_settings(
         ));
     }
     let previous = state.settings.load()?;
-    sync_start_at_login(&app, settings.start_at_login)?;
-    if let Err(error) = state.settings.save(&settings) {
-        let _ = sync_start_at_login(&app, previous.start_at_login);
-        return Err(error);
-    }
+    persist_settings_with_autostart(
+        &previous,
+        &settings,
+        |enabled| sync_start_at_login(&app, enabled),
+        || state.settings.save(&settings),
+    )?;
     let _ = app.emit("settings-changed", &settings);
     crate::tray::refresh_window_titles(&app, settings.ui_locale);
     state.coordinator.update_policy(selection_policy(&settings));
@@ -578,7 +579,8 @@ pub fn get_credential_status(
 
 /// Opens a native secure prompt and stores the entered key directly in the OS vault.
 #[tauri::command]
-pub fn prompt_and_save_credential(
+pub async fn prompt_and_save_credential(
+    window: WebviewWindow,
     state: State<'_, RuntimeState>,
     provider: TranslationProviderId,
     field: String,
@@ -602,16 +604,37 @@ pub fn prompt_and_save_credential(
         (TranslationProviderId::Microsoft, _) => "Microsoft Translator Subscription Key",
         _ => "Google Cloud Translation API Key",
     };
-    let Some(mut api_key) = crate::credential_prompt::prompt_secure_text(
-        title,
-        "The key is stored directly in the operating-system credential vault.",
-    )?
-    else {
+    // The Windows credential dialog must execute on the UI thread, while this
+    // command waits off that thread. A synchronous command could otherwise
+    // block the same event loop that `run_on_main_thread` needs to enter.
+    let prompt_window = window.clone();
+    let prompted = tauri::async_runtime::spawn_blocking(move || {
+        prompt_credential_secret(&prompt_window, title)
+    })
+    .await
+    .map_err(|_| internal_error("Credential prompt could not be opened"))?;
+    let Some(mut api_key) = prompted? else {
         return Ok(false);
     };
     let result = state.credentials.set(provider, secret_field, &api_key);
     api_key.zeroize();
     result.map(|_| true)
+}
+
+fn prompt_credential_secret(
+    window: &WebviewWindow,
+    title: &str,
+) -> Result<Option<String>, AppError> {
+    const MESSAGE: &str = "The key is stored directly in the operating-system credential vault.";
+    #[cfg(target_os = "windows")]
+    {
+        crate::credential_prompt::prompt_secure_text_for_window(window, title, MESSAGE)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        crate::credential_prompt::prompt_secure_text(title, MESSAGE)
+    }
 }
 
 /// Validates the stored credential without returning credential material.
@@ -641,6 +664,8 @@ pub async fn translate_selection(
     state: State<'_, RuntimeState>,
     request: TranslationRequest,
 ) -> Result<TranslationResult, AppError> {
+    let settings = state.settings.load()?;
+    let request = settings.apply_to_selection_request(request);
     let tracks_vocabulary = is_vocabulary_eligible(&request.text);
     let result = state.coordinator.translate(request).await?;
     if tracks_vocabulary {
@@ -1004,6 +1029,29 @@ fn sync_start_at_login(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
     .map_err(|_| internal_error("Start-at-login setting could not be updated"))
 }
 
+fn start_at_login_changed(previous: &UserSettings, next: &UserSettings) -> bool {
+    previous.start_at_login != next.start_at_login
+}
+
+fn persist_settings_with_autostart<E>(
+    previous: &UserSettings,
+    next: &UserSettings,
+    mut sync: impl FnMut(bool) -> Result<(), E>,
+    save: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    let changed = start_at_login_changed(previous, next);
+    if changed {
+        sync(next.start_at_login)?;
+    }
+    if let Err(error) = save() {
+        if changed {
+            let _ = sync(previous.start_at_login);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn internal_error(message: &'static str) -> AppError {
     AppError::new(AppErrorCode::Internal, message, false)
 }
@@ -1048,5 +1096,85 @@ fn platform_permission_granted() -> bool {
     #[cfg(target_os = "windows")]
     {
         true
+    }
+}
+
+#[cfg(test)]
+mod save_settings_tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use super::{persist_settings_with_autostart, start_at_login_changed};
+    use crate::services::settings::default_user_settings;
+
+    #[test]
+    fn language_only_changes_do_not_sync_autostart() {
+        let previous = default_user_settings();
+        let mut next = previous.clone();
+        next.target_language = "zh-CN".into();
+        assert!(!start_at_login_changed(&previous, &next));
+    }
+
+    #[test]
+    fn toggling_start_at_login_does_sync_autostart() {
+        let previous = default_user_settings();
+        let mut next = previous.clone();
+        next.start_at_login = true;
+        assert!(start_at_login_changed(&previous, &next));
+    }
+
+    #[test]
+    fn autostart_failure_does_not_persist_the_new_settings() {
+        let previous = default_user_settings();
+        let mut next = previous.clone();
+        next.start_at_login = true;
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sync_calls = Rc::clone(&calls);
+        let save_calls = Rc::clone(&calls);
+
+        let result = persist_settings_with_autostart(
+            &previous,
+            &next,
+            move |enabled| {
+                sync_calls
+                    .borrow_mut()
+                    .push(if enabled { "sync-on" } else { "sync-off" });
+                Err("sync failed")
+            },
+            move || {
+                save_calls.borrow_mut().push("save");
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("sync failed"));
+        assert_eq!(&*calls.borrow(), &["sync-on"]);
+    }
+
+    #[test]
+    fn settings_failure_rolls_autostart_back() {
+        let previous = default_user_settings();
+        let mut next = previous.clone();
+        next.start_at_login = true;
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sync_calls = Rc::clone(&calls);
+        let save_calls = Rc::clone(&calls);
+
+        let result = persist_settings_with_autostart(
+            &previous,
+            &next,
+            move |enabled| {
+                sync_calls
+                    .borrow_mut()
+                    .push(if enabled { "sync-on" } else { "sync-off" });
+                Ok(())
+            },
+            move || {
+                save_calls.borrow_mut().push("save");
+                Err("save failed")
+            },
+        );
+
+        assert_eq!(result, Err("save failed"));
+        assert_eq!(&*calls.borrow(), &["sync-on", "save", "sync-off"]);
     }
 }

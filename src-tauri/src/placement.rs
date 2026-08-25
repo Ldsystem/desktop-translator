@@ -59,6 +59,31 @@ fn place_overlay(
     }
 }
 
+/// Centers a tray popover on the click. Prefers below the icon, flips above when
+/// that would overflow, then clamps both axes to the work area.
+pub fn place_tray_panel(
+    anchor: PhysicalPoint,
+    work_area: PhysicalRect,
+    panel: PhysicalSize,
+    gap: f64,
+) -> PhysicalPoint {
+    let work_right = work_area.x + work_area.width;
+    let work_bottom = work_area.y + work_area.height;
+    let max_x = (work_right - panel.width).max(work_area.x);
+    let max_y = (work_bottom - panel.height).max(work_area.y);
+    let x = (anchor.x - panel.width / 2.0).clamp(work_area.x, max_x);
+    let below = anchor.y + gap;
+    let y = if below + panel.height <= work_bottom {
+        below
+    } else {
+        anchor.y - panel.height - gap
+    };
+    PhysicalPoint {
+        x,
+        y: y.clamp(work_area.y, max_y),
+    }
+}
+
 /// Returns the final valid accessibility rectangle in provider-supplied reading order.
 pub fn final_visible_line(rectangles: &[PhysicalRect]) -> Option<PhysicalRect> {
     rectangles
@@ -143,8 +168,8 @@ mod tests {
     use crate::contracts::PhysicalRect;
 
     use super::{
-        final_visible_line, place_overlay, place_overlay_on_monitors, MonitorWorkArea,
-        PhysicalPoint, PhysicalSize,
+        final_visible_line, place_overlay, place_overlay_on_monitors, place_tray_panel,
+        MonitorWorkArea, PhysicalPoint, PhysicalSize,
     };
 
     const WORK_AREA: PhysicalRect = PhysicalRect {
@@ -390,5 +415,57 @@ mod tests {
         );
 
         assert_eq!(invalid, None);
+    }
+
+    #[test]
+    fn tray_panel_opens_below_when_the_work_area_has_room() {
+        let point = place_tray_panel(
+            PhysicalPoint { x: 200.0, y: 28.0 },
+            PhysicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            PhysicalSize {
+                width: 400.0,
+                height: 470.0,
+            },
+            6.0,
+        );
+
+        assert_eq!(point, PhysicalPoint { x: 0.0, y: 34.0 });
+    }
+
+    #[test]
+    fn tray_panel_flips_above_and_clamps_to_the_work_area_near_the_bottom_right() {
+        let point = place_tray_panel(
+            PhysicalPoint {
+                x: 1900.0,
+                y: 1064.0,
+            },
+            PhysicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1040.0,
+            },
+            PhysicalSize {
+                width: 400.0,
+                height: 470.0,
+            },
+            6.0,
+        );
+
+        assert_eq!(
+            point,
+            PhysicalPoint {
+                x: 1520.0,
+                y: 570.0
+            }
+        );
+        assert!(point.x + 400.0 <= 1920.0);
+        assert!(point.y + 470.0 <= 1040.0);
+        assert!(point.y + 470.0 + 6.0 <= 1064.0);
     }
 }

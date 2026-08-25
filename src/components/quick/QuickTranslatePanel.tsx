@@ -54,6 +54,14 @@ export function QuickTranslatePanel({
   const input = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
+    setSource(sourceLanguage);
+  }, [sourceLanguage]);
+
+  useEffect(() => {
+    setTarget(targetLanguage);
+  }, [targetLanguage]);
+
+  useEffect(() => {
     input.current?.focus();
   }, []);
 

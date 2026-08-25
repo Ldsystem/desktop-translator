@@ -12,12 +12,10 @@ use async_trait::async_trait;
 use windows::{
     core::PCWSTR,
     Win32::{
-        Globalization::{
-            LocaleNameToLCID, ResolveLocaleName, LOCALE_ALLOW_NEUTRAL_NAMES, LOCALE_NAME_MAX_LENGTH,
-        },
+        Globalization::{LocaleNameToLCID, ResolveLocaleName, LOCALE_ALLOW_NEUTRAL_NAMES},
         Media::Speech::{
             ISpObjectToken, ISpObjectTokenCategory, ISpVoice, SpObjectTokenCategory, SpVoice,
-            SPCAT_VOICES, SPF_ASYNC, SPF_PURGEBEFORESPEAK,
+            SPCAT_VOICES, SPEAKFLAGS, SPF_ASYNC, SPF_PURGEBEFORESPEAK,
         },
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
@@ -30,6 +28,10 @@ use crate::{
     contracts::{AppError, AppErrorCode},
     platform::SpeechAdapter,
 };
+
+/// Win32 `LOCALE_NAME_MAX_LENGTH`, including the terminating NUL.
+/// The `windows` 0.62 crate no longer exports this Globalization constant.
+const LOCALE_NAME_MAX_LENGTH: usize = 85;
 
 enum SpeechCommand {
     IsAvailable {
@@ -180,9 +182,10 @@ fn run_speech_worker(
             SpeechCommand::Stop { reply } => {
                 // SAFETY: a null text pointer with PURGEBEFORESPEAK is SAPI's
                 // documented cancellation operation for the current queue.
-                let result = unsafe { voice.Speak(PCWSTR::null(), SPF_PURGEBEFORESPEAK, None) }
-                    .map(|_| ())
-                    .map_err(|_| internal("could not stop Windows speech"));
+                let result =
+                    unsafe { voice.Speak(PCWSTR::null(), speak_flags(SPF_PURGEBEFORESPEAK), None) }
+                        .map(|_| ())
+                        .map_err(|_| internal("could not stop Windows speech"));
                 reply.complete(result);
             }
         }
@@ -216,7 +219,7 @@ fn speak_with_voice(
             .and_then(|_| {
                 voice.Speak(
                     PCWSTR(text.as_ptr()),
-                    SPF_ASYNC | SPF_PURGEBEFORESPEAK,
+                    speak_flags(SPF_ASYNC) | speak_flags(SPF_PURGEBEFORESPEAK),
                     None,
                 )
             })
@@ -250,7 +253,7 @@ fn language_attribute(language: &str) -> Option<String> {
         return None;
     }
     let wide_language = wide(&normalized);
-    let mut resolved = [0u16; LOCALE_NAME_MAX_LENGTH as usize];
+    let mut resolved = [0u16; LOCALE_NAME_MAX_LENGTH];
     // SAFETY: the source is NUL-terminated and `resolved` supplies the exact
     // writable capacity passed to ResolveLocaleName.
     let resolved_len =
@@ -275,6 +278,10 @@ fn voice_language_attribute(locale: u32) -> String {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn speak_flags(flag: SPEAKFLAGS) -> u32 {
+    flag.0 as u32
 }
 
 fn internal(message: &'static str) -> AppError {
@@ -352,9 +359,11 @@ impl<T> Future for ReplyReceiver<T> {
 mod tests {
     use std::{future::Future, pin::Pin, task::Context};
 
+    use windows::Win32::Media::Speech::{SPF_ASYNC, SPF_PURGEBEFORESPEAK};
+
     use crate::contracts::AppErrorCode;
 
-    use super::{language_attribute, reply_channel, voice_language_attribute, wide};
+    use super::{language_attribute, reply_channel, speak_flags, voice_language_attribute, wide};
 
     #[test]
     fn wide_strings_are_nul_terminated() {
@@ -370,6 +379,14 @@ mod tests {
     fn sapi_language_attribute_uses_low_word_hex_langid() {
         assert_eq!(voice_language_attribute(0x0000_0409), "Language=0409");
         assert_eq!(voice_language_attribute(0x1234_0804), "Language=0804");
+    }
+
+    #[test]
+    fn speak_flags_encode_as_u32_without_bitor_on_speakflags() {
+        assert_eq!(
+            speak_flags(SPF_ASYNC) | speak_flags(SPF_PURGEBEFORESPEAK),
+            3
+        );
     }
 
     #[test]

@@ -338,4 +338,29 @@ mod tests {
         assert!(routing.should_forward_press(false));
         assert!(routing.should_forward_release());
     }
+
+    #[test]
+    fn windows_release_hides_the_console_subsystem() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("windows_subsystem = \"windows\""),
+            "Windows release builds must use the windows subsystem so Explorer does not attach a console"
+        );
+        assert!(
+            source.contains("cfg_attr(not(debug_assertions)"),
+            "debug builds should keep a console for logs"
+        );
+    }
+
+    #[test]
+    fn windows_tests_receive_the_common_controls_manifest() {
+        let build_script = include_str!("../build.rs");
+        let manifest = include_str!("../windows-app-manifest.xml");
+
+        assert!(build_script.contains("new_without_app_manifest"));
+        assert!(build_script.contains("cargo:rustc-link-arg=/MANIFEST:EMBED"));
+        assert!(build_script.contains("cargo:rustc-link-arg=/MANIFESTINPUT:"));
+        assert!(manifest.contains("Microsoft.Windows.Common-Controls"));
+        assert!(manifest.contains("version=\"6.0.0.0\""));
+    }
 }

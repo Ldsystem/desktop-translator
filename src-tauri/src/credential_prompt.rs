@@ -1,17 +1,63 @@
 //! Native secure credential entry that never places the API key in WebView state.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::contracts::{AppError, AppErrorCode};
+
+static PROMPT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Prompts for an API key using the platform's native secure credential control.
 #[cfg(target_os = "macos")]
 pub fn prompt_secure_text(title: &str, message: &str) -> Result<Option<String>, AppError> {
+    let _guard = acquire_prompt_guard()?;
     macos::prompt(title, message)
 }
 
 /// Prompts for an API key using Windows Credential UI without persistence.
 #[cfg(target_os = "windows")]
 pub fn prompt_secure_text(title: &str, message: &str) -> Result<Option<String>, AppError> {
-    windows::prompt(title, message)
+    prompt_secure_text_with_parent(title, message, std::ptr::null_mut())
+}
+
+/// Owns the credential dialog with the invoking window so it cannot fall behind.
+#[cfg(target_os = "windows")]
+pub fn prompt_secure_text_for_window(
+    window: &tauri::WebviewWindow,
+    title: &str,
+    message: &str,
+) -> Result<Option<String>, AppError> {
+    use std::sync::mpsc;
+
+    let parent = window
+        .hwnd()
+        .ok()
+        .map(|handle| handle.0 as isize)
+        .unwrap_or(0);
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+
+    let title = title.to_owned();
+    let message = message.to_owned();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let parent = parent as *mut std::ffi::c_void;
+            let result = prompt_secure_text_with_parent(&title, &message, parent);
+            let _ = sender.send(result);
+        })
+        .map_err(|_| prompt_error())?;
+    receiver.recv().map_err(|_| prompt_error())?
+}
+
+#[cfg(target_os = "windows")]
+fn prompt_secure_text_with_parent(
+    title: &str,
+    message: &str,
+    parent: *mut std::ffi::c_void,
+) -> Result<Option<String>, AppError> {
+    let _guard = acquire_prompt_guard()?;
+    windows::prompt(title, message, parent)
 }
 
 fn prompt_error() -> AppError {
@@ -20,6 +66,36 @@ fn prompt_error() -> AppError {
         "Secure credential entry is unavailable.",
         false,
     )
+}
+
+fn try_begin_prompt() -> bool {
+    PROMPT_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+fn end_prompt() {
+    PROMPT_IN_PROGRESS.store(false, Ordering::Release);
+}
+
+struct PromptGuard;
+
+impl Drop for PromptGuard {
+    fn drop(&mut self) {
+        end_prompt();
+    }
+}
+
+fn acquire_prompt_guard() -> Result<PromptGuard, AppError> {
+    if try_begin_prompt() {
+        Ok(PromptGuard)
+    } else {
+        Err(AppError::new(
+            AppErrorCode::Internal,
+            "A credential prompt is already open.",
+            false,
+        ))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -156,12 +232,26 @@ mod windows {
     const MAX_PASSWORD: usize = 512;
 
     #[repr(C)]
-    struct CredUiInfo {
-        size: u32,
-        parent: *mut c_void,
+    pub(super) struct CredUiInfo {
+        pub(super) size: u32,
+        pub(super) parent: *mut c_void,
         message_text: *const u16,
         caption_text: *const u16,
         banner: *mut c_void,
+    }
+
+    pub(super) fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub(super) fn cred_ui_info(title: &[u16], message: &[u16], parent: *mut c_void) -> CredUiInfo {
+        CredUiInfo {
+            size: mem::size_of::<CredUiInfo>() as u32,
+            parent,
+            message_text: message.as_ptr(),
+            caption_text: title.as_ptr(),
+            banner: ptr::null_mut(),
+        }
     }
 
     #[link(name = "Credui")]
@@ -180,20 +270,27 @@ mod windows {
         ) -> u32;
     }
 
-    pub fn prompt(title: &str, message: &str) -> Result<Option<String>, AppError> {
+    pub fn prompt(
+        title: &str,
+        message: &str,
+        parent: *mut c_void,
+    ) -> Result<Option<String>, AppError> {
         let title = wide(title);
         let message = wide(message);
         let target = wide("Desktop Translator Google Cloud Translation");
         let mut username = [0_u16; MAX_USERNAME];
         let mut password = [0_u16; MAX_PASSWORD];
         let mut save = 0;
-        let info = CredUiInfo {
-            size: mem::size_of::<CredUiInfo>() as u32,
-            parent: ptr::null_mut(),
-            message_text: message.as_ptr(),
-            caption_text: title.as_ptr(),
-            banner: ptr::null_mut(),
-        };
+        let info = cred_ui_info(&title, &message, parent);
+        if !parent.is_null() {
+            let hwnd = ::windows::Win32::Foundation::HWND(parent);
+            // SAFETY: `parent` is the invoking Tauri window HWND and remains
+            // valid for this synchronous CredUI call on the UI thread.
+            unsafe {
+                let _ = ::windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+                let _ = ::windows::Win32::UI::WindowsAndMessaging::BringWindowToTop(hwnd);
+            }
+        }
         // SAFETY: all pointers refer to live, correctly sized buffers for the call.
         let status = unsafe {
             CredUIPromptForCredentialsW(
@@ -223,8 +320,31 @@ mod windows {
         password.fill(0);
         Ok(Some(value))
     }
+}
 
-    fn wide(value: &str) -> Vec<u16> {
-        value.encode_utf16().chain(std::iter::once(0)).collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn cred_ui_info_uses_the_invoking_window_as_owner() {
+        let title = windows::wide("Google Cloud Translation API Key");
+        let message =
+            windows::wide("The key is stored directly in the operating-system credential vault.");
+        let parent = 0x00BEEF_usize as *mut std::ffi::c_void;
+        let info = windows::cred_ui_info(&title, &message, parent);
+        assert_eq!(info.parent, parent);
+        assert_eq!(info.size, std::mem::size_of::<windows::CredUiInfo>() as u32);
+        assert!(!info.parent.is_null());
+    }
+
+    #[test]
+    fn overlapping_credential_prompts_are_rejected() {
+        assert!(try_begin_prompt());
+        assert!(!try_begin_prompt());
+        end_prompt();
+        assert!(try_begin_prompt());
+        end_prompt();
     }
 }

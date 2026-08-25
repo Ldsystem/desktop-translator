@@ -78,12 +78,8 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
   windows:
-    name: Windows compile check
+    name: Windows
     runs-on: windows-latest
-    # The Windows adapters are written but have never run on a Windows host, so
-    # this job measures the gap rather than gating the build. Remove
-    # continue-on-error once it passes and Windows is a supported target.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -97,6 +93,8 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -104,9 +102,25 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # tauri::generate_context! needs the renderer output to exist.
       - name: Build renderer
         run: pnpm build
 
-      - name: Check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+      - name: Test renderer and release audit
+        run: pnpm test
+
+      - name: Format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      # Real-host UI Automation fixtures stay ignored here: a CI runner has no
+      # interactive desktop to select text in.
+      - name: Test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Package NSIS
+        run: pnpm tauri build --bundles nsis
+
+      - name: Audit Windows bundle
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/audit-windows-bundle.ps1 src-tauri/target/release

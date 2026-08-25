@@ -31,6 +31,14 @@ pub const fn non_activating_tool_styles(base: WINDOW_EX_STYLE) -> WINDOW_EX_STYL
     WINDOW_EX_STYLE((base.0 | WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) & !WS_EX_APPWINDOW.0)
 }
 
+/// Reconstructs a `windows` 0.62 `HWND` from another crate's public pointer.
+///
+/// Tauri/`raw-window-handle` currently compile against `windows` 0.61, so overlay
+/// glue must convert at this import boundary instead of transmuting the newtype.
+pub fn hwnd_from_raw_pointer(pointer: *mut c_void) -> HWND {
+    HWND(pointer)
+}
+
 /// Applies the non-activating tool-window policy to an existing native window.
 pub fn apply_non_activating_tool_window(hwnd: HWND) -> Result<(), AppError> {
     // SAFETY: `hwnd` is supplied by the window owner and remains valid for this
@@ -403,7 +411,7 @@ mod tests {
     };
 
     use super::{
-        finite_i32, hwnd_topmost, non_activating_tool_styles, positive_i32,
+        finite_i32, hwnd_from_raw_pointer, hwnd_topmost, non_activating_tool_styles, positive_i32,
         validate_overlay_metrics, WindowsOverlayMetrics,
     };
 
@@ -437,5 +445,11 @@ mod tests {
     #[test]
     fn topmost_sentinel_preserves_signed_pointer_value() {
         assert_eq!(hwnd_topmost().0 as isize, -1);
+    }
+
+    #[test]
+    fn hwnd_from_raw_pointer_uses_public_inner_value() {
+        let pointer = 0x1234usize as *mut std::ffi::c_void;
+        assert_eq!(hwnd_from_raw_pointer(pointer).0, pointer);
     }
 }

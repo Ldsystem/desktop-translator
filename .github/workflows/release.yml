@@ -95,5 +95,69 @@ jobs:
 
             ## Platform support
 
-            macOS only. The Windows adapters are written but have not been
-            qualified on a Windows host and are not distributed yet.
+            macOS (universal `.dmg` / `.app`) and Windows 10/11 x64 (NSIS
+            `*_x64-setup.exe`). Windows installers are **not Authenticode
+            signed**. See `docs/windows-signing-and-supply-chain.md`.
+
+  windows:
+    name: Windows x64
+    needs: macos
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build NSIS
+        run: pnpm tauri build --bundles nsis
+
+      - name: Audit Windows bundle
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/audit-windows-bundle.ps1 src-tauri/target/release
+
+      - name: SHA-256 checksums
+        shell: pwsh
+        run: |
+          $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*_x64-setup.exe" | Select-Object -First 1
+          $exe = Get-Item "src-tauri/target/release/desktop-translator.exe"
+          @(
+            (Get-FileHash -Algorithm SHA256 $nsis.FullName | ForEach-Object { "$($_.Hash.ToLower())  $($nsis.Name)" })
+            (Get-FileHash -Algorithm SHA256 $exe.FullName | ForEach-Object { "$($_.Hash.ToLower())  $($exe.Name)" })
+          ) | Set-Content -Encoding ascii "windows-sha256.txt"
+          Get-Content "windows-sha256.txt"
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: src-tauri/target/release/bundle/nsis/*_x64-setup.exe
+
+      - name: Upload audited Windows artifacts
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*_x64-setup.exe" | Select-Object -First 1
+          $exe = Get-Item "src-tauri/target/release/desktop-translator.exe"
+          gh release upload "$env:RELEASE_TAG" $nsis.FullName $exe.FullName "windows-sha256.txt" --clobber
