@@ -9,12 +9,14 @@ import { describe, expect, it } from "vitest";
 const script = join(dirname(fileURLToPath(import.meta.url)), "audit-windows-bundle.ps1");
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const describeWindows = process.platform === "win32" ? describe : describe.skip;
+const windowsProcessTimeoutMs = 15_000;
+const windowsTestTimeoutMs = 20_000;
 
 function runAudit(releaseDir: string) {
   return spawnSync(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, releaseDir],
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout: windowsProcessTimeoutMs },
   );
 }
 
@@ -55,7 +57,7 @@ describeWindows("Windows bundle audit", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, windowsTestTimeoutMs);
 
   it("fails when the native executable is missing", () => {
     const root = makeReleaseLayout({ exe: false });
@@ -66,7 +68,7 @@ describeWindows("Windows bundle audit", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, windowsTestTimeoutMs);
 
   it("fails when a developer runtime is packaged", () => {
     const root = makeReleaseLayout({ developerRuntime: true });
@@ -77,7 +79,7 @@ describeWindows("Windows bundle audit", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, windowsTestTimeoutMs);
 
   it("fails when the starter textbook is a loose resource file", () => {
     const root = makeReleaseLayout({ looseTextbook: true });
@@ -88,7 +90,7 @@ describeWindows("Windows bundle audit", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, windowsTestTimeoutMs);
 
   it("passes a compact x64 NSIS layout without developer runtimes", () => {
     const root = makeReleaseLayout({});
@@ -99,7 +101,7 @@ describeWindows("Windows bundle audit", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, windowsTestTimeoutMs);
 });
 
 describe("Windows workflow integration", () => {
