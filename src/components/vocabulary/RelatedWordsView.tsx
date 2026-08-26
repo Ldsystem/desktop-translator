@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { RelatedWord, UiLocale, VocabularyEntry, VocabularyProvenance } from "../../contracts/ipc";
+import type { RelatedWord, UiLocale, VocabularyEntry } from "../../contracts/ipc";
 import { PartOfSpeechBadge } from "./PracticeView";
 import type { StudyApi } from "./VocabularyWindow";
 
@@ -18,18 +18,7 @@ export function RelatedWordsView({ anchor, api, revision, locale = "en", onBack 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [adding, setAdding] = useState<number>();
-  const [provenance, setProvenance] = useState<VocabularyProvenance[]>([]);
   const relatedRequest = useRef(0);
-
-  useEffect(() => {
-    let current = true;
-    setProvenance([]);
-    if (!anchor) return () => { current = false; };
-    void api.listVocabularyProvenance(anchor.id)
-      .then((items) => { if (current) setProvenance(items); })
-      .catch(() => undefined);
-    return () => { current = false; };
-  }, [anchor, api]);
 
   useEffect(() => {
     const request = ++relatedRequest.current;
@@ -45,17 +34,11 @@ export function RelatedWordsView({ anchor, api, revision, locale = "en", onBack 
       .finally(() => { if (request === relatedRequest.current) setLoading(false); });
   }, [anchor, api, revision, zh]);
 
-  return <section aria-labelledby="related-title">
-    <header className="study-header"><div><button className="text-button textbook-back" type="button" onClick={onBack}>← {zh ? "返回我的词汇本" : "Back to My wordbook"}</button><p className="eyebrow">{zh ? "相关词" : "Related words"}</p><h2 id="related-title">{zh ? `${anchor?.sourceText ?? "下一个词"} 的关联` : `Connections for ${anchor?.sourceText ?? "your next word"}`}</h2><p>{zh ? "关联结果来自你的词汇本和所有兼容的已下载词书。" : "Connections combine your wordbook and every compatible downloaded textbook."}</p></div></header>
-    {provenance.length > 0 && <details className="word-provenance">
-      <summary>{zh ? "词书来源详情" : "Textbook source details"} <span>{provenance.length}</span></summary>
-      <div className="word-provenance__content">{provenance.map((item) => <div key={`${item.textbookId}-${item.sourceText}-${item.translatedText}`}>
-        <strong>{item.textbookTitle}</strong>
-        <span>{zh ? "版本" : "Version"} {item.textbookVersion} · {item.license}</span>
-        <span>{item.attribution}</span>
-        <a href={item.sourceUrl} target="_blank" rel="noreferrer">{zh ? "查看来源" : "View source"}</a>
-      </div>)}</div>
-    </details>}
+  const subtitle = anchor?.exampleSentence
+    ?? (zh ? "关联来自你的词汇本和已下载词书。" : "Connections use your wordbook and downloaded textbooks.");
+
+  return <section className="related-view" aria-labelledby="related-title">
+    <header className="study-header"><div><button className="text-button textbook-back" type="button" onClick={onBack}>← {zh ? "返回我的词汇本" : "Back to My wordbook"}</button><p className="eyebrow">{zh ? "相关词" : "Related words"}</p><h2 id="related-title">{zh ? `${anchor?.sourceText ?? "下一个词"} 的关联` : `Connections for ${anchor?.sourceText ?? "your next word"}`}</h2><p className={anchor?.exampleSentence ? "related-example is-saved" : "related-example"}>{subtitle}</p></div></header>
     {error && <div className="study-notice study-notice--error" role="alert">{error}</div>}
     {!anchor ? <div className="study-empty"><strong>{zh ? "请先选择一个词。" : "Choose a word first."}</strong><span>{zh ? "从“我的词汇本”打开一张卡片作为关联词。" : "Open a card in My wordbook to make it the connection anchor."}</span></div> : loading ? <div className="study-empty" role="status"><strong>{zh ? "正在查找关联…" : "Tracing connections…"}</strong></div> : items.length === 0 ? <div className="study-empty"><strong>{zh ? "暂未找到兼容的关联。" : "No compatible connections yet."}</strong><span>{zh ? "随着本地词汇积累，可以尝试其他词。" : "Try another word as your local collection grows."}</span></div> : <div className="relation-list">{items.map((item) => <article key={`${item.kind}-${item.vocabularyEntryId ?? item.textbookEntryId}-${item.reason}`}>
       <span className={`relation-badge relation-badge--${item.reason}`}>{item.reason === "root" ? (zh ? "同词根" : "shared root") : (zh ? "同义项" : "shared meaning")}</span><span className="relation-lexeme"><strong className="lexical-text">{item.sourceText}</strong><PartOfSpeechBadge value={item.partOfSpeech} /></span><span className="lexical-text">{item.translatedText}</span>

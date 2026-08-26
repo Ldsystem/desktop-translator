@@ -5,12 +5,13 @@
 
 use std::{
     borrow::Cow,
+    collections::HashSet,
     ffi::{c_char, c_double, c_float, c_int, c_long, c_void, CStr, CString},
     mem,
     ptr::{self, NonNull},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -35,6 +36,7 @@ type Id = *mut c_void;
 type Sel = *mut c_void;
 
 const AX_SUCCESS: AXError = 0;
+const AX_ERROR_ATTRIBUTE_UNSUPPORTED: AXError = -25205;
 const UTF8_ENCODING: u32 = 0x0800_0100;
 const AX_VALUE_CG_RECT: u32 = 3;
 const AX_VALUE_CF_RANGE: u32 = 4;
@@ -78,8 +80,26 @@ enum CandidateFailure {
 
 struct ResolvedSelection {
     text: String,
+    example_sentence: Option<String>,
     source_application_id: Option<String>,
     bounds_physical_px: Vec<PhysicalRect>,
+}
+
+#[derive(Default)]
+struct AccessibilityWakeCache(Mutex<HashSet<c_int>>);
+
+impl AccessibilityWakeCache {
+    fn enable_once(&self, pid: c_int, enable: impl FnOnce() -> bool) -> bool {
+        let mut enabled = self.0.lock().expect("accessibility wake cache");
+        if enabled.contains(&pid) {
+            return true;
+        }
+        if !enable() {
+            return false;
+        }
+        enabled.insert(pid);
+        true
+    }
 }
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -220,6 +240,7 @@ impl DisplaySource {
 pub struct MacSelectionAdapter {
     next_id: Arc<AtomicU64>,
     displays: DisplaySource,
+    accessibility_wakes: Arc<AccessibilityWakeCache>,
 }
 
 impl MacSelectionAdapter {
@@ -228,6 +249,7 @@ impl MacSelectionAdapter {
         Self {
             next_id: Arc::new(AtomicU64::new(1)),
             displays: DisplaySource::Live,
+            accessibility_wakes: Arc::new(AccessibilityWakeCache::default()),
         }
     }
 
@@ -235,6 +257,7 @@ impl MacSelectionAdapter {
         Self {
             next_id: Arc::new(AtomicU64::new(1)),
             displays: DisplaySource::Fixed(Arc::new(displays)),
+            accessibility_wakes: Arc::new(AccessibilityWakeCache::default()),
         }
     }
 
@@ -299,6 +322,7 @@ impl MacSelectionAdapter {
         Ok(SelectionSnapshot {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
             text: resolved.text,
+            example_sentence: resolved.example_sentence,
             source_application_id: resolved.source_application_id,
             bounds_physical_px: resolved.bounds_physical_px,
             anchor_physical_px,
@@ -327,7 +351,10 @@ impl MacSelectionAdapter {
         let mut pid: c_int = 0;
         // SAFETY: the element is live and the pid is written only on success.
         if unsafe { AXUIElementGetPid(element.as_raw(), &mut pid) } == 0 {
-            enable_chromium_accessibility(pid);
+            let application_id = bundle_identifier(pid);
+            self.accessibility_wakes.enable_once(pid, || {
+                enable_chromium_accessibility(pid, application_id.as_deref())
+            });
         }
         // Reading a selection attribute is what makes a surface that builds its
         // tree lazily start building it.
@@ -335,19 +362,21 @@ impl MacSelectionAdapter {
     }
 }
 
-fn enable_chromium_accessibility(pid: c_int) {
+fn enable_chromium_accessibility(pid: c_int, application_id: Option<&str>) -> bool {
     // SAFETY: create rule returns an owned AXUIElementRef for the process.
     let Some(application) = (unsafe { OwnedCf::from_create(AXUIElementCreateApplication(pid)) })
     else {
-        return;
+        return false;
     };
-    let Some(attribute) = CfString::new(CHROMIUM_ACCESSIBILITY_ATTRIBUTE) else {
-        return;
-    };
-    // SAFETY: both references are live and the value is a constant CFBoolean.
-    let _ = unsafe {
-        AXUIElementSetAttributeValue(application.as_raw(), attribute.as_raw(), kCFBooleanTrue)
-    };
+    try_accessibility_wake(accessibility_wake_attributes(application_id), |attribute| {
+        let Some(attribute) = CfString::new(attribute) else {
+            return -1;
+        };
+        // SAFETY: both references are live and the value is a constant CFBoolean.
+        unsafe {
+            AXUIElementSetAttributeValue(application.as_raw(), attribute.as_raw(), kCFBooleanTrue)
+        }
+    })
 }
 
 fn selection_from_lineage(
@@ -370,8 +399,10 @@ fn selection_from_lineage(
         if let Some((text, bounds_physical_px)) =
             selection_on_element(element.as_raw(), policy.max_code_points, displays)
         {
+            let example_sentence = example_sentence_on_element(element.as_raw(), &text);
             return Ok(ResolvedSelection {
                 text,
+                example_sentence,
                 source_application_id,
                 bounds_physical_px,
             });
@@ -468,6 +499,86 @@ fn eligible_text(text: &str, max_code_points: usize) -> bool {
     !text.trim().is_empty() && text.chars().count() <= max_code_points
 }
 
+fn example_sentence_on_element(element: AXUIElementRef, selected_text: &str) -> Option<String> {
+    let full_text = copy_attribute(element, "AXValue")
+        .ok()
+        .and_then(|value| cf_string_to_string(value.as_raw()))?;
+    let selected_range = copy_attribute(element, "AXSelectedTextRange")
+        .ok()
+        .and_then(|value| ax_range(value.as_raw()));
+    sentence_containing_selection(&full_text, selected_text, selected_range)
+}
+
+fn sentence_containing_selection(
+    full_text: &str,
+    selected_text: &str,
+    selected_range: Option<CFRange>,
+) -> Option<String> {
+    let selected_text = selected_text.trim();
+    if selected_text.is_empty() {
+        return None;
+    }
+    let (selection_start, selection_end) = selected_range
+        .and_then(|range| utf16_range_to_byte_range(full_text, range))
+        .filter(|(start, end)| {
+            full_text
+                .get(*start..*end)
+                .is_some_and(|value| value.trim() == selected_text)
+        })
+        .or_else(|| {
+            let matches = full_text
+                .match_indices(selected_text)
+                .map(|(start, value)| (start, start + value.len()))
+                .collect::<Vec<_>>();
+            (matches.len() == 1).then_some(matches[0])
+        })?;
+
+    let sentence_start = full_text[..selection_start]
+        .char_indices()
+        .filter(|(_, character)| is_sentence_boundary(*character))
+        .map(|(index, character)| index + character.len_utf8())
+        .next_back()
+        .unwrap_or(0);
+    let sentence_end = full_text[selection_end..]
+        .char_indices()
+        .find(|(_, character)| is_sentence_boundary(*character))
+        .map(|(index, character)| selection_end + index + character.len_utf8())
+        .unwrap_or(full_text.len());
+    let sentence = full_text.get(sentence_start..sentence_end)?.trim();
+    (!sentence.is_empty() && sentence.chars().count() <= 5_000).then(|| sentence.to_owned())
+}
+
+fn utf16_range_to_byte_range(text: &str, range: CFRange) -> Option<(usize, usize)> {
+    let location = usize::try_from(range.location).ok()?;
+    let length = usize::try_from(range.length).ok()?;
+    let end = location.checked_add(length)?;
+    Some((
+        utf16_offset_to_byte(text, location)?,
+        utf16_offset_to_byte(text, end)?,
+    ))
+}
+
+fn utf16_offset_to_byte(text: &str, target: usize) -> Option<usize> {
+    let mut units = 0;
+    for (index, character) in text.char_indices() {
+        if units == target {
+            return Some(index);
+        }
+        units += character.len_utf16();
+        if units > target {
+            return None;
+        }
+    }
+    (units == target).then_some(text.len())
+}
+
+fn is_sentence_boundary(character: char) -> bool {
+    matches!(
+        character,
+        '.' | '!' | '?' | '。' | '！' | '？' | '\n' | '\r'
+    )
+}
+
 #[async_trait]
 impl SelectionAdapter for MacSelectionAdapter {
     async fn resolve_selection(
@@ -491,6 +602,47 @@ impl SelectionAdapter for MacSelectionAdapter {
 /// sets this attribute on the application element. Other applications reject it
 /// harmlessly.
 const CHROMIUM_ACCESSIBILITY_ATTRIBUTE: &str = "AXManualAccessibility";
+const ENHANCED_ACCESSIBILITY_ATTRIBUTE: &str = "AXEnhancedUserInterface";
+const MANUAL_ACCESSIBILITY_ONLY: &[&str] = &[CHROMIUM_ACCESSIBILITY_ATTRIBUTE];
+const ENHANCED_ACCESSIBILITY_ONLY: &[&str] = &[ENHANCED_ACCESSIBILITY_ATTRIBUTE];
+const MANUAL_THEN_ENHANCED_ACCESSIBILITY: &[&str] = &[
+    CHROMIUM_ACCESSIBILITY_ATTRIBUTE,
+    ENHANCED_ACCESSIBILITY_ATTRIBUTE,
+];
+
+/// Electron documents `AXManualAccessibility`, while plain Chromium browsers
+/// observe the screen-reader attribute. Keep the broader attribute limited to
+/// the requested targets and cache successful activation per process.
+fn accessibility_wake_attributes(application_id: Option<&str>) -> &'static [&'static str] {
+    if application_id.is_some_and(|application_id| {
+        application_id == "com.google.Chrome"
+            || application_id.starts_with("com.google.Chrome.")
+            || application_id == "com.microsoft.edgemac"
+            || application_id.starts_with("com.microsoft.edgemac.")
+    }) {
+        ENHANCED_ACCESSIBILITY_ONLY
+    } else if application_id.is_some_and(|application_id| {
+        matches!(application_id, "com.openai.codex" | "com.openai.chat")
+    }) {
+        MANUAL_THEN_ENHANCED_ACCESSIBILITY
+    } else {
+        MANUAL_ACCESSIBILITY_ONLY
+    }
+}
+
+fn try_accessibility_wake(
+    attributes: &[&str],
+    mut set_attribute: impl FnMut(&str) -> AXError,
+) -> bool {
+    for attribute in attributes {
+        match set_attribute(attribute) {
+            AX_SUCCESS => return true,
+            AX_ERROR_ATTRIBUTE_UNSUPPORTED => continue,
+            _ => return false,
+        }
+    }
+    false
+}
 
 pub fn normalize_rect(
     logical: PhysicalRect,
@@ -1097,9 +1249,10 @@ fn create_dictionary(keys: &[CFTypeRef], values: &[CFTypeRef]) -> Option<OwnedCf
 #[cfg(test)]
 mod tests {
     use super::{
-        accept_selection, first_available_selection, normalize_rect, normalize_rects,
-        prefer_primary_or_fallback, prefer_selection_candidate, AccessibilityPermission,
-        CandidateFailure, DisplayTransform, MacSelectionAdapter,
+        accept_selection, accessibility_wake_attributes, first_available_selection, normalize_rect,
+        normalize_rects, prefer_primary_or_fallback, prefer_selection_candidate,
+        sentence_containing_selection, try_accessibility_wake, AccessibilityPermission,
+        AccessibilityWakeCache, CFRange, CandidateFailure, DisplayTransform, MacSelectionAdapter,
     };
     use crate::{
         contracts::{AppErrorCode, PhysicalRect},
@@ -1238,6 +1391,118 @@ mod tests {
             MacSelectionAdapter::permission_status(),
             AccessibilityPermission::Granted | AccessibilityPermission::Denied
         ));
+    }
+
+    #[test]
+    fn requested_chromium_targets_use_their_supported_accessibility_modes() {
+        for application_id in ["com.google.Chrome", "com.microsoft.edgemac"] {
+            assert_eq!(
+                accessibility_wake_attributes(Some(application_id)),
+                &["AXEnhancedUserInterface"],
+                "{application_id} must enable the Chromium screen-reader tree"
+            );
+        }
+        assert_eq!(
+            accessibility_wake_attributes(Some("com.openai.codex")),
+            &["AXManualAccessibility", "AXEnhancedUserInterface"],
+            "ChatGPT Desktop must fall back when Electron's manual attribute is unsupported"
+        );
+        assert_eq!(
+            accessibility_wake_attributes(Some("com.apple.TextEdit")),
+            &["AXManualAccessibility"]
+        );
+    }
+
+    #[test]
+    fn extracts_the_sentence_containing_the_selected_utf16_range() {
+        let text = "First thought. She called the claim deceptive! 最后一句。";
+        let prefix = "First thought. She called the claim ";
+        assert_eq!(
+            sentence_containing_selection(
+                text,
+                "deceptive",
+                Some(CFRange {
+                    location: prefix.encode_utf16().count() as _,
+                    length: "deceptive".encode_utf16().count() as _,
+                }),
+            ),
+            Some("She called the claim deceptive!".into())
+        );
+    }
+
+    #[test]
+    fn sentence_extraction_uses_a_unique_match_and_rejects_ambiguity() {
+        assert_eq!(
+            sentence_containing_selection("这是一个欺骗性的说法。下一句。", "欺骗", None),
+            Some("这是一个欺骗性的说法。".into())
+        );
+        assert_eq!(
+            sentence_containing_selection("Word appears here. Word appears again.", "Word", None),
+            None
+        );
+    }
+
+    #[test]
+    fn successful_accessibility_wake_is_attempted_once_per_process() {
+        let cache = AccessibilityWakeCache::default();
+        let mut attempts = 0;
+
+        assert!(cache.enable_once(42, || {
+            attempts += 1;
+            true
+        }));
+        assert!(cache.enable_once(42, || {
+            attempts += 1;
+            true
+        }));
+        assert_eq!(attempts, 1);
+
+        assert!(!cache.enable_once(84, || false));
+        assert!(cache.enable_once(84, || true));
+    }
+
+    #[test]
+    fn accessibility_wake_falls_back_only_after_the_manual_attribute_fails() {
+        let mut attempted = Vec::new();
+        assert!(try_accessibility_wake(
+            &["AXManualAccessibility", "AXEnhancedUserInterface"],
+            |attribute| {
+                attempted.push(attribute.to_owned());
+                if attribute == "AXManualAccessibility" {
+                    -25205
+                } else {
+                    0
+                }
+            },
+        ));
+        assert_eq!(
+            attempted,
+            ["AXManualAccessibility", "AXEnhancedUserInterface"]
+        );
+
+        attempted.clear();
+        assert!(try_accessibility_wake(
+            &["AXManualAccessibility", "AXEnhancedUserInterface"],
+            |attribute| {
+                attempted.push(attribute.to_owned());
+                0
+            },
+        ));
+        assert_eq!(attempted, ["AXManualAccessibility"]);
+
+        attempted.clear();
+        assert!(!try_accessibility_wake(
+            &["AXManualAccessibility", "AXEnhancedUserInterface"],
+            |attribute| {
+                attempted.push(attribute.to_owned());
+                -25211
+            },
+        ));
+        assert_eq!(
+            attempted,
+            ["AXManualAccessibility"],
+            "non-unsupported failures must not escalate accessibility mode"
+        );
     }
 
     #[test]

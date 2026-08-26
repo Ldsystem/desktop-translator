@@ -188,6 +188,7 @@ fn resolve_focused_selection(
     Ok(SelectionSnapshot {
         id: next_selection_id(),
         text,
+        example_sentence: None,
         source_application_id: Some(source_application_id),
         bounds_physical_px: rectangles,
         anchor_physical_px,

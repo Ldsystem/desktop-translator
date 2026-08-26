@@ -573,6 +573,7 @@ mod tests {
         let selection = SelectionSnapshot {
             id: 7,
             text: "selected".into(),
+            example_sentence: None,
             source_application_id: Some("fixture.app".into()),
             bounds_physical_px: vec![PhysicalRect {
                 x: 10.0,

@@ -207,6 +207,8 @@ input:focus-visible,
 .recall-ruler__value { color: var(--study-ink); font-family: var(--font-utility); font-size: 0.72rem; font-variant-numeric: tabular-nums; font-weight: 700; line-height: 1; text-align: center; }
 
 .relation-list { display: grid; gap: 10px; }
+.related-view .study-header { margin-bottom: 18px; }
+.related-example.is-saved { max-width: 720px; border-left: 2px solid var(--accent); padding-left: 12px; color: var(--study-ink); font-family: var(--font-lexical); font-size: 0.94rem; font-style: italic; }
 .relation-list article { display: grid; grid-template-columns: 120px minmax(120px, 0.7fr) minmax(0, 1fr) auto; align-items: center; gap: 16px; border-bottom: 1px solid var(--study-rule); padding: 16px 4px; }
 .relation-list article strong { color: var(--study-ink); font-family: var(--font-lexical); font-size: 1.2rem; font-weight: 500; }
 .relation-lexeme, .textbook-entry__lexeme { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 5px 8px; }
@@ -227,12 +229,7 @@ input:focus-visible,
 .word-manage__confirm { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 4px; width: 100%; font-size: 0.68rem; }
 .word-manage__confirm .button, .word-manage__confirm .text-button { min-width: 44px; padding-inline: 9px; font-size: 0.7rem; }
 .word-manage .study-notice { margin: 0; }
-.word-provenance { margin-bottom: 18px; border: 1px solid var(--study-rule); border-radius: 16px; background: color-mix(in srgb, var(--study-accent) 7%, transparent); }
-.word-provenance summary { min-height: 44px; padding: 12px 16px; color: var(--study-ink); cursor: pointer; font-family: var(--font-utility); font-size: 0.72rem; font-weight: 700; }
-.word-provenance summary span { margin-left: 6px; color: var(--accent-strong); }
-.word-provenance__content { display: grid; gap: 9px; border-top: 1px solid var(--study-rule); padding: 14px 18px 16px; }
-.word-provenance__content > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
-.word-provenance a, .textbook-volume__copy a { color: var(--study-accent); text-underline-offset: 3px; }
+.textbook-volume__copy a { color: var(--study-accent); text-underline-offset: 3px; }
 
 .source-selector,
 .direction-selector {

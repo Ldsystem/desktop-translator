@@ -42,6 +42,7 @@ export interface PhysicalRect {
 export interface SelectionSnapshot {
   id: number;
   text: string;
+  exampleSentence?: string;
   sourceApplicationId?: string;
   boundsPhysicalPx: PhysicalRect[];
   anchorPhysicalPx: PhysicalRect;
@@ -67,6 +68,7 @@ export interface UserSettings {
 export interface TranslationRequest {
   selectionId: number;
   text: string;
+  exampleSentence?: string;
   sourceLanguage: "auto" | LanguageCode;
   targetLanguage: LanguageCode;
 }
@@ -85,6 +87,7 @@ export interface VocabularyEntry {
   id: number;
   sourceText: string;
   translatedText: string;
+  exampleSentence?: string;
   requestedSourceLanguage: LanguageCode;
   effectiveSourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
@@ -298,6 +301,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isOptionalExampleSentence(value: unknown): value is string | undefined {
+  return value === undefined || (isNonEmptyString(value) && [...value].length <= 5_000);
+}
+
 export function isPartOfSpeech(value: unknown): value is PartOfSpeech {
   return (
     typeof value === "string" &&
@@ -348,6 +355,7 @@ export function isSelectionSnapshot(value: unknown): value is SelectionSnapshot 
     isRecord(value) &&
     isNonNegativeInteger(value.id) &&
     isNonEmptyString(value.text) &&
+    isOptionalExampleSentence(value.exampleSentence) &&
     Array.isArray(value.boundsPhysicalPx) &&
     value.boundsPhysicalPx.length > 0 &&
     value.boundsPhysicalPx.every(isPhysicalRect) &&
@@ -382,6 +390,7 @@ export function isTranslationRequest(value: unknown): value is TranslationReques
     isRecord(value) &&
     isNonNegativeInteger(value.selectionId) &&
     isNonEmptyString(value.text) &&
+    isOptionalExampleSentence(value.exampleSentence) &&
     isNonEmptyString(value.sourceLanguage) &&
     isNonEmptyString(value.targetLanguage)
   );

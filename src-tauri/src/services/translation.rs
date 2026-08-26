@@ -533,6 +533,7 @@ impl ProviderRouter {
         let request = TranslationRequest {
             selection_id: 0,
             text: "hello".to_owned(),
+            example_sentence: None,
             source_language: "en".to_owned(),
             target_language: "zh-CN".to_owned(),
         };
@@ -987,6 +988,7 @@ mod tests {
         TranslationRequest {
             selection_id: 41,
             text: "Fish & chips".to_owned(),
+            example_sentence: None,
             source_language: source.to_owned(),
             target_language: "fr".to_owned(),
         }

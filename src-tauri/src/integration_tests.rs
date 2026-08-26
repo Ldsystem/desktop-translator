@@ -162,6 +162,7 @@ fn selection() -> SelectionSnapshot {
     SelectionSnapshot {
         id: 7,
         text: "hello".into(),
+        example_sentence: None,
         source_application_id: Some("fixture.app".into()),
         bounds_physical_px: vec![bounds],
         anchor_physical_px: bounds,
@@ -173,6 +174,7 @@ fn request() -> TranslationRequest {
     TranslationRequest {
         selection_id: 7,
         text: "hello".into(),
+        example_sentence: None,
         source_language: "auto".into(),
         target_language: "es".into(),
     }
@@ -287,6 +289,7 @@ async fn typed_input_translates_without_a_native_selection() {
         .translate_input(TranslationRequest {
             selection_id: 0,
             text: "hello".into(),
+            example_sentence: None,
             source_language: "auto".into(),
             target_language: "es".into(),
         })
@@ -314,6 +317,7 @@ async fn typed_input_rejects_an_empty_request() {
         .translate_input(TranslationRequest {
             selection_id: 0,
             text: "   ".into(),
+            example_sentence: None,
             source_language: "auto".into(),
             target_language: "es".into(),
         })
@@ -389,6 +393,7 @@ async fn selection_does_not_call_provider_until_explicit_translate() {
     let request = TranslationRequest {
         selection_id: selected.id,
         text: selected.text.clone(),
+        example_sentence: selected.example_sentence.clone(),
         source_language: "auto".into(),
         target_language: "es".into(),
     };
