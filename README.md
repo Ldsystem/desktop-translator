@@ -41,7 +41,8 @@ tab.
   directly, without selecting anything.
 - **Local vocabulary study.** Eligible translated words and short phrases build
   a private on-device wordbook with pronunciation, recall tracking, related-word
-  discovery, downloaded textbooks, and bidirectional practice.
+  discovery, downloaded textbooks, and bidirectional practice. When a selection
+  sits in a clear sentence, that sentence is saved as the word's example.
 - **Stays out of the way.** Lives in the menu bar with no Dock icon, and can
   start at login.
 - **English and Simplified Chinese UI.** Switch immediately from Settings or
@@ -72,8 +73,9 @@ The study window brings four tools together:
   including everyday, academic, TOEIC, business, and general-reference
   vocabulary. A textbook hit is copied into your personal wordbook.
 - **Related words** combines roots and shared meanings across your wordbook and
-  compatible downloaded textbooks, shows where every result came from, and lets
-  you add useful connections with one click.
+  compatible downloaded textbooks, shows the saved selection sentence when one
+  exists, and keeps English as the study anchor when Chinese is translated to
+  English.
 - **Practice** tests word-to-meaning, meaning-to-word, or a random mix. Related
   words and the active textbook supply more challenging distractors, while
   mastered words leave the active queue until their recall fades.
