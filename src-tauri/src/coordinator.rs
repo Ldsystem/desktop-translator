@@ -234,6 +234,7 @@ mod tests {
         SelectionSnapshot {
             id,
             text: "selected".into(),
+            example_sentence: None,
             source_application_id: None,
             bounds_physical_px: vec![bounds],
             anchor_physical_px: bounds,

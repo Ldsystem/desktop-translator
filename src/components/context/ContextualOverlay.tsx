@@ -85,6 +85,7 @@ export function ContextualOverlay({
   const request = (correctedSource = sourceLanguage): TranslationRequest => ({
     selectionId: state.selection.id,
     text: state.selection.text,
+    exampleSentence: state.selection.exampleSentence,
     sourceLanguage: correctedSource,
     targetLanguage,
   });

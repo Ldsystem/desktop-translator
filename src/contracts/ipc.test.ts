@@ -118,8 +118,12 @@ describe("IPC contracts", () => {
 
   it("rejects malformed or unsafe values", () => {
     expect(isSelectionSnapshot({ ...fixtures.selection, text: "" })).toBe(false);
+    expect(isSelectionSnapshot({ ...fixtures.selection, exampleSentence: "   " })).toBe(false);
+    expect(isSelectionSnapshot({ ...fixtures.selection, exampleSentence: "x".repeat(5_001) })).toBe(false);
     expect(isUserSettings({ ...fixtures.settings, maxSelectionCodePoints: 0 })).toBe(false);
     expect(isTranslationRequest({ ...fixtures.translationRequest, selectionId: -1 })).toBe(false);
+    expect(isTranslationRequest({ ...fixtures.translationRequest, exampleSentence: "   " })).toBe(false);
+    expect(isTranslationRequest({ ...fixtures.translationRequest, exampleSentence: "x".repeat(5_001) })).toBe(false);
     expect(
       isTranslationRequest({
         ...fixtures.translationRequest,

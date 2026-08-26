@@ -18,6 +18,7 @@ const entry: VocabularyEntry = {
   id: 1,
   sourceText: "hello",
   translatedText: "hola",
+  exampleSentence: "She said hello before leaving.",
   requestedSourceLanguage: "auto",
   effectiveSourceLanguage: "en",
   targetLanguage: "es",
@@ -243,7 +244,7 @@ describe("VocabularyWindow", () => {
     expect(open).toHaveBeenCalledWith(1);
   });
 
-  it("shows retained textbook provenance and its source for an opened personal word", async () => {
+  it("uses the saved example as the related subtitle and removes textbook source details", async () => {
     const api = makeStudyApi({
       listVocabularyProvenance: vi.fn().mockResolvedValue([{
         textbookId: "wikdict-en-zh",
@@ -263,17 +264,18 @@ describe("VocabularyWindow", () => {
     act(() => cardAction?.click());
     await flushEffects();
 
-    expect(api.listVocabularyProvenance).toHaveBeenCalledWith(1);
-    const disclosure = container.querySelector<HTMLDetailsElement>(".word-provenance");
-    expect(disclosure?.open).toBe(false);
-    expect(disclosure?.querySelector("summary")?.textContent).toContain("Textbook source details");
-    act(() => disclosure?.querySelector("summary")?.click());
-    expect(disclosure?.open).toBe(true);
-    expect(container.textContent).toContain("WikDict English - Chinese");
-    expect(container.textContent).toContain("2_2026-06");
-    expect(container.textContent).toContain("CC BY-SA 4.0");
-    expect(container.textContent).toContain("WikDict, Wiktionary and DBnary contributors");
-    expect(container.querySelector<HTMLAnchorElement>('a[href="https://www.wikdict.com/page/download"]')?.textContent).toBe("View source");
+    expect(container.querySelector(".related-example")?.textContent).toBe("She said hello before leaving.");
+    expect(api.listVocabularyProvenance).not.toHaveBeenCalled();
+    expect(container.querySelector(".word-provenance")).toBeNull();
+    expect(container.textContent).not.toContain("Textbook source details");
+  });
+
+  it("keeps concise corpus guidance when the related anchor has no saved example", async () => {
+    const api = makeStudyApi();
+    act(() => root.render(<VocabularyWindow entries={[{ ...entry, exampleSentence: undefined }]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open related words for hello"]')?.click());
+    await flushEffects();
+    expect(container.querySelector(".related-example")?.textContent).toContain("wordbook and downloaded textbooks");
   });
 
   it("explains unavailable pronunciation states", () => {

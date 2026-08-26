@@ -110,6 +110,8 @@ pub struct PhysicalRect {
 pub struct SelectionSnapshot {
     pub id: u64,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example_sentence: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_application_id: Option<String>,
     pub bounds_physical_px: Vec<PhysicalRect>,
@@ -186,6 +188,8 @@ impl UserSettings {
 pub struct TranslationRequest {
     pub selection_id: u64,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example_sentence: Option<String>,
     pub source_language: LanguageCode,
     pub target_language: LanguageCode,
 }
@@ -211,6 +215,8 @@ pub struct VocabularyEntry {
     pub id: i64,
     pub source_text: String,
     pub translated_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub example_sentence: Option<String>,
     pub requested_source_language: LanguageCode,
     pub effective_source_language: LanguageCode,
     pub target_language: LanguageCode,
@@ -502,6 +508,7 @@ impl ValidateContract for SelectionSnapshot {
         if self.id > JS_SAFE_INTEGER_MAX
             || self.captured_at_epoch_ms > JS_SAFE_INTEGER_MAX
             || self.text.trim().is_empty()
+            || !valid_example_sentence(self.example_sentence.as_deref())
         {
             return Err(validation_error("selection violates schema constraints"));
         }
@@ -553,6 +560,7 @@ impl ValidateContract for TranslationRequest {
             || self.text.trim().is_empty()
             || self.source_language.trim().is_empty()
             || self.target_language.trim().is_empty()
+            || !valid_example_sentence(self.example_sentence.as_deref())
         {
             return Err(validation_error(
                 "translation request contains an empty field",
@@ -560,6 +568,10 @@ impl ValidateContract for TranslationRequest {
         }
         Ok(())
     }
+}
+
+fn valid_example_sentence(value: Option<&str>) -> bool {
+    value.is_none_or(|value| !value.trim().is_empty() && value.chars().count() <= 5_000)
 }
 
 impl ValidateContract for TranslationResult {
@@ -696,6 +708,16 @@ mod tests {
 
         assert!(decode_validated::<SelectionSnapshot>(invalid).is_err());
 
+        let invalid_example = r#"{
+          "id": 1,
+          "text": "word",
+          "exampleSentence": "   ",
+          "boundsPhysicalPx": [{"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0}],
+          "anchorPhysicalPx": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+          "capturedAtEpochMs": 1
+        }"#;
+        assert!(decode_validated::<SelectionSnapshot>(invalid_example).is_err());
+
         let invalid_result = r#"{
           "selectionId": 1,
           "translatedText": "hola",
@@ -724,6 +746,7 @@ mod tests {
         let request = TranslationRequest {
             selection_id: 7,
             text: "persistence".into(),
+            example_sentence: None,
             source_language: "auto".into(),
             target_language: "en".into(),
         };

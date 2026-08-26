@@ -2,6 +2,7 @@
   "selection": {
     "id": 42,
     "text": "hello",
+    "exampleSentence": "She said hello before leaving.",
     "sourceApplicationId": "fixture.app",
     "boundsPhysicalPx": [
       { "x": 100.0, "y": 200.0, "width": 80.0, "height": 24.0 }
@@ -24,6 +25,7 @@
   "translationRequest": {
     "selectionId": 42,
     "text": "hello",
+    "exampleSentence": "She said hello before leaving.",
     "sourceLanguage": "auto",
     "targetLanguage": "zh-CN"
   },
