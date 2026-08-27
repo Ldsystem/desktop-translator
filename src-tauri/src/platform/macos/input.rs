@@ -31,6 +31,8 @@ const LISTEN_ONLY_EVENT_TAP: u32 = 1;
 const TAP_DISABLED_BY_TIMEOUT: CGEventType = u32::MAX - 1;
 const TAP_DISABLED_BY_USER_INPUT: CGEventType = u32::MAX;
 const EVENT_QUEUE_CAPACITY: usize = 32;
+const MOUSE_EVENT_CLICK_STATE: u32 = 1;
+const SELECTION_DRAG_MIN_DISTANCE: f64 = 3.0;
 
 type EventTapCallback =
     unsafe extern "C" fn(CGEventTapProxy, CGEventType, CGEventRef, *mut c_void) -> CGEventRef;
@@ -46,6 +48,7 @@ unsafe extern "C" {
         user_info: *mut c_void,
     ) -> CFMachPortRef;
     fn CGEventTapEnable(tap: CFMachPortRef, enable: u8);
+    fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -65,26 +68,48 @@ unsafe extern "C" {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PrimaryMouseEvent {
-    Pressed { position: PhysicalPoint },
-    Released { position: PhysicalPoint },
+    Pressed {
+        position: PhysicalPoint,
+        click_count: u8,
+    },
+    Released {
+        position: PhysicalPoint,
+        click_count: u8,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct PrimaryGestureState {
-    pressed: bool,
+    pressed: Option<(PhysicalPoint, u8)>,
 }
 
 impl PrimaryGestureState {
-    /// Returns true exactly when a primary press is completed by its release.
+    /// Returns true only for a drag selection or a multi-click selection.
     pub fn observe(&mut self, event: PrimaryMouseEvent) -> bool {
         match event {
-            PrimaryMouseEvent::Pressed { .. } => {
-                self.pressed = true;
+            PrimaryMouseEvent::Pressed {
+                position,
+                click_count,
+            } => {
+                self.pressed = Some((position, click_count));
                 false
             }
-            PrimaryMouseEvent::Released { .. } => std::mem::take(&mut self.pressed),
+            PrimaryMouseEvent::Released {
+                position,
+                click_count,
+            } => self
+                .pressed
+                .take()
+                .is_some_and(|(pressed_at, pressed_click_count)| {
+                    pressed_click_count.max(click_count) >= 2
+                        || pointer_distance(pressed_at, position) >= SELECTION_DRAG_MIN_DISTANCE
+                }),
         }
     }
+}
+
+fn pointer_distance(start: PhysicalPoint, end: PhysicalPoint) -> f64 {
+    (end.x - start.x).hypot(end.y - start.y)
 }
 
 /// Owns the event-tap thread and its blocking receiver.
@@ -294,9 +319,18 @@ unsafe extern "C" fn event_tap_callback(
     else {
         return event;
     };
+    // SAFETY: Quartz supplies a live mouse event and click state is an integer field.
+    let click_count = unsafe { CGEventGetIntegerValueField(event, MOUSE_EVENT_CLICK_STATE) }
+        .clamp(0, i64::from(u8::MAX)) as u8;
     let observed = match event_type {
-        LEFT_MOUSE_DOWN => Some(PrimaryMouseEvent::Pressed { position }),
-        LEFT_MOUSE_UP => Some(PrimaryMouseEvent::Released { position }),
+        LEFT_MOUSE_DOWN => Some(PrimaryMouseEvent::Pressed {
+            position,
+            click_count,
+        }),
+        LEFT_MOUSE_UP => Some(PrimaryMouseEvent::Released {
+            position,
+            click_count,
+        }),
         _ => None,
     };
     if let Some(observed) = observed {
@@ -345,28 +379,50 @@ mod tests {
         let mut state = PrimaryGestureState::default();
         assert!(!state.observe(PrimaryMouseEvent::Released {
             position: point(10.0, 10.0),
+            click_count: 1,
         }));
         assert!(!state.observe(PrimaryMouseEvent::Pressed {
             position: point(10.0, 10.0),
+            click_count: 1,
         }));
         assert!(state.observe(PrimaryMouseEvent::Released {
             position: point(20.0, 20.0),
+            click_count: 1,
         }));
         assert!(!state.observe(PrimaryMouseEvent::Released {
             position: point(20.0, 20.0),
+            click_count: 1,
         }));
     }
 
     #[test]
-    fn independently_completes_double_and_triple_click_cycles() {
+    fn an_unmoved_single_click_is_not_a_selection_gesture() {
         let mut state = PrimaryGestureState::default();
-        for _ in 0..3 {
+        assert!(!state.observe(PrimaryMouseEvent::Pressed {
+            position: point(10.0, 10.0),
+            click_count: 1,
+        }));
+        assert!(!state.observe(PrimaryMouseEvent::Released {
+            position: point(10.0, 10.0),
+            click_count: 1,
+        }));
+    }
+
+    #[test]
+    fn multi_click_selection_starts_with_the_second_click() {
+        let mut state = PrimaryGestureState::default();
+        for click_count in 1..=3 {
             assert!(!state.observe(PrimaryMouseEvent::Pressed {
                 position: point(1.0, 1.0),
+                click_count,
             }));
-            assert!(state.observe(PrimaryMouseEvent::Released {
-                position: point(1.0, 1.0),
-            }));
+            assert_eq!(
+                state.observe(PrimaryMouseEvent::Released {
+                    position: point(1.0, 1.0),
+                    click_count,
+                }),
+                click_count >= 2
+            );
         }
     }
 
@@ -383,12 +439,14 @@ mod tests {
 
         let pressed = PrimaryMouseEvent::Pressed {
             position: point(2200.0, 500.0),
+            click_count: 1,
         };
         deliver_event(&context, pressed);
         deliver_event(
             &context,
             PrimaryMouseEvent::Released {
                 position: point(2200.0, 500.0),
+                click_count: 1,
             },
         );
 
@@ -409,6 +467,7 @@ mod tests {
 
         let pressed = PrimaryMouseEvent::Pressed {
             position: point(2200.0, 500.0),
+            click_count: 1,
         };
         deliver_event(&context, pressed);
         assert!(stop.stop());
@@ -417,6 +476,7 @@ mod tests {
             &context,
             PrimaryMouseEvent::Released {
                 position: point(2200.0, 500.0),
+                click_count: 1,
             },
         );
 

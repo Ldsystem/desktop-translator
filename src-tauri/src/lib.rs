@@ -132,7 +132,9 @@ pub(crate) fn start_global_monitor(app: &tauri::AppHandle) -> Result<(), AppErro
 
     #[cfg(target_os = "macos")]
     {
-        use crate::platform::macos::{PrimaryMouseEvent, PrimaryMouseObserver};
+        use crate::platform::macos::{
+            PrimaryGestureState, PrimaryMouseEvent, PrimaryMouseObserver,
+        };
 
         let app_handle = app.clone();
         let overlay = state.overlay_controller();
@@ -149,13 +151,18 @@ pub(crate) fn start_global_monitor(app: &tauri::AppHandle) -> Result<(), AppErro
             .name("global-primary-input".into())
             .spawn(move || {
                 let mut routing = PrimaryGestureRouting::default();
+                let mut selection_gesture = PrimaryGestureState::default();
                 while let Ok(event) = observer.recv() {
+                    let completes_selection = selection_gesture.observe(event);
                     let should_forward = match event {
-                        PrimaryMouseEvent::Pressed { position } => routing.should_forward_press(
-                            crate::overlay::cursor_is_over_overlay(&app_handle, position),
-                        ),
-                        PrimaryMouseEvent::Released { position } => {
-                            let should_forward = routing.should_forward_release();
+                        PrimaryMouseEvent::Pressed { position, .. } => routing
+                            .should_forward_press(crate::overlay::cursor_is_over_overlay(
+                                &app_handle,
+                                position,
+                            )),
+                        PrimaryMouseEvent::Released { position, .. } => {
+                            let should_forward =
+                                routing.should_forward_release() && completes_selection;
                             if should_forward {
                                 overlay.record_selection_release(position);
                             }
