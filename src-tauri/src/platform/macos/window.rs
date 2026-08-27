@@ -495,11 +495,13 @@ mod tests {
                 x: 2200.0,
                 y: 500.0,
             },
+            click_count: 1,
         };
         // The pointer may move during Accessibility's settle/retry delay. The
         // overlay must use the event's release coordinate, not sample this later.
         let pointer_after_resolution_delay = crate::placement::PhysicalPoint { x: 300.0, y: 300.0 };
-        let crate::platform::macos::PrimaryMouseEvent::Released { position } = release_event else {
+        let crate::platform::macos::PrimaryMouseEvent::Released { position, .. } = release_event
+        else {
             unreachable!()
         };
         assert_ne!(position, pointer_after_resolution_delay);
@@ -535,8 +537,10 @@ mod tests {
                 x: logical_bounds.x + 22.0,
                 y: logical_bounds.y + 22.0,
             },
+            click_count: 1,
         };
-        let crate::platform::macos::PrimaryMouseEvent::Pressed { position } = press_event else {
+        let crate::platform::macos::PrimaryMouseEvent::Pressed { position, .. } = press_event
+        else {
             unreachable!()
         };
         assert!(point_is_inside_overlay(position, logical_bounds));
