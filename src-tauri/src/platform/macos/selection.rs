@@ -530,7 +530,10 @@ fn sentence_containing_selection(
                 .match_indices(selected_text)
                 .map(|(start, value)| (start, start + value.len()))
                 .collect::<Vec<_>>();
-            (matches.len() == 1).then_some(matches[0])
+            match matches.as_slice() {
+                [only] => Some(*only),
+                _ => None,
+            }
         })?;
 
     let sentence_start = full_text[..selection_start]
@@ -1438,6 +1441,18 @@ mod tests {
         );
         assert_eq!(
             sentence_containing_selection("Word appears here. Word appears again.", "Word", None),
+            None
+        );
+    }
+
+    #[test]
+    fn sentence_extraction_rejects_a_selection_missing_from_the_accessible_value() {
+        assert_eq!(
+            sentence_containing_selection(
+                "Chrome can expose a partial accessible value.",
+                "translator",
+                None,
+            ),
             None
         );
     }
