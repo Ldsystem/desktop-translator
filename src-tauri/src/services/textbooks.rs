@@ -1465,7 +1465,11 @@ fn verified_scope_words(
 }
 
 fn validate_catalog(catalog: &TextbookCatalogItem) -> Result<(), AppError> {
-    catalog.validate()?;
+    // The renderer catalog contract canonicalizes SHA to lowercase, but stored
+    // legacy pins may use either hexadecimal case. Validate without rewriting it.
+    let mut canonical = catalog.clone();
+    canonical.sha256.make_ascii_lowercase();
+    canonical.validate()?;
     if !valid_package_pin(
         &catalog.download_url,
         catalog.expected_bytes,
@@ -2022,8 +2026,8 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
         let tx = connection.unchecked_transaction().map_err(storage_error)?;
         tx.execute_batch(
             "ALTER TABLE textbooks ADD COLUMN catalog_revision TEXT NOT NULL DEFAULT '';
-             ALTER TABLE textbooks ADD COLUMN lexical_refresh_status TEXT NOT NULL DEFAULT 'exact'
-               CHECK(lexical_refresh_status IN ('exact', 'enriched', 'unavailable-legacy'));
+             ALTER TABLE textbooks ADD COLUMN lexical_refresh_status TEXT NOT NULL DEFAULT 'legacy'
+               CHECK(lexical_refresh_status IN ('legacy', 'exact', 'enriched', 'unavailable-legacy'));
              CREATE TABLE textbook_entry_senses (
                id INTEGER PRIMARY KEY,
                textbook_entry_id INTEGER NOT NULL REFERENCES textbook_entries(id) ON DELETE CASCADE,
@@ -2063,6 +2067,20 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
         .map_err(storage_error)?;
         tx.commit().map_err(storage_error)?;
     }
+    if version < 6 {
+        let tx = connection.unchecked_transaction().map_err(storage_error)?;
+        // Replace only the status column's constraint. Entry IDs, foreign keys,
+        // pinned metadata, and existing status values remain intact.
+        tx.execute_batch(
+            "ALTER TABLE textbooks RENAME COLUMN lexical_refresh_status TO lexical_refresh_status_v5;
+             ALTER TABLE textbooks ADD COLUMN lexical_refresh_status TEXT NOT NULL DEFAULT 'legacy'
+               CHECK(lexical_refresh_status IN ('legacy', 'exact', 'enriched', 'unavailable-legacy'));
+             UPDATE textbooks SET lexical_refresh_status = lexical_refresh_status_v5;
+             ALTER TABLE textbooks DROP COLUMN lexical_refresh_status_v5;
+             INSERT INTO textbook_schema_migrations(version) VALUES (6);"
+        ).map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+    }
     // Reconcile older prerelease v5 databases as well as newly migrated v4 rows.
     // No networking and no changes to entries, pins, active state, or provenance.
     let pins = connection
@@ -2082,6 +2100,8 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
     for (id, url, bytes, sha) in pins {
         if !valid_package_pin(&url, u64::try_from(bytes).unwrap_or(0), &sha) {
             connection.execute("UPDATE textbooks SET lexical_refresh_status = 'unavailable-legacy' WHERE id = ?1", params![id]).map_err(storage_error)?;
+        } else {
+            connection.execute("UPDATE textbooks SET lexical_refresh_status = 'exact' WHERE id = ?1 AND lexical_refresh_status = 'legacy'", params![id]).map_err(storage_error)?;
         }
     }
     Ok(())
@@ -2698,6 +2718,79 @@ mod tests {
         assert!(!valid_package_pin(url, MAX_ARTIFACT_BYTES + 1, &sha));
         assert!(!valid_package_pin(url, 1, &"z".repeat(64)));
         assert!(!valid_package_pin(url, 1, "abc"));
+    }
+
+    #[test]
+    fn uppercase_stored_sha_is_refreshable() {
+        let db = NamedTempFile::new().unwrap();
+        let store = TextbookStore::open(db.path()).unwrap();
+        let fixture = wikdict_fixture(&[("record", "记录")]);
+        let catalog = test_catalog(fixture.path(), "upper", "1");
+        store.install_sqlite(&catalog, fixture.path(), 1).unwrap();
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE textbooks SET sha256 = upper(sha256) WHERE id = 'upper'",
+                [],
+            )
+            .unwrap();
+        let plan = store
+            .download_plan("upper")
+            .expect("valid uppercase stored SHA");
+        let DownloadScope::Installed(words) = plan.scope else {
+            panic!("stored scope")
+        };
+        store
+            .install_verified_bytes_scoped(
+                &plan.catalog,
+                &fs::read(fixture.path()).unwrap(),
+                Some(&words),
+                2,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn v5_refresh_status_upgrade_retains_rows_and_allows_legacy_default() {
+        let db = NamedTempFile::new().unwrap();
+        let store = TextbookStore::open(db.path()).unwrap();
+        let fixture = wikdict_fixture(&[("record", "记录")]);
+        let catalog = test_catalog(fixture.path(), "v5", "1");
+        store.install_sqlite(&catalog, fixture.path(), 1).unwrap();
+        store.set_active(Some("v5")).unwrap();
+        // Model the already-installed prerelease schema, not only fresh DDL.
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "ALTER TABLE textbooks DROP COLUMN lexical_refresh_status;
+             ALTER TABLE textbooks ADD COLUMN lexical_refresh_status TEXT NOT NULL DEFAULT 'exact'
+               CHECK(lexical_refresh_status IN ('exact', 'enriched', 'unavailable-legacy'));
+             DELETE FROM textbook_schema_migrations WHERE version > 5;",
+            )
+            .unwrap();
+        drop(store);
+        let reopened = TextbookStore::open(db.path()).unwrap();
+        assert!(reopened.get_installed("v5").unwrap().unwrap().active);
+        assert_eq!(reopened.list_entries("v5", None, 0, 10).unwrap().total, 1);
+        let connection = reopened.connection.lock().unwrap();
+        connection
+            .execute(
+                "UPDATE textbooks SET lexical_refresh_status = 'legacy' WHERE id = 'v5'",
+                [],
+            )
+            .expect("legacy is a supported state");
+        let default: String = connection.query_row("SELECT dflt_value FROM pragma_table_info('textbooks') WHERE name = 'lexical_refresh_status'", [], |row| row.get(0)).unwrap();
+        assert_eq!(default, "'legacy'");
+        let violations: i64 = connection
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
     }
 
     #[test]
