@@ -12,11 +12,13 @@ use std::{
 use opencc_fmmseg::{OpenCC, OpenccConfig};
 use reqwest::Url;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::contracts::{
-    AppError, AppErrorCode, InstalledTextbook, PartOfSpeech, TextbookCatalogItem, TextbookEntry,
-    TextbookEntryPage, TextbookPromotionResult, ValidateContract,
+    AppError, AppErrorCode, FilteredRelatedWord, InstalledTextbook, PartOfSpeech, RelatedFilter,
+    RelatedOrigin, RelatedWordPage, TextbookCatalogItem, TextbookEntry, TextbookEntryPage,
+    TextbookPromotionResult, TranslationSense, ValidateContract, VocabularyMorpheme,
 };
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
@@ -34,6 +36,8 @@ const WIKDICT_SHA256: &str = "16cf69dc8037a8d4dc6bde260142bf0181f9ff0a008d457f26
 const BUNDLED_STARTER_ID: &str = "starter-en-zh-cn-1";
 const BUNDLED_STARTER_BYTES: &[u8] =
     include_bytes!("../../resources/textbooks/starter-en-zh.sqlite3");
+const MORPHEME_BYTES: &[u8] = include_bytes!("../../resources/lexicon/morphemes-v1.json");
+const MORPHEME_MANIFEST: &str = include_str!("../../resources/lexicon/morphemes-v1.manifest.json");
 
 fn bundled_starter_item() -> TextbookCatalogItem {
     TextbookCatalogItem {
@@ -199,6 +203,32 @@ pub struct TextbookStore {
     connection: Mutex<Connection>,
 }
 
+struct RawRelatedRow {
+    normalized: String,
+    source_text: String,
+    translated_text: String,
+    source_language: String,
+    target_language: String,
+    part_of_speech: Option<String>,
+    textbook_id: String,
+    textbook_title: String,
+    saved_vocabulary_entry_id: Option<i64>,
+}
+
+fn raw_related_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawRelatedRow> {
+    Ok(RawRelatedRow {
+        normalized: row.get(0)?,
+        source_text: row.get(1)?,
+        translated_text: row.get(2)?,
+        source_language: row.get(3)?,
+        target_language: row.get(4)?,
+        part_of_speech: row.get(5)?,
+        textbook_id: row.get(6)?,
+        textbook_title: row.get(7)?,
+        saved_vocabulary_entry_id: row.get(8)?,
+    })
+}
+
 impl TextbookStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AppError> {
         let connection = Connection::open(path).map_err(storage_error)?;
@@ -206,6 +236,7 @@ impl TextbookStore {
             .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
             .map_err(storage_error)?;
         migrate(&connection)?;
+        install_morpheme_catalog(&connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -344,8 +375,9 @@ impl TextbookStore {
             "INSERT INTO textbooks (
                id, title, source_language, target_language, version, download_url,
                expected_bytes, sha256, license, attribution, source_url,
-               installed_at_epoch_ms, active, entry_count, import_revision
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+               installed_at_epoch_ms, active, entry_count, import_revision,
+               catalog_revision, lexical_refresh_status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'enriched')
              ON CONFLICT(id) DO UPDATE SET
                title = excluded.title,
                source_language = excluded.source_language,
@@ -359,7 +391,9 @@ impl TextbookStore {
                source_url = excluded.source_url,
                installed_at_epoch_ms = excluded.installed_at_epoch_ms,
                entry_count = excluded.entry_count,
-               import_revision = excluded.import_revision",
+               import_revision = excluded.import_revision,
+               catalog_revision = excluded.catalog_revision,
+               lexical_refresh_status = excluded.lexical_refresh_status",
             params![
                 catalog.id,
                 catalog.title,
@@ -376,6 +410,7 @@ impl TextbookStore {
                 was_active,
                 i64_from_u64(imported.len() as u64)?,
                 CURRENT_IMPORT_REVISION,
+                catalog.version,
             ],
         )
         .map_err(storage_error)?;
@@ -400,6 +435,13 @@ impl TextbookStore {
                      ) VALUES (?1, ?2, ?3)",
                 )
                 .map_err(storage_error)?;
+            let mut insert_sense = tx
+                .prepare(
+                    "INSERT INTO textbook_entry_senses (
+                       textbook_entry_id, display_text, normalized_text, pos_key, rank, is_primary
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .map_err(storage_error)?;
             for entry in imported {
                 insert
                     .execute(params![
@@ -414,6 +456,25 @@ impl TextbookStore {
                     ])
                     .map_err(storage_error)?;
                 let textbook_entry_id = tx.last_insert_rowid();
+                if entry.senses.len() > 32 {
+                    eprintln!(
+                        "lexical sense overflow: provider=textbook source={} retained=32 discarded={}",
+                        entry.normalized_source,
+                        entry.senses.len() - 32
+                    );
+                }
+                for (rank, (sense, part_of_speech)) in entry.senses.iter().take(32).enumerate() {
+                    insert_sense
+                        .execute(params![
+                            textbook_entry_id,
+                            sense,
+                            normalize(sense),
+                            part_of_speech.map(PartOfSpeech::as_str).unwrap_or(""),
+                            rank as i64,
+                            i64::from(rank == 0)
+                        ])
+                        .map_err(storage_error)?;
+                }
                 for alias in entry.aliases {
                     insert_alias
                         .execute(params![textbook_entry_id, alias, normalize(&alias)])
@@ -503,7 +564,54 @@ impl TextbookStore {
                 }
             }
         }
+        if table_has_column(&tx, "vocabulary_senses", "normalized_text")? {
+            tx.execute(
+                "UPDATE vocabulary_senses
+                 SET pos_key = coalesce((SELECT v.part_of_speech FROM vocabulary_entries v WHERE v.id = vocabulary_senses.vocabulary_entry_id), pos_key)
+                 WHERE is_primary = 1 AND pos_key = ''",
+                [],
+            )
+            .map_err(storage_error)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO vocabulary_senses (
+                   vocabulary_entry_id, display_text, normalized_text, pos_key, rank,
+                   is_primary, confidence, created_at_epoch_ms, updated_at_epoch_ms
+                 )
+                 SELECT v.id, s.display_text, s.normalized_text, s.pos_key, s.rank + 1,
+                        0, NULL, ?2, ?2
+                 FROM vocabulary_entries v
+                 JOIN textbook_entries e
+                   ON e.textbook_id = ?1
+                  AND e.normalized_source = v.normalized_text
+                  AND lower(e.source_language) = lower(v.effective_source_language)
+                  AND lower(e.target_language) = lower(v.target_language)
+                 JOIN textbook_entry_senses s ON s.textbook_entry_id = e.id",
+                params![catalog.id, i64_from_u64(now_ms)?],
+            )
+            .map_err(storage_error)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO vocabulary_sense_origins (
+                   vocabulary_sense_id, origin_kind, source_id, source_version, evidence_key
+                 )
+                 SELECT vs.id, 'textbook', ?1, ?2, 'exact-source'
+                 FROM vocabulary_senses vs
+                 JOIN vocabulary_entries v ON v.id = vs.vocabulary_entry_id
+                 JOIN textbook_entries e
+                   ON e.textbook_id = ?1
+                  AND e.normalized_source = v.normalized_text
+                  AND lower(e.source_language) = lower(v.effective_source_language)
+                  AND lower(e.target_language) = lower(v.target_language)
+                 JOIN textbook_entry_senses s
+                   ON s.textbook_entry_id = e.id
+                  AND s.normalized_text = vs.normalized_text
+                  AND s.pos_key = vs.pos_key",
+                params![catalog.id, catalog.version],
+            )
+            .map_err(storage_error)?;
+            normalize_vocabulary_sense_limits(&tx)?;
+        }
         tx.commit().map_err(storage_error)?;
+        install_morpheme_catalog(&connection)?;
         drop(connection);
         self.get_installed(&catalog.id)?
             .ok_or_else(|| storage_error(rusqlite::Error::QueryReturnedNoRows))
@@ -518,7 +626,7 @@ impl TextbookStore {
             .prepare(
                 "SELECT id, title, source_language, target_language, version, license,
                         attribution, source_url, entry_count, installed_at_epoch_ms, active,
-                        import_revision < ?1
+                        import_revision < ?1, lexical_refresh_status
                  FROM textbooks ORDER BY title COLLATE NOCASE, id",
             )
             .map_err(storage_error)?;
@@ -537,7 +645,7 @@ impl TextbookStore {
             .query_row(
                 "SELECT id, title, source_language, target_language, version, license,
                         attribution, source_url, entry_count, installed_at_epoch_ms, active,
-                        import_revision < ?2
+                        import_revision < ?2, lexical_refresh_status
                  FROM textbooks WHERE id = ?1",
                 params![id, CURRENT_IMPORT_REVISION],
                 row_to_installed,
@@ -563,6 +671,250 @@ impl TextbookStore {
             }
         }
         tx.commit().map_err(storage_error)
+    }
+
+    pub fn morphemes_for_word(
+        &self,
+        source_text: &str,
+        source_language: &str,
+        target_language: &str,
+    ) -> Result<Vec<VocabularyMorpheme>, AppError> {
+        if !source_language.eq_ignore_ascii_case("en") {
+            return Ok(Vec::new());
+        }
+        let artifact: MorphemeArtifact =
+            serde_json::from_slice(MORPHEME_BYTES).map_err(|_| invalid_package())?;
+        let Some(headword) = artifact
+            .headwords
+            .iter()
+            .find(|item| item.normalized_headword == normalize(source_text))
+        else {
+            return Ok(Vec::new());
+        };
+        let records = artifact
+            .morphemes
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect::<HashMap<_, _>>();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| internal("Textbook database lock failed"))?;
+        let mut result = Vec::new();
+        for component in headword.components.iter().take(12) {
+            let Some(record) = records.get(component.morpheme_id.as_str()) else {
+                continue;
+            };
+            let count = connection
+                .query_row(
+                    "SELECT count(DISTINCT te.normalized_source)
+                     FROM textbook_entry_morphemes tem
+                     JOIN textbook_entries te ON te.id = tem.textbook_entry_id
+                     JOIN textbooks t ON t.id = te.textbook_id
+                     WHERE tem.morpheme_id = ?1 AND te.normalized_source <> ?2
+                       AND lower(te.source_language) = lower(?3)
+                       AND lower(te.target_language) = lower(?4)",
+                    params![
+                        component.morpheme_id,
+                        normalize(source_text),
+                        source_language,
+                        target_language
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(storage_error)? as u64;
+            result.push(VocabularyMorpheme {
+                id: record.id.clone(),
+                display: record.display.clone(),
+                kind: record.kind.clone(),
+                accessible_label: format!("{} {}", record.kind, record.canonical_form),
+                textbook_word_count: count,
+            });
+        }
+        Ok(result)
+    }
+
+    pub fn senses_for_word(
+        &self,
+        source_text: &str,
+        source_language: &str,
+        target_language: &str,
+    ) -> Result<Vec<TranslationSense>, AppError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| internal("Textbook database lock failed"))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT s.display_text, s.pos_key, min(s.rank)
+                 FROM textbook_entry_senses s
+                 JOIN textbook_entries e ON e.id = s.textbook_entry_id
+                 JOIN textbooks t ON t.id = e.textbook_id
+                 WHERE e.normalized_source = ?1
+                   AND lower(e.source_language) = lower(?2)
+                   AND lower(e.target_language) = lower(?3)
+                 GROUP BY s.normalized_text, s.pos_key
+                 ORDER BY min(s.rank), s.normalized_text, s.pos_key
+                 LIMIT 32",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map(
+                params![normalize(source_text), source_language, target_language],
+                |row| {
+                    let pos_key: String = row.get(1)?;
+                    Ok(TranslationSense {
+                        text: row.get(0)?,
+                        part_of_speech: PartOfSpeech::from_normalized(&pos_key),
+                        rank: row.get::<_, i64>(2)?.clamp(0, 31) as u8,
+                        is_primary: false,
+                        confidence: None,
+                    })
+                },
+            )
+            .map_err(storage_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+    }
+
+    pub fn filtered_related(
+        &self,
+        anchor_source: &str,
+        source_language: &str,
+        target_language: &str,
+        filter: &RelatedFilter,
+        offset: u64,
+        limit: u64,
+    ) -> Result<RelatedWordPage, AppError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| internal("Textbook database lock failed"))?;
+        let (sql, value, label) = match filter {
+            RelatedFilter::Morpheme { morpheme_id } => (
+                "SELECT te.normalized_source, te.source_text, te.translated_text,
+                        te.source_language, te.target_language, te.part_of_speech,
+                        t.id, t.title,
+                        (SELECT v.id FROM vocabulary_entries v
+                         WHERE v.normalized_text = te.normalized_source
+                           AND lower(v.effective_source_language) = lower(te.source_language)
+                           AND lower(v.target_language) = lower(te.target_language)
+                         ORDER BY v.id LIMIT 1)
+                 FROM textbook_entry_morphemes relation
+                 JOIN textbook_entries te ON te.id = relation.textbook_entry_id
+                 JOIN textbooks t ON t.id = te.textbook_id
+                 WHERE relation.morpheme_id = ?1 AND te.normalized_source <> ?2
+                   AND lower(te.source_language) = lower(?3)
+                   AND lower(te.target_language) = lower(?4)
+                 ORDER BY te.normalized_source, t.id",
+                morpheme_id.clone(),
+                morpheme_id.clone(),
+            ),
+            RelatedFilter::Translation {
+                vocabulary_sense_id,
+            } => {
+                let label = connection
+                    .query_row(
+                        "SELECT display_text FROM vocabulary_senses WHERE id = ?1",
+                        params![vocabulary_sense_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(storage_error)?;
+                (
+                    "SELECT te.normalized_source, te.source_text, te.translated_text,
+                        te.source_language, te.target_language, te.part_of_speech,
+                        t.id, t.title,
+                        (SELECT v.id FROM vocabulary_entries v
+                         WHERE v.normalized_text = te.normalized_source
+                           AND lower(v.effective_source_language) = lower(te.source_language)
+                           AND lower(v.target_language) = lower(te.target_language)
+                         ORDER BY v.id LIMIT 1)
+                 FROM textbook_entry_senses relation
+                 JOIN textbook_entries te ON te.id = relation.textbook_entry_id
+                 JOIN textbooks t ON t.id = te.textbook_id
+                 JOIN vocabulary_senses vs ON vs.id = ?1
+                 WHERE relation.normalized_text = vs.normalized_text
+                   AND (vs.pos_key = '' OR relation.pos_key = '' OR relation.pos_key = vs.pos_key)
+                   AND te.normalized_source <> ?2
+                   AND lower(te.source_language) = lower(?3)
+                   AND lower(te.target_language) = lower(?4)
+                 ORDER BY te.normalized_source, t.id",
+                    vocabulary_sense_id.to_string(),
+                    label,
+                )
+            }
+        };
+        let mut statement = connection.prepare(sql).map_err(storage_error)?;
+        let rows = match filter {
+            RelatedFilter::Morpheme { .. } => statement.query_map(
+                params![
+                    value,
+                    normalize(anchor_source),
+                    source_language,
+                    target_language
+                ],
+                raw_related_row,
+            ),
+            RelatedFilter::Translation {
+                vocabulary_sense_id,
+            } => statement.query_map(
+                params![
+                    vocabulary_sense_id,
+                    normalize(anchor_source),
+                    source_language,
+                    target_language
+                ],
+                raw_related_row,
+            ),
+        }
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+        let mut grouped = BTreeMap::<String, FilteredRelatedWord>::new();
+        for row in rows {
+            let item =
+                grouped
+                    .entry(row.normalized.clone())
+                    .or_insert_with(|| FilteredRelatedWord {
+                        key: format!(
+                            "{}:{}:{}",
+                            row.source_language, row.target_language, row.normalized
+                        ),
+                        source_text: row.source_text.clone(),
+                        translated_text: row.translated_text.clone(),
+                        source_language: row.source_language.clone(),
+                        target_language: row.target_language.clone(),
+                        part_of_speech: row
+                            .part_of_speech
+                            .as_deref()
+                            .and_then(PartOfSpeech::from_normalized),
+                        saved_vocabulary_entry_id: row.saved_vocabulary_entry_id,
+                        origins: Vec::new(),
+                    });
+            if !item
+                .origins
+                .iter()
+                .any(|origin| origin.textbook_id.as_deref() == Some(row.textbook_id.as_str()))
+            {
+                item.origins.push(RelatedOrigin {
+                    kind: "textbook".into(),
+                    textbook_id: Some(row.textbook_id),
+                    textbook_title: Some(row.textbook_title),
+                });
+            }
+        }
+        let total = grouped.len() as u64;
+        let items = grouped
+            .into_values()
+            .skip(offset.min(usize::MAX as u64) as usize)
+            .take(limit.clamp(1, 100) as usize)
+            .collect();
+        Ok(RelatedWordPage {
+            items,
+            total,
+            offset,
+            limit: limit.clamp(1, 100),
+            relation_label: label,
+        })
     }
 
     pub fn remove(&self, id: &str) -> Result<(), AppError> {
@@ -790,6 +1142,47 @@ impl TextbookStore {
             }
         }
         tx.execute(
+            "INSERT OR IGNORE INTO vocabulary_senses (
+               vocabulary_entry_id, display_text, normalized_text, pos_key, rank,
+               is_primary, confidence, created_at_epoch_ms, updated_at_epoch_ms
+             )
+             SELECT id, translated_text, lower(trim(translated_text)),
+                    coalesce(part_of_speech, ''), 0, 1, NULL, ?2, ?2
+             FROM vocabulary_entries WHERE id = ?1",
+            params![vocabulary_entry_id, i64_from_u64(now_ms)?],
+        )
+        .map_err(storage_error)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO vocabulary_senses (
+               vocabulary_entry_id, display_text, normalized_text, pos_key, rank,
+               is_primary, confidence, created_at_epoch_ms, updated_at_epoch_ms
+             )
+             SELECT ?1, s.display_text, s.normalized_text, s.pos_key, s.rank + 1,
+                    0, NULL, ?3, ?3
+             FROM textbook_entry_senses s WHERE s.textbook_entry_id = ?2",
+            params![
+                vocabulary_entry_id,
+                textbook_entry_id,
+                i64_from_u64(now_ms)?
+            ],
+        )
+        .map_err(storage_error)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO vocabulary_sense_origins (
+               vocabulary_sense_id, origin_kind, source_id, source_version, evidence_key
+             )
+             SELECT vs.id, 'textbook', ?2, ?3, 'promoted-entry'
+             FROM vocabulary_senses vs
+             JOIN textbook_entry_senses ts
+               ON ts.textbook_entry_id = ?4
+              AND ts.normalized_text = vs.normalized_text
+              AND ts.pos_key = vs.pos_key
+             WHERE vs.vocabulary_entry_id = ?1",
+            params![vocabulary_entry_id, book_id, version, textbook_entry_id],
+        )
+        .map_err(storage_error)?;
+        normalize_vocabulary_sense_limits(&tx)?;
+        tx.execute(
             "INSERT INTO vocabulary_textbook_provenance (
                    vocabulary_entry_id, textbook_id, textbook_title, textbook_version,
                    license, attribution, source_url, source_text, translated_text,
@@ -834,6 +1227,7 @@ struct ImportedEntry {
     translated_text: String,
     original_translations: Vec<String>,
     aliases: Vec<String>,
+    senses: Vec<(String, Option<PartOfSpeech>)>,
     part_of_speech: Option<PartOfSpeech>,
     part_of_speech_conflicted: bool,
 }
@@ -1012,6 +1406,63 @@ fn validate_catalog(catalog: &TextbookCatalogItem) -> Result<(), AppError> {
     Ok(())
 }
 
+fn normalize_vocabulary_sense_limits(connection: &Connection) -> Result<(), AppError> {
+    let overflow = {
+        let mut statement = connection
+            .prepare(
+                "SELECT vocabulary_entry_id, count(*)
+                 FROM vocabulary_senses
+                 GROUP BY vocabulary_entry_id
+                 HAVING count(*) > 32",
+            )
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        rows
+    };
+    for (entry_id, count) in overflow {
+        eprintln!(
+            "lexical sense overflow: provider=textbook vocabulary_entry_id={entry_id} retained=32 discarded={}",
+            count - 32
+        );
+    }
+    connection
+        .execute(
+            "DELETE FROM vocabulary_senses
+             WHERE id IN (
+               SELECT id FROM (
+                 SELECT id,
+                        row_number() OVER (
+                          PARTITION BY vocabulary_entry_id
+                          ORDER BY is_primary DESC, rank, id
+                        ) AS ordinal
+                 FROM vocabulary_senses
+               ) WHERE ordinal > 32
+             )",
+            [],
+        )
+        .map_err(storage_error)?;
+    connection
+        .execute(
+            "UPDATE vocabulary_senses AS current
+             SET rank = (
+               SELECT count(*) FROM vocabulary_senses AS prior
+               WHERE prior.vocabulary_entry_id = current.vocabulary_entry_id
+                 AND (
+                   prior.is_primary > current.is_primary
+                   OR (prior.is_primary = current.is_primary AND prior.rank < current.rank)
+                   OR (prior.is_primary = current.is_primary AND prior.rank = current.rank AND prior.id < current.id)
+                 )
+             )",
+            [],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
 fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
     let converter = OpenCC::new();
     let source = Connection::open_with_flags(
@@ -1049,7 +1500,7 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|_| invalid_package())?;
-    let mut distinct_sources = HashSet::with_capacity(count as usize);
+    let mut distinct_pairs = HashSet::with_capacity(count as usize);
     let mut imported = BTreeMap::<String, ImportedEntry>::new();
     for row in rows {
         let (source_text, translated_text) = row.map_err(|_| invalid_package())?;
@@ -1060,7 +1511,7 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
             || translated_text.is_empty()
             || source_text.len() > MAX_SOURCE_BYTES
             || translated_text.len() > MAX_TRANSLATION_BYTES
-            || !distinct_sources.insert(source_text.clone())
+            || !distinct_pairs.insert((source_text.clone(), translated_text.clone()))
         {
             return Err(invalid_package());
         }
@@ -1068,9 +1519,18 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
         let part_of_speech = lexical_parts
             .get(&(source_text.clone(), translated_text.clone()))
             .cloned();
+        let row_senses = normalized_senses(&converter, &translated_text)
+            .into_iter()
+            .map(|text| (text, part_of_speech))
+            .collect::<Vec<_>>();
         if let Some(existing) = imported.get_mut(&key) {
             append_unique(&mut existing.original_translations, originals);
             append_unique(&mut existing.aliases, aliases);
+            for sense in row_senses {
+                if !existing.senses.contains(&sense) {
+                    existing.senses.push(sense);
+                }
+            }
             if source_text == key && existing.source_text != key {
                 existing.source_text = source_text;
             }
@@ -1084,6 +1544,7 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
                     translated_text: display,
                     original_translations: originals,
                     aliases,
+                    senses: row_senses,
                     part_of_speech,
                     part_of_speech_conflicted: false,
                 },
@@ -1429,7 +1890,197 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
         .map_err(storage_error)?;
         tx.commit().map_err(storage_error)?;
     }
+    if version < 5 {
+        let tx = connection.unchecked_transaction().map_err(storage_error)?;
+        tx.execute_batch(
+            "ALTER TABLE textbooks ADD COLUMN catalog_revision TEXT NOT NULL DEFAULT '';
+             ALTER TABLE textbooks ADD COLUMN lexical_refresh_status TEXT NOT NULL DEFAULT 'exact'
+               CHECK(lexical_refresh_status IN ('exact', 'enriched', 'unavailable-legacy'));
+             UPDATE textbooks SET lexical_refresh_status = CASE
+               WHEN download_url LIKE 'https://%' AND expected_bytes > 0
+                    AND length(sha256) = 64 THEN 'exact'
+               ELSE 'unavailable-legacy' END;
+             CREATE TABLE textbook_entry_senses (
+               id INTEGER PRIMARY KEY,
+               textbook_entry_id INTEGER NOT NULL REFERENCES textbook_entries(id) ON DELETE CASCADE,
+               display_text TEXT NOT NULL,
+               normalized_text TEXT NOT NULL,
+               pos_key TEXT NOT NULL DEFAULT '',
+               rank INTEGER NOT NULL,
+               is_primary INTEGER NOT NULL CHECK(is_primary IN (0, 1)),
+               UNIQUE(textbook_entry_id, normalized_text, pos_key)
+             );
+             CREATE UNIQUE INDEX textbook_entry_senses_one_primary
+               ON textbook_entry_senses(textbook_entry_id) WHERE is_primary = 1;
+             CREATE INDEX textbook_entry_senses_relation
+               ON textbook_entry_senses(normalized_text, pos_key, textbook_entry_id);
+             INSERT INTO textbook_entry_senses (
+               textbook_entry_id, display_text, normalized_text, pos_key, rank, is_primary
+             ) SELECT id, translated_text, lower(trim(translated_text)),
+                      coalesce(part_of_speech, ''), 0, 1 FROM textbook_entries;
+             CREATE TABLE morphemes (
+               id TEXT PRIMARY KEY,
+               language TEXT NOT NULL,
+               canonical_form TEXT NOT NULL,
+               display TEXT NOT NULL,
+               kind TEXT NOT NULL CHECK(kind IN ('prefix', 'root', 'suffix')),
+               artifact_version TEXT NOT NULL
+             );
+             CREATE TABLE textbook_entry_morphemes (
+               textbook_entry_id INTEGER NOT NULL REFERENCES textbook_entries(id) ON DELETE CASCADE,
+               morpheme_id TEXT NOT NULL REFERENCES morphemes(id),
+               ordinal INTEGER NOT NULL,
+               PRIMARY KEY(textbook_entry_id, morpheme_id, ordinal)
+             );
+             CREATE INDEX textbook_entry_morphemes_relation
+               ON textbook_entry_morphemes(morpheme_id, textbook_entry_id);
+             INSERT INTO textbook_schema_migrations(version) VALUES (5);",
+        )
+        .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+    }
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MorphemeManifest {
+    schema_version: u8,
+    dataset_version: String,
+    license: String,
+    attribution: String,
+    source_url: String,
+    expected_bytes: usize,
+    sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MorphemeArtifact {
+    schema_version: u8,
+    dataset_version: String,
+    license: String,
+    attribution: String,
+    morphemes: Vec<MorphemeRecord>,
+    headwords: Vec<MorphemeHeadword>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MorphemeRecord {
+    id: String,
+    language: String,
+    canonical_form: String,
+    display: String,
+    kind: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MorphemeHeadword {
+    normalized_headword: String,
+    source_url: String,
+    source_revision: String,
+    reviewed_at: String,
+    components: Vec<MorphemeComponent>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MorphemeComponent {
+    morpheme_id: String,
+    surface: String,
+    ordinal: usize,
+}
+
+fn install_morpheme_catalog(connection: &Connection) -> Result<(), AppError> {
+    let manifest: MorphemeManifest =
+        serde_json::from_str(MORPHEME_MANIFEST).map_err(|_| invalid_package())?;
+    if manifest.schema_version != 1
+        || manifest.expected_bytes != MORPHEME_BYTES.len()
+        || format!("{:x}", Sha256::digest(MORPHEME_BYTES)) != manifest.sha256
+        || manifest.license.trim().is_empty()
+        || manifest.attribution.trim().is_empty()
+        || !manifest.source_url.starts_with("https://")
+    {
+        return Err(invalid_package());
+    }
+    let artifact: MorphemeArtifact =
+        serde_json::from_slice(MORPHEME_BYTES).map_err(|_| invalid_package())?;
+    if artifact.schema_version != manifest.schema_version
+        || artifact.dataset_version != manifest.dataset_version
+        || artifact.license != manifest.license
+        || artifact.attribution.trim().is_empty()
+        || artifact.morphemes.len() > 4_096
+        || artifact.headwords.len() > 100_000
+    {
+        return Err(invalid_package());
+    }
+    let mut ids = HashSet::new();
+    for morpheme in &artifact.morphemes {
+        if !ids.insert(morpheme.id.as_str())
+            || morpheme.language != "en"
+            || morpheme.canonical_form.trim().is_empty()
+            || morpheme.display.trim().is_empty()
+            || !matches!(morpheme.kind.as_str(), "prefix" | "root" | "suffix")
+        {
+            return Err(invalid_package());
+        }
+    }
+    let mut headwords = HashSet::new();
+    for headword in &artifact.headwords {
+        let mut components = headword.components.iter().collect::<Vec<_>>();
+        components.sort_by_key(|component| component.ordinal);
+        let reconstructed = components
+            .iter()
+            .map(|item| item.surface.as_str())
+            .collect::<String>();
+        if !headwords.insert(headword.normalized_headword.as_str())
+            || reconstructed != headword.normalized_headword
+            || components.len() > 12
+            || components.iter().enumerate().any(|(ordinal, component)| {
+                component.ordinal != ordinal || !ids.contains(component.morpheme_id.as_str())
+            })
+            || !headword
+                .source_url
+                .starts_with("https://en.wiktionary.org/")
+            || headword.source_revision.trim().is_empty()
+            || headword.reviewed_at.trim().is_empty()
+        {
+            return Err(invalid_package());
+        }
+    }
+    let tx = connection.unchecked_transaction().map_err(storage_error)?;
+    tx.execute("DELETE FROM textbook_entry_morphemes", [])
+        .map_err(storage_error)?;
+    tx.execute("DELETE FROM morphemes", [])
+        .map_err(storage_error)?;
+    for morpheme in artifact.morphemes {
+        tx.execute(
+            "INSERT INTO morphemes(id, language, canonical_form, display, kind, artifact_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                morpheme.id,
+                morpheme.language,
+                morpheme.canonical_form,
+                morpheme.display,
+                morpheme.kind,
+                manifest.dataset_version
+            ],
+        )
+        .map_err(storage_error)?;
+    }
+    for headword in artifact.headwords {
+        for component in headword.components {
+            tx.execute(
+                "INSERT OR IGNORE INTO textbook_entry_morphemes(textbook_entry_id, morpheme_id, ordinal)
+                 SELECT id, ?1, ?2 FROM textbook_entries WHERE normalized_source = ?3",
+                params![component.morpheme_id, component.ordinal as i64, headword.normalized_headword],
+            )
+            .map_err(storage_error)?;
+        }
+    }
+    tx.commit().map_err(storage_error)
 }
 
 fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, AppError> {
@@ -1460,6 +2111,7 @@ fn row_to_installed(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstalledTextbo
         installed_at_epoch_ms: row.get::<_, i64>(9)? as u64,
         active: row.get(10)?,
         metadata_refresh_available: row.get(11)?,
+        lexical_refresh_status: row.get(12)?,
     })
 }
 
@@ -1497,6 +2149,17 @@ fn normalized_zh_cn(
         .filter(|value| !value.is_empty())
         .ok_or_else(invalid_package)?;
     Ok((display, originals, aliases))
+}
+
+fn normalized_senses(converter: &OpenCC, translated_text: &str) -> Vec<String> {
+    let mut senses = Vec::new();
+    for original in translated_text.split('|').map(clean) {
+        let simplified = clean(&converter.convert_with_config(&original, OpenccConfig::T2s, false));
+        if !simplified.is_empty() && !senses.contains(&simplified) {
+            senses.push(simplified);
+        }
+    }
+    senses
 }
 
 fn append_unique(target: &mut Vec<String>, values: Vec<String>) {
@@ -1840,6 +2503,43 @@ mod tests {
     }
 
     #[test]
+    fn installed_entries_are_indexed_for_curated_morpheme_navigation() {
+        let file = NamedTempFile::new().expect("app db");
+        let _vocabulary = crate::services::vocabulary::VocabularyStore::open(file.path())
+            .expect("vocabulary store");
+        let store = TextbookStore::open(file.path()).expect("textbook store");
+        let fixture = wikdict_fixture(&[("produce", "生产"), ("reduce", "减少")]);
+        let catalog = test_catalog(fixture.path(), "morpheme-en-zh", "1");
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("install fixture");
+
+        let parts = store
+            .morphemes_for_word("produce", "en", "zh-CN")
+            .expect("morphemes");
+        let root = parts
+            .iter()
+            .find(|part| part.display == "+duce")
+            .expect("duce root");
+        assert_eq!(root.textbook_word_count, 1);
+
+        let page = store
+            .filtered_related(
+                "produce",
+                "en",
+                "zh-CN",
+                &RelatedFilter::Morpheme {
+                    morpheme_id: root.id.clone(),
+                },
+                0,
+                20,
+            )
+            .expect("related by root");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].source_text, "reduce");
+    }
+
+    #[test]
     fn same_version_verified_reinstall_clears_legacy_metadata_refresh() {
         let app_db = NamedTempFile::new().expect("app db");
         let store = TextbookStore::open(app_db.path()).expect("store");
@@ -1918,16 +2618,94 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicates_and_unsafe_catalog_hosts_before_replacement() {
+    fn merges_distinct_senses_and_rejects_unsafe_catalog_hosts_before_replacement() {
         let app_db = NamedTempFile::new().expect("app db");
         let store = TextbookStore::open(app_db.path()).expect("store");
         let fixture = wikdict_fixture(&[("ephemeral", "蜉蝣"), (" ephemeral ", "短暂的")]);
         let mut catalog = test_catalog(fixture.path(), "duplicate", "1");
-        assert!(store.install_sqlite(&catalog, fixture.path(), 10).is_err());
-        assert!(store.list_installed().expect("installed").is_empty());
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("distinct senses install");
+        let senses = store
+            .senses_for_word("ephemeral", "en", "zh-CN")
+            .expect("textbook senses");
+        assert_eq!(senses.len(), 2);
 
         catalog.download_url = "https://example.com/deck.sqlite3".into();
         assert!(store.install_sqlite(&catalog, fixture.path(), 10).is_err());
+        assert_eq!(store.list_installed().expect("installed").len(), 1);
+    }
+
+    #[test]
+    fn caps_large_textbook_sense_sets_at_the_native_boundary() {
+        let app_db = NamedTempFile::new().expect("app db");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let rows = (0..35)
+            .map(|index| ("polysemous".to_owned(), format!("义项{index}")))
+            .collect::<Vec<_>>();
+        let borrowed = rows
+            .iter()
+            .map(|(source, translation)| (source.as_str(), translation.as_str()))
+            .collect::<Vec<_>>();
+        let fixture = wikdict_fixture(&borrowed);
+        let catalog = test_catalog(fixture.path(), "bounded-senses", "1");
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("bounded install");
+        let senses = store
+            .senses_for_word("polysemous", "en", "zh-CN")
+            .expect("textbook senses");
+        assert_eq!(senses.len(), 32);
+        assert_eq!(senses.first().map(|sense| sense.rank), Some(0));
+        assert_eq!(senses.last().map(|sense| sense.rank), Some(31));
+    }
+
+    #[test]
+    fn promotion_caps_a_distinct_personal_primary_plus_textbook_senses() {
+        let app_db = NamedTempFile::new().expect("app db");
+        crate::services::vocabulary::VocabularyStore::open(app_db.path())
+            .expect("vocabulary migrations");
+        let store = TextbookStore::open(app_db.path()).expect("store");
+        let rows = (0..32)
+            .map(|index| ("polysemous".to_owned(), format!("义项{index}")))
+            .collect::<Vec<_>>();
+        let borrowed = rows
+            .iter()
+            .map(|(source, translation)| (source.as_str(), translation.as_str()))
+            .collect::<Vec<_>>();
+        let fixture = wikdict_fixture(&borrowed);
+        let catalog = test_catalog(fixture.path(), "promotion-cap", "1");
+        store
+            .install_sqlite(&catalog, fixture.path(), 10)
+            .expect("install");
+        let connection = Connection::open(app_db.path()).expect("inspect");
+        connection
+            .execute(
+                "INSERT INTO vocabulary_entries (
+                   normalized_text, source_text, requested_source_language, target_language,
+                   translated_text, detected_source_language, effective_source_language,
+                   first_seen_epoch_ms, last_seen_epoch_ms
+                 ) VALUES ('polysemous', 'polysemous', 'auto', 'zh-CN', '个人主译', 'en', 'en', 1, 1)",
+                [],
+            )
+            .expect("personal entry");
+        let entry = store
+            .list_entries("promotion-cap", Some("polysemous"), 0, 10)
+            .expect("entry")
+            .entries
+            .into_iter()
+            .next()
+            .expect("textbook entry");
+        let promoted = store.promote_entry(entry.id, 20).expect("promote");
+        let (count, primary_count, min_rank, max_rank): (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT count(*), sum(is_primary), min(rank), max(rank)
+                 FROM vocabulary_senses WHERE vocabulary_entry_id = ?1",
+                params![promoted.vocabulary_entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("bounded senses");
+        assert_eq!((count, primary_count, min_rank, max_rank), (32, 1, 0, 31));
     }
 
     #[test]
@@ -2200,17 +2978,19 @@ mod tests {
                 .expect("promote existing")
                 .inserted
         );
-        let (translation, provenance_count): (String, i64) = connection
+        let (translation, provenance_count, sense_count): (String, i64, i64) = connection
             .query_row(
                 "SELECT v.translated_text,
-                        (SELECT count(*) FROM vocabulary_textbook_provenance p WHERE p.vocabulary_entry_id = v.id)
+                        (SELECT count(*) FROM vocabulary_textbook_provenance p WHERE p.vocabulary_entry_id = v.id),
+                        (SELECT count(*) FROM vocabulary_senses s WHERE s.vocabulary_entry_id = v.id)
                  FROM vocabulary_entries v WHERE v.id = ?1",
                 params![promoted.vocabulary_entry_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("personal row");
         assert_eq!(translation, "短暂的（个人）");
         assert_eq!(provenance_count, 1);
+        assert_eq!(sense_count, 1);
 
         connection
             .execute(

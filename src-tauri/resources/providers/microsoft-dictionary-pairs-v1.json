@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "documentationUrl": "https://learn.microsoft.com/en-us/azure/ai-services/translator/language-support",
+  "reviewedAt": "2026-09-02",
+  "pairs": [
+    { "source": "en", "target": "zh-Hans" },
+    { "source": "zh-Hans", "target": "en" }
+  ]
+}

@@ -10,9 +10,10 @@ use rusqlite::{params, Connection};
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, PartOfSpeech, PracticeDirection, PracticePreferences,
-        RelatedOrigin, RelatedWord, StudyPracticeChoice, StudyPracticeOutcome,
-        StudyPracticeQuestion, TextbookEntry,
+        AppError, AppErrorCode, MeaningRefreshStatus, PartOfSpeech, PracticeDirection,
+        PracticePreferences, RelatedFilter, RelatedOrigin, RelatedWord, RelatedWordPage,
+        StudyPracticeChoice, StudyPracticeOutcome, StudyPracticeQuestion, TextbookEntry,
+        VocabularyDetail, VocabularySenseDetail,
     },
     services::{textbooks::TextbookStore, vocabulary::VocabularyStore},
 };
@@ -254,6 +255,88 @@ impl StudyService {
         });
         result.truncate(48);
         Ok(result)
+    }
+
+    pub fn vocabulary_detail(
+        &self,
+        entry_id: i64,
+        now_ms: u64,
+    ) -> Result<VocabularyDetail, AppError> {
+        let entry = self.vocabulary.get(entry_id, now_ms)?;
+        let mut senses = Vec::with_capacity(entry.senses.len());
+        for sense in &entry.senses {
+            let page = self.textbooks.filtered_related(
+                &entry.source_text,
+                &entry.effective_source_language,
+                &entry.target_language,
+                &RelatedFilter::Translation {
+                    vocabulary_sense_id: sense.id,
+                },
+                0,
+                1,
+            )?;
+            senses.push(VocabularySenseDetail {
+                id: sense.id,
+                text: sense.text.clone(),
+                part_of_speech: sense.part_of_speech,
+                rank: sense.rank,
+                is_primary: sense.is_primary,
+                textbook_word_count: page.total,
+            });
+        }
+        let morphemes = self.textbooks.morphemes_for_word(
+            &entry.source_text,
+            &entry.effective_source_language,
+            &entry.target_language,
+        )?;
+        let meaning_refresh = MeaningRefreshStatus::Unsupported;
+        Ok(VocabularyDetail {
+            entry,
+            senses,
+            morphemes,
+            meaning_refresh,
+        })
+    }
+
+    pub fn filtered_related(
+        &self,
+        entry_id: i64,
+        filter: RelatedFilter,
+        offset: u64,
+        limit: u64,
+        now_ms: u64,
+    ) -> Result<RelatedWordPage, AppError> {
+        let entry = self.vocabulary.get(entry_id, now_ms)?;
+        let valid_filter = match &filter {
+            RelatedFilter::Translation {
+                vocabulary_sense_id,
+            } => entry
+                .senses
+                .iter()
+                .any(|sense| sense.id == *vocabulary_sense_id),
+            RelatedFilter::Morpheme { morpheme_id } => self
+                .textbooks
+                .morphemes_for_word(
+                    &entry.source_text,
+                    &entry.effective_source_language,
+                    &entry.target_language,
+                )?
+                .iter()
+                .any(|morpheme| morpheme.id == *morpheme_id),
+        };
+        if !valid_filter {
+            return Err(internal(
+                "The related-word filter does not belong to this word",
+            ));
+        }
+        self.textbooks.filtered_related(
+            &entry.source_text,
+            &entry.effective_source_language,
+            &entry.target_language,
+            &filter,
+            offset,
+            limit,
+        )
     }
 
     pub fn question(

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "2026-09-02.1",
+  "license": "CC-BY-SA-4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "attribution": "Adapted from English Wiktionary contributors",
+  "sourceUrl": "https://en.wiktionary.org/",
+  "expectedBytes": 2870,
+  "sha256": "6f9da1baf96ec24557a854bf058a8201ca79fe712cad34aef58047dd0ac20d97"
+}

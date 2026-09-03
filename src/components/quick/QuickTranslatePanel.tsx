@@ -9,6 +9,7 @@ import type {
 } from "../../contracts/ipc";
 import { defaultLanguages, type LanguageOption } from "../context/ContextualOverlay";
 import { errorCopy } from "../errorCopy";
+import { TranslationSenses } from "../TranslationSenses";
 
 /** Lifecycle of one operator-initiated translation. */
 export type QuickTranslateStatus =
@@ -165,6 +166,7 @@ export function QuickTranslatePanel({
             </button>
           </div>
           <p>{status.result.translatedText}</p>
+          <TranslationSenses result={status.result} locale={locale} />
         </div>
       )}
 

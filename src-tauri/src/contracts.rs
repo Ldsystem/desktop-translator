@@ -1,5 +1,7 @@
 //! CG-001 provider-independent data and error contracts shared with the WebView.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 /// BCP-47-style language identifier.
@@ -197,6 +199,19 @@ pub struct TranslationRequest {
 /// Provider-independent translation response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TranslationSense {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+    pub rank: u8,
+    pub is_primary: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+}
+
+/// Provider-independent translation response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranslationResult {
     pub selection_id: u64,
     pub translated_text: String,
@@ -206,6 +221,20 @@ pub struct TranslationResult {
     pub target_language: LanguageCode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part_of_speech: Option<PartOfSpeech>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub senses: Vec<TranslationSense>,
+}
+
+/// One locally stored lexical item with independent demand and recall signals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularySenseSummary {
+    pub id: i64,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+    pub rank: u8,
+    pub is_primary: bool,
 }
 
 /// One locally stored lexical item with independent demand and recall signals.
@@ -222,6 +251,8 @@ pub struct VocabularyEntry {
     pub target_language: LanguageCode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part_of_speech: Option<PartOfSpeech>,
+    #[serde(default)]
+    pub senses: Vec<VocabularySenseSummary>,
     pub lookup_count: u64,
     pub recall_score: f64,
     pub effective_recall: f64,
@@ -319,6 +350,7 @@ pub struct InstalledTextbook {
     pub active: bool,
     /// True when this verified artifact predates the current lexical metadata importer.
     pub metadata_refresh_available: bool,
+    pub lexical_refresh_status: String,
 }
 
 /// One normalized dictionary entry imported from a validated textbook.
@@ -401,6 +433,83 @@ pub struct RelatedOrigin {
     pub textbook_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub textbook_title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
+pub enum RelatedFilter {
+    Morpheme { morpheme_id: String },
+    Translation { vocabulary_sense_id: i64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularySenseDetail {
+    pub id: i64,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+    pub rank: u8,
+    pub is_primary: bool,
+    pub textbook_word_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyMorpheme {
+    pub id: String,
+    pub display: String,
+    pub kind: String,
+    pub accessible_label: String,
+    pub textbook_word_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum MeaningRefreshStatus {
+    Available,
+    Unsupported,
+    Offline,
+    UnavailableLegacy,
+    FailedRetryable { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabularyDetail {
+    pub entry: VocabularyEntry,
+    pub senses: Vec<VocabularySenseDetail>,
+    pub morphemes: Vec<VocabularyMorpheme>,
+    pub meaning_refresh: MeaningRefreshStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilteredRelatedWord {
+    pub key: String,
+    pub source_text: String,
+    pub translated_text: String,
+    pub source_language: LanguageCode,
+    pub target_language: LanguageCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of_speech: Option<PartOfSpeech>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_vocabulary_entry_id: Option<i64>,
+    pub origins: Vec<RelatedOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedWordPage {
+    pub items: Vec<FilteredRelatedWord>,
+    pub total: u64,
+    pub offset: u64,
+    pub limit: u64,
+    pub relation_label: String,
 }
 
 /// User-selectable prompt direction for local practice.
@@ -589,6 +698,33 @@ impl ValidateContract for TranslationResult {
                 "translation result contains an empty field",
             ));
         }
+        if self.senses.len() > 32 {
+            return Err(validation_error("translation result has too many senses"));
+        }
+        if !self.senses.is_empty() {
+            let mut primary_count = 0;
+            let mut keys = HashSet::new();
+            for (expected_rank, sense) in self.senses.iter().enumerate() {
+                if sense.text.trim().is_empty()
+                    || !sense.confidence.is_none_or(f64::is_finite)
+                    || usize::from(sense.rank) != expected_rank
+                    || !keys.insert((sense.text.trim().to_lowercase(), sense.part_of_speech))
+                {
+                    return Err(validation_error("translation senses are invalid"));
+                }
+                if sense.is_primary {
+                    primary_count += 1;
+                    if sense.text != self.translated_text || sense.rank != 0 {
+                        return Err(validation_error("translation primary sense does not match"));
+                    }
+                }
+            }
+            if primary_count != 1 {
+                return Err(validation_error(
+                    "translation result requires one primary sense",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -643,6 +779,18 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn related_filters_accept_renderer_payloads_and_round_trip() {
+        for payload in [
+            serde_json::json!({ "kind": "translation", "vocabularySenseId": 11 }),
+            serde_json::json!({ "kind": "morpheme", "morphemeId": "en-root-duce" }),
+        ] {
+            let filter: super::RelatedFilter =
+                serde_json::from_value(payload.clone()).expect("renderer filter must deserialize");
+            assert_eq!(serde_json::to_value(filter).unwrap(), payload);
+        }
+    }
+
     use super::{
         decode_validated, AppError, SelectionSnapshot, StudyPracticeQuestion, TranslationRequest,
         TranslationResult, UserSettings, VocabularyRevision,

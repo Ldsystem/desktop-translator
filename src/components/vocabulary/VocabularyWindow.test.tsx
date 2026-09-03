@@ -22,6 +22,10 @@ const entry: VocabularyEntry = {
   requestedSourceLanguage: "auto",
   effectiveSourceLanguage: "en",
   targetLanguage: "es",
+  senses: [
+    { id: 11, text: "hola", partOfSpeech: "interjection", rank: 0, isPrimary: true },
+    { id: 12, text: "buenas", partOfSpeech: "interjection", rank: 1, isPrimary: false },
+  ],
   lookupCount: 4,
   recallScore: 47,
   effectiveRecall: 43,
@@ -74,6 +78,7 @@ const installedBook: InstalledTextbook = {
   installedAtEpochMs: 1,
   active: true,
   metadataRefreshAvailable: false,
+  lexicalRefreshStatus: "enriched",
 };
 
 function makeStudyApi(overrides: Partial<StudyApi> = {}): StudyApi {
@@ -89,6 +94,19 @@ function makeStudyApi(overrides: Partial<StudyApi> = {}): StudyApi {
     correctVocabularySourceLanguage: vi.fn().mockResolvedValue(entry),
     listVocabularyProvenance: vi.fn().mockResolvedValue([]),
     listRelated: vi.fn().mockResolvedValue([]),
+    getVocabularyDetail: vi.fn().mockResolvedValue({
+      entry,
+      senses: entry.senses.map((sense) => ({ ...sense, textbookWordCount: sense.isPrimary ? 2 : 1 })),
+      morphemes: [],
+      meaningRefresh: { status: "unsupported" },
+    }),
+    refreshVocabularyMeanings: vi.fn().mockResolvedValue({
+      entry,
+      senses: entry.senses.map((sense) => ({ ...sense, textbookWordCount: 0 })),
+      morphemes: [],
+      meaningRefresh: { status: "available" },
+    }),
+    listFilteredRelated: vi.fn().mockResolvedValue({ items: [], total: 0, offset: 0, limit: 100, relationLabel: "hola" }),
     getPracticePreferences: vi.fn().mockResolvedValue({ direction: "random" }),
     savePracticePreferences: vi.fn().mockResolvedValue(undefined),
     getPracticeQuestion: vi.fn().mockResolvedValue(null),
@@ -142,6 +160,22 @@ describe("VocabularyWindow", () => {
     expect(ruler?.querySelector(".recall-ruler__label")).toBeNull();
   });
 
+  it("renders every sense as a POS-specific subtitle and has no related-word card action", () => {
+    const enriched = {
+      ...entry,
+      senses: [
+        ...entry.senses,
+        { id: 13, text: "saludo", partOfSpeech: "noun" as const, rank: 2, isPrimary: false },
+      ],
+    };
+    act(() => root.render(<VocabularyWindow entries={[enriched]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
+
+    expect([...container.querySelectorAll(".vocabulary-card__sense")].map((row) => row.textContent)).toEqual(["holainterj.", "buenasinterj.", "saludon."]);
+    expect(container.querySelector('[aria-label="Pronounce hola"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Open related words for hello"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Open details for hello"]')).not.toBeNull();
+  });
+
   it("localizes word-card learning and action labels in Simplified Chinese", () => {
     act(() => root.render(<VocabularyWindow locale="zh-CN" entries={[entry]} loading={false} error={undefined} related={[]} question={undefined} outcome={undefined} speechAvailability={{ en: true, es: false }} onPronounce={vi.fn()} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
 
@@ -149,9 +183,9 @@ describe("VocabularyWindow", () => {
     expect(container.textContent).toContain("正在形成");
     expect(container.querySelector(".recall-ruler .sr-only")?.textContent).toBe("记忆度 43/100");
     expect(container.querySelector<HTMLButtonElement>('[aria-label="朗读 hello"]')?.title).toBe("朗读 hello");
-    expect(container.querySelector<HTMLButtonElement>('[aria-label="朗读 hola"]')?.title).toBe("没有已安装的语音支持此语言");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="朗读 hola"]')).toBeNull();
     expect(container.querySelector<HTMLButtonElement>('[aria-label="管理 hello"]')?.title).toBe("管理词汇");
-    expect(container.querySelector<HTMLButtonElement>('[aria-label="查看 hello 的相关词"]')?.title).toBe("查找相关词");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="查看 hello 的详情"]')?.title).toBe("词汇详情");
   });
 
   it("keeps the frame fixed and gives the active content one explicit scroll owner", () => {
@@ -215,7 +249,7 @@ describe("VocabularyWindow", () => {
     expect(appCss).toMatch(/\.vocabulary-card\s*\{[^}]*grid-template-columns:\s*30px\s+minmax\(0,\s*1fr\)\s+90px/s);
   });
 
-  it("keeps two word-oriented pronunciation controls separate from opening the card", () => {
+  it("keeps pronunciation on the source word and opens a dedicated detail page", () => {
     const pronounce = vi.fn();
     const open = vi.fn();
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} error={undefined} related={[]} question={undefined} outcome={undefined} speechAvailability={{ en: true, es: true }} onPronounce={pronounce} onSearch={vi.fn()} onSelectEntry={open} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
@@ -230,21 +264,19 @@ describe("VocabularyWindow", () => {
     expect(pronounce).toHaveBeenCalledWith("hello", "en");
     expect(open).not.toHaveBeenCalled();
 
-    const translationSpeaker = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Pronounce hola");
-    act(() => translationSpeaker?.click());
-    expect(pronounce).toHaveBeenLastCalledWith("hola", "es");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Pronounce hola"]')).toBeNull();
 
-    const cardAction = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello");
+    const cardAction = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open details for hello");
     const manageAction = container.querySelector<HTMLButtonElement>('[aria-label="Manage hello"]');
     expect(manageAction?.title).toBe("Manage word");
     expect(manageAction?.textContent).toBe("");
-    expect(cardAction?.title).toBe("Find related words");
+    expect(cardAction?.title).toBe("Word details");
     expect(cardAction?.textContent).toBe("");
     act(() => cardAction?.click());
     expect(open).toHaveBeenCalledWith(1);
   });
 
-  it("uses the saved example as the related subtitle and removes textbook source details", async () => {
+  it("uses the saved example as the detail subtitle and removes textbook source details", async () => {
     const api = makeStudyApi({
       listVocabularyProvenance: vi.fn().mockResolvedValue([{
         textbookId: "wikdict-en-zh",
@@ -260,22 +292,22 @@ describe("VocabularyWindow", () => {
     });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
 
-    const cardAction = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello");
+    const cardAction = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open details for hello");
     act(() => cardAction?.click());
     await flushEffects();
 
-    expect(container.querySelector(".related-example")?.textContent).toBe("She said hello before leaving.");
+    expect(container.querySelector(".vocabulary-detail__example")?.textContent).toBe("She said hello before leaving.");
     expect(api.listVocabularyProvenance).not.toHaveBeenCalled();
     expect(container.querySelector(".word-provenance")).toBeNull();
     expect(container.textContent).not.toContain("Textbook source details");
   });
 
-  it("keeps concise corpus guidance when the related anchor has no saved example", async () => {
+  it("does not invent a sample sentence when none was recorded", async () => {
     const api = makeStudyApi();
     act(() => root.render(<VocabularyWindow entries={[{ ...entry, exampleSentence: undefined }]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
-    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open related words for hello"]')?.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open details for hello"]')?.click());
     await flushEffects();
-    expect(container.querySelector(".related-example")?.textContent).toContain("wordbook and downloaded textbooks");
+    expect(container.querySelector(".vocabulary-detail__example")).toBeNull();
   });
 
   it("explains unavailable pronunciation states", () => {
@@ -387,7 +419,7 @@ describe("VocabularyWindow", () => {
 
   it("wraps long learning text and renders optional POS without an empty badge", () => {
     const long = "pneumonoultramicroscopicsilicovolcanoconiosis";
-    act(() => root.render(<VocabularyWindow entries={[{ ...entry, sourceText: long, translatedText: `${long} translated meaning`, partOfSpeech: "noun" }, { ...entry, id: 2, sourceText: "plain", partOfSpeech: undefined }]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
+    act(() => root.render(<VocabularyWindow entries={[{ ...entry, sourceText: long, translatedText: `${long} translated meaning`, senses: [{ id: 21, text: `${long} translated meaning`, partOfSpeech: "noun", rank: 0, isPrimary: true }] }, { ...entry, id: 2, sourceText: "plain", senses: [{ id: 22, text: "plain meaning", rank: 0, isPrimary: true }] }]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} />));
 
     const firstCard = container.querySelectorAll(".vocabulary-card")[0];
     expect(firstCard.querySelector(".lexical-text--long")?.textContent).toBe(long);
@@ -486,6 +518,25 @@ describe("VocabularyWindow", () => {
     expect(container.textContent).toContain("No downloaded textbooks yet");
   });
 
+  it("keeps unavailable legacy refresh disabled across catalog, shelf, and book details", async () => {
+    const api = makeStudyApi({ listDownloaded: vi.fn().mockResolvedValue([{ ...installedBook, metadataRefreshAvailable: true, lexicalRefreshStatus: "unavailable-legacy" }]) });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Textbooks")?.click());
+    await flushEffects();
+    const checkUnavailable = () => {
+      expect(container.textContent).toContain("verified source package is unavailable");
+      const refresh = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Refresh word details');
+      expect(refresh?.disabled).toBe(true);
+    };
+    checkUnavailable();
+    act(() => [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Downloaded')?.click());
+    checkUnavailable();
+    act(() => [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Browse words')?.click());
+    await flushEffects();
+    checkUnavailable();
+    expect(api.downloadTextbook).not.toHaveBeenCalled();
+  });
+
   it("offers a verified metadata refresh for a legacy same-version textbook", async () => {
     const legacyBook = { ...installedBook, metadataRefreshAvailable: true };
     const downloadTextbook = vi.fn().mockResolvedValue({ ...legacyBook, metadataRefreshAvailable: false });
@@ -497,7 +548,7 @@ describe("VocabularyWindow", () => {
     act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Textbooks")?.click());
     await flushEffects();
 
-    const refresh = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Add parts of speech");
+    const refresh = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Refresh word details");
     expect(refresh?.disabled).toBe(false);
     await act(async () => refresh?.click());
     expect(downloadTextbook).toHaveBeenCalledWith(catalogItem.id);
@@ -533,54 +584,113 @@ describe("VocabularyWindow", () => {
     expect(appCss).toMatch(/\.textbook-pagination\s*\{[^}]*background:\s*var\(--study-paper\)/s);
   });
 
-  it("shows one combined related list with origin badges and promotes textbook results", async () => {
-    const listRelated = vi.fn().mockResolvedValue([{ kind: "textbook", textbookEntryId: 81, textbookId: installedBook.id, sourceText: "helpful", translatedText: "有帮助的", sourceLanguage: "en", targetLanguage: "zh-CN", partOfSpeech: "adjective", reason: "root", promoted: false, origins: [{ kind: "textbook", textbookId: installedBook.id, textbookTitle: installedBook.title }] }]);
-    const addTextbookEntry = vi.fn().mockResolvedValue({ vocabularyEntryId: 10, inserted: true });
-    const api = makeStudyApi({ listDownloaded: vi.fn().mockResolvedValue([installedBook]), listRelated, addTextbookEntry });
+  it("keeps textbook study actions together and refresh in a separate maintenance row", async () => {
+    const api = makeStudyApi({ listDownloaded: vi.fn().mockResolvedValue([{ ...installedBook, lexicalRefreshStatus: "exact" }]) });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello")?.click());
+    act(() => [...container.querySelectorAll<HTMLButtonElement>(".study-nav")].find((button) => button.textContent === "Textbooks")?.click());
     await flushEffects();
-    await flushEffects();
-
-    expect(listRelated).toHaveBeenLastCalledWith(1);
-    expect(container.querySelector(".source-selector")).toBeNull();
-    expect(container.textContent).toContain("helpful");
-    expect(container.querySelector(".relation-list .part-of-speech")?.textContent).toBe("adj.");
-    expect(container.textContent).toContain(installedBook.title);
-    const relatedRow = container.querySelector(".relation-list article")!;
-    const tail = relatedRow.querySelector(":scope > .relation-tail");
-    expect(relatedRow.children).toHaveLength(4);
-    expect(tail?.querySelector(":scope > .relation-origins")).not.toBeNull();
-    expect(tail?.querySelector(":scope > .relation-add")).not.toBeNull();
-    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Add")?.click());
-    expect(addTextbookEntry).toHaveBeenCalledWith(81);
-    expect(container.textContent).toContain("Added");
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Downloaded")?.click());
+    const book = container.querySelector(".downloaded-book");
+    expect(book?.getAttribute("aria-label")).toBe(installedBook.title);
+    expect([...book!.querySelectorAll('.downloaded-book__actions button')].map((button) => button.textContent)).toEqual(["Browse words", "Deactivate"]);
+    expect(book?.querySelector('.downloaded-book__maintenance')?.textContent).toContain("Refresh word details");
+    act(() => book?.querySelector<HTMLButtonElement>('.downloaded-book__remove button')?.click());
+    expect(book?.querySelector('.downloaded-book__remove')?.textContent).toContain("Remove local copy?");
+    act(() => [...book!.querySelectorAll<HTMLButtonElement>('.downloaded-book__remove button')].find((button) => button.textContent === "Cancel")?.click());
+    expect(api.removeTextbook).not.toHaveBeenCalled();
+    expect(book?.querySelector('.downloaded-book__remove')?.textContent).not.toContain("Remove local copy?");
   });
 
-  it("returns from a card-scoped related view to My wordbook", async () => {
+  it("offers retry for failed related loads and reserves the empty state for successful searches", async () => {
+    const listFilteredRelated = vi.fn().mockRejectedValueOnce("invalid filter").mockResolvedValueOnce({ items: [], total: 0, offset: 0, limit: 100, relationLabel: "hola" });
+    const api = makeStudyApi({ listFilteredRelated });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open details for hello"]')?.click());
+    await flushEffects();
+    act(() => container.querySelector<HTMLButtonElement>(".detail-sense")?.click());
+    await flushEffects();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Related words could not be loaded");
+    expect(container.textContent).not.toContain("No compatible connections yet");
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Try again")?.click());
+    await flushEffects();
+    expect(listFilteredRelated).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain("No compatible connections yet");
+  });
+
+  it("opens filtered related words only from a detail meaning", async () => {
+    const listFilteredRelated = vi.fn().mockResolvedValue({
+      items: [{ key: "textbook-81", sourceText: "greeting", translatedText: "问候", sourceLanguage: "en", targetLanguage: "zh-CN", partOfSpeech: "noun", origins: [{ kind: "textbook", textbookId: installedBook.id, textbookTitle: installedBook.title }] }],
+      total: 1,
+      offset: 0,
+      limit: 100,
+      relationLabel: "hola",
+    });
+    const api = makeStudyApi({ listFilteredRelated });
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open details for hello"]')?.click());
+    await flushEffects();
+
+    expect(container.querySelectorAll(".detail-sense")).toHaveLength(2);
+    expect(container.querySelector(".detail-sense .part-of-speech")?.textContent).toBe("interj.");
+    act(() => container.querySelector<HTMLButtonElement>(".detail-sense")?.click());
+    await flushEffects();
+
+    expect(listFilteredRelated).toHaveBeenCalledWith(1, { kind: "translation", vocabularySenseId: 11 }, 0, 100);
+    expect(container.textContent).toContain("greeting");
+    expect(container.textContent).toContain(installedBook.title);
+    expect(container.querySelector(".relation-list .part-of-speech")?.textContent).toBe("n.");
+  });
+
+  it("shows source pronunciation, verified roots, counts, and explicit meaning refresh on Detail", async () => {
+    const refreshVocabularyMeanings = vi.fn().mockResolvedValue({
+      entry,
+      senses: entry.senses.map((sense) => ({ ...sense, textbookWordCount: 3 })),
+      morphemes: [{ id: "en-root-duce", display: "+duce", kind: "root", accessibleLabel: "root duce", textbookWordCount: 4 }],
+      meaningRefresh: { status: "available" },
+    });
+    const api = makeStudyApi({
+      getVocabularyDetail: vi.fn().mockResolvedValue({
+        entry,
+        senses: entry.senses.map((sense) => ({ ...sense, textbookWordCount: 3 })),
+        morphemes: [{ id: "en-root-duce", display: "+duce", kind: "root", accessibleLabel: "root duce", textbookWordCount: 4 }],
+        meaningRefresh: { status: "available" },
+      }),
+      refreshVocabularyMeanings,
+    });
+    const pronounce = vi.fn();
+    act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} speechAvailability={{ en: true }} onPronounce={pronounce} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open details for hello"]')?.click());
+    await flushEffects();
+
+    expect(container.textContent).toContain("+duce");
+    expect(container.textContent).toContain("4 similar words");
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Pronounce hello"]')?.click());
+    expect(pronounce).toHaveBeenCalledWith("hello", "en");
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Refresh meanings")?.click());
+    expect(refreshVocabularyMeanings).toHaveBeenCalledWith(1);
+  });
+
+  it("returns from detail to My wordbook", async () => {
     const api = makeStudyApi();
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello")?.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open details for hello"]')?.click());
     await flushEffects();
 
     const back = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "← Back to My wordbook");
     expect(back?.classList.contains("textbook-back")).toBe(true);
     act(() => back?.click());
-
     expect(container.textContent).toContain("Your working vocabulary");
-    expect(container.textContent).toContain("hello");
-    expect(container.textContent).not.toContain("Connections for hello");
   });
 
-  it("localizes the card-scoped related view in Simplified Chinese", async () => {
+  it("localizes the dedicated detail view in Simplified Chinese", async () => {
     const api = makeStudyApi();
     act(() => root.render(<VocabularyWindow locale="zh-CN" entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "查看 hello 的相关词")?.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="查看 hello 的详情"]')?.click());
     await flushEffects();
-
     expect(container.textContent).toContain("返回我的词汇本");
-    expect(container.textContent).toContain("hello 的关联");
-    expect(container.textContent).not.toContain("Connections for hello");
+    expect(container.textContent).toContain("所有译义");
+    expect(container.textContent).not.toContain("All meanings");
   });
 
   it("masks textbook entries above and below the sticky pagination dock", () => {
@@ -638,18 +748,20 @@ describe("VocabularyWindow", () => {
     expect(submitPracticeAnswer).toHaveBeenCalledWith(1, "target-to-source", "replace");
   });
 
-  it("keeps the newest combined related response when an older request resolves last", async () => {
-    const personal = deferred<Awaited<ReturnType<StudyApi["listRelated"]>>>();
-    const textbook = deferred<Awaited<ReturnType<StudyApi["listRelated"]>>>();
-    const listRelated = vi.fn().mockImplementationOnce(() => personal.promise).mockImplementationOnce(() => textbook.promise);
-    const api = makeStudyApi({ listDownloaded: vi.fn().mockResolvedValue([installedBook]), listRelated });
+  it("keeps the newest filtered related response when an older request resolves last", async () => {
+    const stale = deferred<Awaited<ReturnType<StudyApi["listFilteredRelated"]>>>();
+    const current = deferred<Awaited<ReturnType<StudyApi["listFilteredRelated"]>>>();
+    const listFilteredRelated = vi.fn().mockImplementationOnce(() => stale.promise).mockImplementationOnce(() => current.promise);
+    const api = makeStudyApi({ listFilteredRelated });
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "Open related words for hello")?.click());
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Open details for hello"]')?.click());
+    await flushEffects();
+    act(() => container.querySelector<HTMLButtonElement>(".detail-sense")?.click());
     await flushEffects();
     act(() => root.render(<VocabularyWindow entries={[entry]} loading={false} revision={1} related={[]} question={undefined} onSearch={vi.fn()} onSelectEntry={vi.fn()} onStartPractice={vi.fn()} onSubmitAnswer={vi.fn()} studyApi={api} />));
     await flushEffects();
-    await act(async () => textbook.resolve([{ kind: "textbook", textbookEntryId: 81, textbookId: installedBook.id, sourceText: "current", translatedText: "当前", sourceLanguage: "en", targetLanguage: "zh-CN", reason: "root", promoted: false, origins: [] }]));
-    await act(async () => personal.resolve([{ kind: "personal", vocabularyEntryId: 2, sourceText: "stale", translatedText: "过时", sourceLanguage: "en", targetLanguage: "zh-CN", reason: "root", promoted: true, origins: [] }]));
+    await act(async () => current.resolve({ items: [{ key: "current", sourceText: "current", translatedText: "当前", sourceLanguage: "en", targetLanguage: "zh-CN", origins: [] }], total: 1, offset: 0, limit: 100, relationLabel: "hola" }));
+    await act(async () => stale.resolve({ items: [{ key: "stale", sourceText: "stale", translatedText: "过时", sourceLanguage: "en", targetLanguage: "zh-CN", origins: [] }], total: 1, offset: 0, limit: 100, relationLabel: "hola" }));
 
     expect(container.textContent).toContain("current");
     expect(container.textContent).not.toContain("stale");

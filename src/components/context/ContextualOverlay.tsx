@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import type { LanguageCode, TranslationRequest, UiLocale } from "../../contracts/ipc";
 import type { OverlayState } from "../../state/overlayMachine";
 import { errorCopy } from "../errorCopy";
+import { TranslationSenses } from "../TranslationSenses";
 
 export interface LanguageOption {
   code: LanguageCode;
@@ -188,6 +189,7 @@ export function ContextualOverlay({
               </button>
             </div>
             <p lang={state.result.targetLanguage}>{state.result.translatedText}</p>
+            <TranslationSenses result={state.result} locale={locale} />
           </section>
         </div>
       )}

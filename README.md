@@ -1,271 +1,170 @@
 <div align="center">
 
-<img src="src-tauri/icons/icon.png" alt="Desktop Translator" width="120" />
+<img src="src-tauri/icons/icon.png" alt="Desktop Translator icon" width="96" />
 
 # Desktop Translator
 
-**Select text anywhere on your desktop and translate it in place.**
+**Translate in place. Build your wordbook.**
 
 [![CI](https://github.com/Ldsystem/desktop-translator/actions/workflows/ci.yml/badge.svg)](https://github.com/Ldsystem/desktop-translator/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Ldsystem/desktop-translator?logo=github)](https://github.com/Ldsystem/desktop-translator/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Ldsystem/desktop-translator/total?logo=github)](https://github.com/Ldsystem/desktop-translator/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%2011%2B-lightgrey?logo=apple)](#platform-support)
-[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB?logo=tauri)](https://tauri.app)
+[![Release](https://img.shields.io/github/v/release/Ldsystem/desktop-translator)](https://github.com/Ldsystem/desktop-translator/releases/latest)
+[![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB)](https://tauri.app)
+
+English · [简体中文](README.zh-CN.md)
 
 </div>
 
-<div align="center"><a href="README.zh-CN.md">简体中文</a> · English</div>
+A lightweight macOS and Windows translator with an on-device vocabulary study window. Select text in a supported application and click the nearby translation button, or open Quick Translate from the menu bar / system tray to type or paste text.
 
-Highlight a word or a sentence in any application. When you release the mouse, a
-small translate button appears beside the selection; click it and the
-translation opens right there, without stealing focus from what you were
-reading.
+Eligible word lookups build a personal wordbook. Review saved meanings and parts of speech, explore textbook connections, and practise without moving your learning history to a cloud account.
 
-It is the convenience of a browser translation extension, except it works in
-your mail client, your PDF reader, and your terminal — not just in a browser
-tab.
+> [!NOTE]
+> This README describes the **0.6.0 source**. Check the selected release tag when downloading. Screenshots were captured from the locally installed pre-release macOS build on **2026-09-03**, using its Simplified Chinese interface and existing local data. They are real app captures, not mockups.
 
-## Features
+![Current personal wordbook with source pronunciation, saved translations, recall scores, and detail actions](docs/screenshots/vocabulary-study-wordbook.jpg)
 
-- **Translate from any application.** Selection is read through the operating
-  system's accessibility layer, so it works in native controls and in embedded
-  web surfaces alike.
-- **Never steals focus.** The button and the result render in a non-activating
-  overlay, so the window you were reading stays active.
-- **Automatic language detection**, with a source-language override on the
-  result when the guess is wrong.
-- **Spoken pronunciation** for both the original and the translation, using the
-  operating system's built-in voices.
-- **Quick translate panel.** Click the menu-bar icon to type or paste text
-  directly, without selecting anything.
-- **Local vocabulary study.** Eligible translated words and short phrases build
-  a private on-device wordbook with pronunciation, recall tracking, related-word
-  discovery, downloaded textbooks, and bidirectional practice. When a selection
-  sits in a clear sentence, that sentence is saved as the word's example.
-- **Stays out of the way.** Lives in the menu bar with no Dock icon, and can
-  start at login.
-- **English and Simplified Chinese UI.** Switch immediately from Settings or
-  the menu-bar menu, with CJK typography tuned for desktop reading.
-- **Choose your translation service.** Google Cloud, Baidu Translate, and
-  Microsoft Translator (global or China cloud) share one provider-neutral
-  native boundary. Provider credentials stay in isolated system-vault slots.
+## What it does
 
-Languages: English, Chinese (Simplified), Japanese, Korean, French, German and
-Spanish, in any direction, plus automatic detection of the source.
+- **Translate beside the selection.** A small overlay keeps the reading workflow in place; Quick Translate also works without selection access.
+- **Choose one online provider.** Google Cloud Translation, Baidu Translate, or Microsoft Translator, including Microsoft's global and China cloud endpoints. There is no silent switch to another online provider.
+- **Keep available meanings together.** Vocabulary cards display every saved translation with its known part of speech (POS). Pronunciation stays beside the source word.
+- **Explore word details.** Open details from a vocabulary card to see its saved example, verified word parts, meanings, and matching textbook-word counts.
+- **Learn locally.** Use an embedded English–Simplified Chinese starter, download additional textbooks, and practise word-to-meaning, meaning-to-word, or mixed questions.
+- **Fit your desktop.** English and Simplified Chinese interfaces, system-voice pronunciation, a menu-bar / tray workflow, and optional start at login.
+
+## Install and start
+
+Download from [GitHub Releases](https://github.com/Ldsystem/desktop-translator/releases). Check the selected release's notes and assets; not every historical release includes both platforms.
+
+| Platform | Packaging and support |
+| --- | --- |
+| macOS 11+ | The release workflow builds a universal Apple Silicon + Intel app and DMG. Drag the app to Applications and launch it. Current workflow artifacts use ad-hoc signing, not Developer ID notarization. |
+| Windows 10/11 x64 | The release workflow builds an unsigned, current-user NSIS installer with WebView2 bootstrap support. See the [Windows distribution notes](docs/windows-signing-and-supply-chain.md). |
+| Linux | Not implemented; the native crate rejects Linux builds. |
+
+1. Open **Settings** from the app's menu-bar / tray menu.
+2. On macOS, grant **Accessibility** access for selection translation. Quick Translate does not require reading another application's selection.
+3. Choose source and target languages. For online translation, select a provider and configure its credentials.
+4. Test the provider configuration. Select text and click Translate, or type into Quick Translate.
+5. Open **Vocabulary Study** from the same menu to review your wordbook, practise, or browse textbooks.
+
+| Provider | Configuration used by this app |
+| --- | --- |
+| Google Cloud Translation | Cloud Translation API key; this is not the Google Translate website. |
+| Baidu Translate | APP ID and secret key. |
+| Microsoft Translator | Subscription key, cloud selection, and region when required by the resource. |
+
+Credentials are entered through native prompts and stored in the operating system's credential vault. Language availability and online errors depend on the selected provider. Local wordbook and active-textbook hits can be used without an online request.
+
+> [!IMPORTANT]
+> Selection support depends on what the other application exposes through accessibility APIs. Secure fields, some PDF viewers, terminals, and custom controls may not expose usable text. There is no OCR or automatic clipboard fallback; use Quick Translate when selection access is unavailable. Unsigned/ad-hoc release artifacts may trigger system security warnings—verify the download's origin before approving it.
 
 ## Vocabulary Study
 
-Every eligible word or short phrase you translate can become part of a private,
-on-device learning loop. Repeated lookups measure demand; submitted practice
-answers measure recall. Sentence-like selections are translated normally but
-are never added to the wordbook.
+### From a lookup to a word detail
 
-![Personal wordbook with recall scores, pronunciation, part-of-speech badges, and card actions](docs/screenshots/vocabulary-study-wordbook.png)
+Successful lookups of eligible words and short lexical phrases are saved locally. Sentence-like selections still translate, but are not added as vocabulary entries. When the accessibility selection provides a suitable surrounding sentence, it can be recorded as the word's example.
 
-The study window brings four tools together:
+- **My wordbook:** search and review entries, see lookup demand and recall scores, correct or remove entries, and read all saved translations with available POS labels.
+- **Word details:** use the detail action on a vocabulary card. The page contains the source word and pronunciation, the recorded example when available, verified composing roots/affixes, and individual meanings with connection counts.
+- **Related words:** click a root or meaning to open that exact group. Back navigation returns to the word detail. Details and related words are contextual pages, not extra sidebar destinations.
+- **Practice:** submit answers to update recall. Looking up a word increases lookup demand; it does not count as remembering it. Multiple meanings remain one vocabulary item rather than creating duplicate learning records.
 
-- **My wordbook** keeps the source and translation, language direction, lookup
-  demand, recall score, pronunciation controls, and provenance-backed
-  part-of-speech metadata. Entries can be corrected or removed.
-- **Downloaded textbooks** start with an embedded offline Simplified Chinese
-  starter and provide five additional learning paths,
-  including everyday, academic, TOEIC, business, and general-reference
-  vocabulary. A textbook hit is copied into your personal wordbook.
-- **Related words** combines roots and shared meanings across your wordbook and
-  compatible downloaded textbooks, shows the saved selection sentence when one
-  exists, and keeps English as the study anchor when Chinese is translated to
-  English.
-- **Practice** tests word-to-meaning, meaning-to-word, or a random mix. Related
-  words and the active textbook supply more challenging distractors, while
-  mastered words leave the active queue until their recall fades.
-
-<table>
-  <tr>
-    <td width="50%"><img src="docs/screenshots/vocabulary-study-textbooks.png" alt="Simplified Chinese textbook shelf" /></td>
-    <td width="50%"><img src="docs/screenshots/vocabulary-study-related.png" alt="Related words with source and part-of-speech badges" /></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Choose a focused Simplified Chinese textbook.</sub></td>
-    <td align="center"><sub>Explore connections across personal and downloaded vocabulary.</sub></td>
-  </tr>
-</table>
-
-> [!NOTE]
-> Translation lookup follows a local-first order: personal wordbook → active
-> downloaded textbook → configured online translation provider.
-
-## Platform support
-
-| Platform | Status |
+| Word detail | Related meanings |
 | --- | --- |
-| macOS 11+ | Supported |
-| Windows 10/11 x64 | Packaged (unsigned NSIS) — compile, CI, and installer smoke passed; interactive UI fixtures remain manual-only |
-| Linux | Not planned |
+| ![Sublime detail: one saved adjective meaning, two related words, and no verified roots](docs/screenshots/vocabulary-study-detail.jpg) | ![Sublime related meanings: noble and supernal, with textbook origins](docs/screenshots/vocabulary-study-related.jpg) |
 
-> [!NOTE]
-> Windows 11 25H2 x64 (build 26200.9168) produced
-> `Desktop Translator_0.3.0_x64-setup.exe` via `pnpm tauri build --bundles nsis`.
-> Silent current-user install, launch, reinstall, and uninstall succeeded.
-> UI Automation selection, the non-activating overlay against another app, SAPI,
-> the credential prompt, start-at-login, and Vocabulary Study chrome were **not**
-> exercised interactively on this host. See
-> [`docs/platform-test-matrix.md`](docs/platform-test-matrix.md) and
-> [`docs/windows-signing-and-supply-chain.md`](docs/windows-signing-and-supply-chain.md).
+This example has one saved meaning. Entries with more available senses display those too; an empty root section means no verified structure is available.
 
-## Install
+### Where extra meanings and connections come from
 
-### macOS
-
-Download the `.dmg` from the
-[latest release](https://github.com/Ldsystem/desktop-translator/releases/latest)
-and drag the app into Applications. The build is universal, so one download
-runs natively on both Apple Silicon and Intel Macs.
-
-> [!IMPORTANT]
-> Releases are **not signed with an Apple Developer ID**, so Gatekeeper will
-> refuse the first launch. Clear the quarantine flag to allow it:
->
-> ```sh
-> xattr -dr com.apple.quarantine "/Applications/Desktop Translator.app"
-> ```
-
-### Windows 10/11 x64
-
-Download `Desktop Translator_*_x64-setup.exe` from the same Releases page and
-run it. The installer is NSIS, current-user, and fetches WebView2 with the
-Microsoft download bootstrapper when the runtime is missing. It does not
-require Node.js, Rust, Python, or an administrator account.
-
-> [!IMPORTANT]
-> Windows builds are **not Authenticode-signed**. SmartScreen may warn on first
-> run; use **More info → Run anyway**. See
-> [`docs/windows-signing-and-supply-chain.md`](docs/windows-signing-and-supply-chain.md).
-
-## Setup
-
-Two things are needed before the first online translation. Vocabulary Study is
-usable immediately because its starter English → Simplified Chinese textbook is
-embedded in the app.
-
-**1. Grant Accessibility permission.** The app reads the selected text and its
-on-screen position through the macOS Accessibility API. On first launch it will
-point you at *System Settings → Privacy & Security → Accessibility*; enable
-Desktop Translator there, then **quit the app from the menu bar and open it
-again**. macOS does not apply a new Accessibility grant to a process that is
-already running, which is why the warning can remain after the switch is on.
-
-> [!IMPORTANT]
-> Releases are ad-hoc signed, so the code identity changes with every version.
-> macOS ties an Accessibility grant to that identity, which means an update
-> silently invalidates the old grant even though the switch still looks enabled.
-> After updating, remove the stale Desktop Translator entry from the
-> Accessibility list and add the new app again.
-
-> [!NOTE]
-> No screen capture is involved and no Screen Recording permission is requested.
-> The app reads only the text you selected, only after you finish selecting it.
-
-**2. Choose and configure a translation provider.** Open Settings from the
-menu-bar menu, choose a service, and use its native credential prompt:
-
-| Provider | Configuration | Network note |
-| --- | --- | --- |
-| Baidu Translate | APP ID + secret key | Recommended for users in mainland China |
-| Microsoft Translator | Subscription key, cloud profile, optional region | China cloud requires an Azure China account |
-| Google Cloud | Cloud Translation API key | Availability depends on the user's network |
-
-> [!TIP]
-> Restrict each credential to translation, and set the provider's quota or
-> budget. Requests use only the service currently selected in Settings; the app
-> never silently falls back to another online provider.
-
-Credentials are entered in native secure prompts and stored in the macOS
-Keychain or Windows Credential Manager. They never pass through the WebView and
-are never written to the settings file.
-
-## Usage
-
-| Action | Result |
+| Source | Current behavior |
 | --- | --- |
-| Select text, then release the mouse | A translate button appears beside the selection |
-| Click the button | The translation opens in place |
-| Change the source language on the result | Retranslates with the language you chose |
-| Click the speaker icon | Speaks the text with a system voice |
-| Click the menu-bar icon | Opens the quick translate panel for typed text |
-| Open Vocabulary Study from the menu-bar menu | Reviews your wordbook, textbooks, connections, and practice queue |
-| Menu-bar right-click | Settings, UI language, enable/disable, start at login, quit |
+| Personal wordbook | Reuses the saved entry and can merge additional senses from compatible installed textbooks without a network call. |
+| Active textbook | Provides matching local translations before the online provider; a hit is promoted into the personal wordbook. |
+| Microsoft Translator | Adds dictionary alternatives and POS for eligible lookups in the app's supported dictionary language pairs, including English–Simplified Chinese. |
+| Google Cloud / Baidu | Provide a primary online translation. Additional senses can come from installed textbooks; the app does not scrape either provider's consumer website. |
+| Verified lexical data | Supplies curated word-part relationships. Unsupported words remain without verified roots; similar spelling alone is not presented as etymology. |
 
-Nothing is sent anywhere until you click the translate button. Selections in
-password and other secure fields are ignored. Eligible words and short lexical
-phrases, their successful translations, lookup counts, and submitted practice
-results are stored locally in the application's SQLite database. Sentence-like
-text is never added to the wordbook. The database is not exposed to the
-interface and is not synchronized to a cloud service.
+**Refresh meanings** is available in word details when Microsoft is selected and the language pair is supported. It is an explicit online action, not a background dictionary crawl. Existing saved meanings remain usable when enrichment is unavailable.
 
-Downloaded textbook files and related-word discovery stay on this device.
-Connections combine conservative root matching with shared meanings from the
-personal wordbook and compatible downloaded textbooks. The feature does not use
-an LLM or embeddings. Textbook attribution and source links remain visible in
-the interface.
+Counts beside a root or meaning represent **distinct matching words in compatible installed textbooks**, including inactive books, excluding the word itself. A word appearing in several books counts once and retains its origins. The related page uses the same filter as the count; a personal-wordbook match can annotate a result but does not add another textbook word to the count.
 
-## 隐私与本地学习记录
+> [!NOTE]
+> “All translations” means all available saved senses, not an exhaustive dictionary guarantee. Coverage varies by word, provider, language pair, and textbook. Older entries may have only one meaning, and unknown POS or roots are not invented. Connections use local structured data, not embeddings or an LLM.
 
-应用只有在你主动点击翻译后才会调用翻译服务。密码框等安全控件中的内容会被忽略。
-符合条件的单词和短词组、成功的翻译结果、查询次数以及已提交的练习结果会保存在本机的
-SQLite 数据库中，用于词汇本和复习排序；句子式文本不会写入词汇本。数据库不会暴露给
-界面层，也不会同步到云端。只有主动提交练习答案才会改变记忆分数，重复查询只会记录
-查询需求。下载的简体中文词书与相关词检索都保留在本机；翻译查询会依次使用个人词汇本、
-当前启用的下载词书和在线翻译服务。
+### Textbook shelf
+
+**Discover** includes an embedded English–Simplified Chinese starter and downloadable general-reference, everyday, academic, TOEIC, and business collections. Each collection shows its attribution and source link.
+
+In **Downloaded**, each card separates the title and word count from **Browse words**, **Make active / Deactivate**, and **Remove**. When enrichment is available, **Refresh word details** appears in a separate maintenance row. Unavailable legacy downloads cannot be refreshed through an invalid catalog target.
+
+![Downloaded textbooks with aligned learning actions, a separate refresh row, and a highlighted active dictionary](docs/screenshots/vocabulary-study-textbooks.jpg)
+
+One textbook can be active for lookup and practice at a time. Other installed books still contribute to compatible connections. Downloaded word counts can differ from source word-list sizes because only validated, usable dictionary matches are imported. Downloads and refreshes validate their artifacts; a failed refresh does not discard the existing book.
+
+## Privacy and data
+
+- **Local storage:** non-secret preferences live in the app's configuration directory as `settings.json`. Vocabulary, senses, saved examples, textbook entries, and practice state live in the app-data SQLite database, `vocabulary.sqlite3`. There is no built-in account sync.
+- **Selection access:** native accessibility APIs read selected text and may inspect surrounding text to extract a local example. Selection translation does not capture screenshots, run OCR, or automatically copy text to the clipboard.
+- **Network boundary:** an online translation sends the requested text and language direction to the chosen provider. Explicit meaning refresh, provider testing/credential validation, language-list retrieval, and textbook download/refresh can also use the network. The saved example is not included in translation providers' request payloads.
+- **Secrets:** credentials stay in native system-vault storage (macOS Keychain / Windows credential storage). The web interface receives credential status, not secret values.
+- **Local learning:** wordbook lookup, installed-textbook browsing, related-word matching, and practice use local data. Native services own database access and return the records needed by the interface.
 
 ## Development
 
-**Prerequisites:** Node.js 20+, [pnpm](https://pnpm.io) 10+, and a stable Rust
-toolchain. Everything else comes from the lockfiles.
+The application uses **Tauri 2 + Rust** for native services and **React 19 + TypeScript + Vite** for the interface. SQLite is bundled through `rusqlite`; no separate database server is needed.
+
+Prerequisites:
+
+- Node.js **22.12+ on the 22.x line**, or a compatible newer even-numbered release; pnpm **10**. Current Vite also accepts Node 20.19+, but not earlier Node 20 versions.
+- Stable Rust and the target platform's native toolchain: Xcode Command Line Tools on macOS, or MSVC C++ build tools and Windows SDK on Windows.
+- A WebView2 runtime to run the Windows app; the packaged installer can bootstrap it.
 
 ```sh
-pnpm install
+git clone https://github.com/Ldsystem/desktop-translator.git
+cd desktop-translator
+pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-| Command | Purpose |
+The development app starts in the menu bar / tray. `pnpm dev` alone starts the frontend server; native selection, storage, speech, and credential features need the Tauri host. macOS development uses the repository's signing runner; see [development signing](docs/macos-development-signing.md) for a stable local identity and permission troubleshooting.
+
+### Checks
+
+```sh
+pnpm check
+pnpm test:platform
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+```
+
+`pnpm check` runs TypeScript checks, frontend tests, and the frontend build. `pnpm test:platform` runs Rust tests on the current supported host. Native CI covers macOS and Windows, but interactive selection, multi-monitor, speech, and installer checks still need real-host validation. The [platform test matrix](docs/platform-test-matrix.md) contains recorded results and manual fixtures; historical entries are not proof that every current build has passed them.
+
+### Build a local package
+
+```sh
+pnpm tauri build
+```
+
+Host-architecture bundles are written under `src-tauri/target/release/bundle/`. Building does not replace an installed app automatically. For a universal macOS package:
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+pnpm tauri build --target universal-apple-darwin
+```
+
+Universal bundles go under `src-tauri/target/universal-apple-darwin/release/bundle/`. The [release workflow](.github/workflows/release.yml) packages and audits macOS and Windows artifacts; signing and publication are separate from a successful local build.
+
+### Code map
+
+| Path | Responsibility |
 | --- | --- |
-| `pnpm tauri dev` | Run the app against a live-reloading renderer |
-| `pnpm check` | Typecheck, frontend tests, and renderer build |
-| `pnpm test:platform` | Rust unit and integration tests |
-| `pnpm tauri build` | Produce a `.app` and `.dmg` on macOS |
-| `pnpm tauri build --bundles nsis` | Produce the Windows x64 NSIS setup exe |
+| [src/components/](src/components/) | Selection overlay, Quick Translate, settings, vocabulary cards, details, practice, and textbook views. |
+| [src/contracts/](src/contracts/) / [src-tauri/src/contracts.rs](src-tauri/src/contracts.rs) | Frontend/native request, response, validation, and error contracts. |
+| [src-tauri/src/services/](src-tauri/src/services/) | Translation providers, credentials, settings, vocabulary persistence, textbooks, and study logic. |
+| [src-tauri/src/platform/](src-tauri/src/platform/) | OS-specific selection, accessibility, window, and speech integration. |
+| [src-tauri/resources/](src-tauri/resources/) | Bundled textbook, verified lexical metadata, and provider capability data. |
+| [docs/](docs/) | Screenshots, platform qualification, and signing/distribution notes. |
 
-> [!TIP]
-> On macOS, run [`tools/macos/create-dev-signing-identity.sh`](tools/macos/create-dev-signing-identity.sh)
-> once. Development builds are otherwise ad-hoc signed with a new identity on
-> every rebuild, which makes macOS forget the Keychain and Accessibility grants
-> and prompt you again after each change. See
-> [`docs/macos-development-signing.md`](docs/macos-development-signing.md).
-
-### How it is put together
-
-A Rust core owns everything that touches the operating system; a React renderer
-owns only what is drawn.
-
-```
-src/                        React renderer (overlay, settings, quick panel)
-  contracts/ipc.ts          IPC contract, mirrored by src-tauri/src/contracts.rs
-  state/overlayMachine.ts   Overlay lifecycle reducer
-src-tauri/src/
-  coordinator.rs            Selection and overlay state machine
-  overlay.rs, placement.rs  Non-activating window and monitor-aware positioning
-  platform/macos, windows   Accessibility, pointer, speech and window adapters
-  services/                 Settings, credential vault, translation provider
-docs/                       Platform qualification and development notes
-```
-
-The renderer is never given provider credentials, never reads the selection itself, and
-communicates only through a narrow set of validated commands.
-
-## Acknowledgements
-
-Built with [Tauri 2](https://tauri.app), React and Rust. Online translation
-adapters support [Google Cloud](https://cloud.google.com/translate),
-[Baidu Translate](https://fanyi-api.baidu.com/), and
-[Microsoft Translator](https://learn.microsoft.com/azure/ai-services/translator/).
+Built with Tauri, React, Rust, and SQLite. Textbook sources include WikDict/Wiktionary/DBnary and the NGSL Project; collection-specific attribution remains visible in the app.

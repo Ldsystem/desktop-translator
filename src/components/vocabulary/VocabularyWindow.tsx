@@ -5,7 +5,9 @@ import type {
   PracticePreferences,
   PracticeOutcome,
   PracticeQuestion,
+  RelatedFilter,
   RelatedWord,
+  RelatedWordPage,
   RelatedVocabulary,
   StudyPracticeOutcome,
   StudyPracticeQuestion,
@@ -13,14 +15,16 @@ import type {
   TextbookEntryPage,
   TextbookPromotionResult,
   VocabularyEntry,
+  VocabularyDetail,
   VocabularyProvenance,
   UiLocale,
 } from "../../contracts/ipc";
 import { PartOfSpeechBadge, PracticeView } from "./PracticeView";
 import { RelatedWordsView } from "./RelatedWordsView";
 import { TextbooksView } from "./TextbooksView";
+import { VocabularyDetailView } from "./VocabularyDetailView";
 
-type StudyView = "library" | "related" | "practice" | "textbooks";
+type StudyView = "library" | "detail" | "related" | "practice" | "textbooks";
 
 interface VocabularyWindowProps {
   locale?: UiLocale;
@@ -50,6 +54,9 @@ export interface StudyApi {
   addTextbookEntry: (textbookEntryId: number) => Promise<TextbookPromotionResult>;
   listVocabularyProvenance: (entryId: number) => Promise<VocabularyProvenance[]>;
   listRelated: (entryId: number, seed?: number) => Promise<RelatedWord[]>;
+  getVocabularyDetail: (entryId: number) => Promise<VocabularyDetail>;
+  refreshVocabularyMeanings: (entryId: number) => Promise<VocabularyDetail>;
+  listFilteredRelated: (entryId: number, filter: RelatedFilter, offset: number, limit: number) => Promise<RelatedWordPage>;
   deleteVocabularyEntry: (entryId: number) => Promise<void>;
   correctVocabularySourceLanguage: (entryId: number, sourceLanguage: string) => Promise<VocabularyEntry>;
   getPracticePreferences: () => Promise<PracticePreferences>;
@@ -90,8 +97,8 @@ function PencilIcon() {
   return <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="m4 14.7.6-3.1L13 3.2a1.4 1.4 0 0 1 2 0l1.8 1.8a1.4 1.4 0 0 1 0 2l-8.4 8.4-3.1.6L4 14.7Z" /><path d="m11.8 4.4 3.8 3.8M4.7 11.7l3.6 3.6" /></svg>;
 }
 
-function BranchIcon() {
-  return <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><circle cx="5" cy="5" r="2" /><circle cx="15" cy="5" r="2" /><circle cx="15" cy="15" r="2" /><path d="M7 5h2a4 4 0 0 1 4 4v4M9 5h4" /></svg>;
+function DetailIcon() {
+  return <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="M5 3.5h10a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 15V5A1.5 1.5 0 0 1 5 3.5Z" /><path d="M7 7h6M7 10h6M7 13h4" /></svg>;
 }
 
 function lexicalTextClass(value: string) {
@@ -110,12 +117,13 @@ function EntryCard({
   entry: VocabularyEntry;
   locale: UiLocale;
   speechAvailability: Readonly<Record<string, boolean>>;
-  onOpen: () => void;
+  onOpen: (trigger: HTMLButtonElement) => void;
   onPronounce: (text: string, language: VocabularyEntry["effectiveSourceLanguage"]) => void;
   onManage: (trigger: HTMLButtonElement) => void;
   managed: boolean;
 }) {
   const zh = locale === "zh-CN";
+  const senses = entry.senses.length > 0 ? entry.senses : [{ id: -entry.id, text: entry.translatedText, partOfSpeech: entry.partOfSpeech, rank: 0, isPrimary: true }];
   const speak = (text: string, language: string) => {
     const availability = speechAvailability[language];
     const title = availability === true
@@ -131,8 +139,8 @@ function EntryCard({
     <article className="vocabulary-card">
       <RecallRuler entry={entry} locale={locale} />
       <div className="vocabulary-card__copy">
-        <span className="vocabulary-card__word-row">{speak(entry.sourceText, entry.effectiveSourceLanguage)}<span className="vocabulary-card__lexeme"><strong className={lexicalTextClass(entry.sourceText)}>{entry.sourceText}</strong><PartOfSpeechBadge value={entry.partOfSpeech} /></span></span>
-        <span className="vocabulary-card__word-row">{speak(entry.translatedText, entry.targetLanguage)}<span className={lexicalTextClass(entry.translatedText)}>{entry.translatedText}</span></span>
+        <span className="vocabulary-card__word-row">{speak(entry.sourceText, entry.effectiveSourceLanguage)}<span className="vocabulary-card__lexeme"><strong className={lexicalTextClass(entry.sourceText)}>{entry.sourceText}</strong></span></span>
+        <span className="vocabulary-card__senses">{senses.map((sense) => <span className="vocabulary-card__sense" key={sense.id}><span className={lexicalTextClass(sense.text)}>{sense.text}</span><PartOfSpeechBadge value={sense.partOfSpeech} /></span>)}</span>
         <small>{entry.effectiveSourceLanguage} → {entry.targetLanguage}</small>
       </div>
       <div className="vocabulary-card__meta">
@@ -142,7 +150,7 @@ function EntryCard({
         </span>
         <span className="vocabulary-card__actions">
           <button className="icon-button vocabulary-card__action" type="button" aria-label={zh ? `管理 ${entry.sourceText}` : `Manage ${entry.sourceText}`} title={zh ? "管理词汇" : "Manage word"} aria-controls={`word-manage-${entry.id}`} aria-expanded={managed} onClick={(event) => onManage(event.currentTarget)}><PencilIcon /></button>
-          <button className="icon-button vocabulary-card__action" type="button" aria-label={zh ? `查看 ${entry.sourceText} 的相关词` : `Open related words for ${entry.sourceText}`} title={zh ? "查找相关词" : "Find related words"} onClick={onOpen}><BranchIcon /></button>
+          <button className="icon-button vocabulary-card__action" data-detail-entry={entry.id} type="button" aria-label={zh ? `查看 ${entry.sourceText} 的详情` : `Open details for ${entry.sourceText}`} title={zh ? "词汇详情" : "Word details"} onClick={(event) => onOpen(event.currentTarget)}><DetailIcon /></button>
         </span>
       </div>
     </article>
@@ -173,6 +181,10 @@ export function VocabularyWindow({
   const searchInput = useRef<HTMLInputElement>(null);
   const nextWordButton = useRef<HTMLButtonElement>(null);
   const [relatedAnchor, setRelatedAnchor] = useState<VocabularyEntry>();
+  const [relatedFilter, setRelatedFilter] = useState<RelatedFilter>();
+  const [relatedFocusKey, setRelatedFocusKey] = useState<string>();
+  const detailEntryId = useRef<number | undefined>(undefined);
+  const libraryScroll = useRef(0);
   const [managedEntry, setManagedEntry] = useState<VocabularyEntry>();
   const [correction, setCorrection] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -188,6 +200,14 @@ export function VocabularyWindow({
   }, [view]);
 
   useEffect(() => setSelectedChoice(undefined), [question?.entryId]);
+
+  useEffect(() => {
+    if ((view === "detail" || view === "related") && relatedAnchor && !entries.some((entry) => entry.id === relatedAnchor.id)) {
+      setView("library");
+      setRelatedAnchor(undefined);
+      window.requestAnimationFrame(() => searchInput.current?.focus());
+    }
+  }, [entries, relatedAnchor, view]);
 
   useEffect(() => {
     if (outcome) nextWordButton.current?.focus();
@@ -250,7 +270,16 @@ export function VocabularyWindow({
   };
 
   const navigate = (next: StudyView) => {
+    if (view === "library" && next !== "library") libraryScroll.current = studyScroller.current?.scrollTop ?? 0;
     setView(next);
+    if (next === "library" || next === "practice" || next === "textbooks") {
+      setRelatedFilter(undefined);
+      setRelatedFocusKey(undefined);
+    }
+    if (next === "library") window.requestAnimationFrame(() => {
+      studyScroller.current?.scrollTo({ top: libraryScroll.current });
+      if (detailEntryId.current !== undefined) studyScroller.current?.querySelector<HTMLButtonElement>(`[data-detail-entry="${detailEntryId.current}"]`)?.focus();
+    });
     if (next === "practice" && !studyApi) onStartPractice();
   };
 
@@ -289,12 +318,15 @@ export function VocabularyWindow({
             ) : entries.length === 0 ? (
               <div className="study-empty"><strong>{zh ? "翻译一个单词即可开始。" : "Translate a word to begin."}</strong><span>{zh ? "符合条件的单词和短语会自动出现在这里。" : "Eligible words and short phrases will appear here automatically."}</span></div>
             ) : (
-              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} locale={locale} speechAvailability={speechAvailability} onPronounce={onPronounce} managed={managedEntry?.id === entry.id} onManage={(trigger) => { manageTrigger.current = trigger; setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { setRelatedAnchor(entry); onSelectEntry(entry.id); setView("related"); }} />)}</div>
+              <div className="vocabulary-grid">{entries.map((entry) => <EntryCard key={entry.id} entry={entry} locale={locale} speechAvailability={speechAvailability} onPronounce={onPronounce} managed={managedEntry?.id === entry.id} onManage={(trigger) => { manageTrigger.current = trigger; setManagedEntry(entry); setCorrection(entry.effectiveSourceLanguage); setConfirmDelete(false); setManageError(undefined); }} onOpen={() => { detailEntryId.current = entry.id; libraryScroll.current = studyScroller.current?.scrollTop ?? 0; setRelatedAnchor(entry); setRelatedFilter(undefined); onSelectEntry(entry.id); setView("detail"); }} />)}</div>
             )}
           </>
         )}
 
-        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} revision={revision} locale={locale} onBack={() => navigate("library")} />}
+        {view === "detail" && relatedAnchor && studyApi && <VocabularyDetailView entry={relatedAnchor} api={studyApi} revision={revision} locale={locale} speechAvailable={speechAvailability[relatedAnchor.effectiveSourceLanguage]} onPronounce={onPronounce} restoreFocusKey={relatedFocusKey} onBack={() => navigate("library")} onOpenRelated={(filter, focusKey) => { setRelatedFocusKey(focusKey); setRelatedFilter(filter); setView("related"); }} />}
+        {view === "detail" && !studyApi && <div className="study-empty"><strong>{zh ? "词汇详情暂不可用。" : "Word details are unavailable."}</strong></div>}
+
+        {view === "related" && studyApi && <RelatedWordsView anchor={relatedAnchor} api={studyApi} revision={revision} locale={locale} filter={relatedFilter} onBack={() => setView("detail")} />}
 
         {view === "related" && !studyApi && (
           <>

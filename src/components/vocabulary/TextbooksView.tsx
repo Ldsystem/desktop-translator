@@ -45,6 +45,7 @@ function message(error: unknown, fallback: string) {
 export function TextbooksView({ api, locale = "en" }: TextbooksViewProps) {
   const zh = locale === "zh-CN";
   const tr = (english: string, chinese: string) => zh ? chinese : english;
+  const refreshUnavailableMessage = tr("This book remains usable. Its verified source package is unavailable for refresh.", "此词书仍可使用，但缺少可验证的原始安装包，暂不能刷新。");
   const [tab, setTab] = useState<ShelfTab>("discover");
   const [catalog, setCatalog] = useState<TextbookCatalogItem[]>([]);
   const [downloaded, setDownloaded] = useState<InstalledTextbook[]>([]);
@@ -146,7 +147,8 @@ export function TextbooksView({ api, locale = "en" }: TextbooksViewProps) {
   };
 
   if (openBook) {
-    const refreshItem = openBook.metadataRefreshAvailable
+    const refreshUnavailable = openBook.lexicalRefreshStatus === "unavailable-legacy";
+    const refreshItem = !refreshUnavailable && (openBook.metadataRefreshAvailable || openBook.lexicalRefreshStatus === "exact")
       ? catalog.find((item) => item.id === openBook.id)
       : undefined;
     const pageStart = entryTotal === 0 ? 0 : entryOffset + 1;
@@ -167,7 +169,8 @@ export function TextbooksView({ api, locale = "en" }: TextbooksViewProps) {
             </label>
           </form>
         </header>
-        {refreshItem && <div className="study-notice" role="status"><span>{tr("This download predates word details such as parts of speech.", "此版本缺少词性等词汇详情。")}</span><button className="button button--secondary" type="button" disabled={busyBook === openBook.id} onClick={() => install(refreshItem)}>{busyBook === openBook.id ? tr("Refreshing…", "更新中…") : tr("Add parts of speech", "补充词性")}</button></div>}
+        {refreshItem && <div className="study-notice" role="status"><span>{tr("This download can be refreshed with richer meanings and parts of speech.", "此词书可刷新，以补充更多释义和词性。")}</span><button className="button button--secondary" type="button" disabled={busyBook === openBook.id} onClick={() => install(refreshItem)}>{busyBook === openBook.id ? tr("Refreshing…", "更新中…") : tr("Refresh word details", "刷新词汇详情")}</button></div>}
+        {refreshUnavailable && <div className="study-notice" role="status"><span>{refreshUnavailableMessage}</span><button className="button button--secondary" type="button" disabled>{tr("Refresh word details", "刷新词汇详情")}</button></div>}
         {entryError && <div className="study-notice study-notice--error" role="alert">{entryError} <button className="text-button" type="button" onClick={() => loadEntries(openBook, entrySearch, entryOffset)}>{tr("Try again", "重试")}</button></div>}
         {entryLoading ? (
           <div className="study-empty" role="status"><strong>{tr("Opening this textbook…", "正在打开词书…")}</strong><span>{tr("Reading its local index.", "正在读取本地索引。")}</span></div>
@@ -225,7 +228,8 @@ export function TextbooksView({ api, locale = "en" }: TextbooksViewProps) {
             <div className="textbook-grid">{catalog.map((item) => {
               const installed = installedById.get(item.id);
               const update = installed && installed.version !== item.version;
-              const metadataRefresh = installed?.metadataRefreshAvailable === true;
+              const refreshUnavailable = installed?.lexicalRefreshStatus === "unavailable-legacy";
+              const metadataRefresh = !refreshUnavailable && (installed?.metadataRefreshAvailable === true || installed?.lexicalRefreshStatus === "exact");
               const details = presentation(item, zh);
               return <article className="textbook-volume" key={item.id}>
                 <span className="textbook-volume__spine" aria-hidden="true">{details.scope}</span>
@@ -240,8 +244,9 @@ export function TextbooksView({ api, locale = "en" }: TextbooksViewProps) {
                   </div>
                   <p className="textbook-volume__credit">{item.attribution}</p>
                   <div className="textbook-volume__source"><small>{item.license} · {item.version}</small><a href={item.sourceUrl} target="_blank" rel="noreferrer">{tr("View source", "查看来源")}</a></div>
+                  {refreshUnavailable && <p className="textbook-volume__description">{refreshUnavailableMessage}</p>}
                 </div>
-                <button className="button button--primary" type="button" disabled={busyBook === item.id || Boolean(installed && !update && !metadataRefresh)} onClick={() => install(item)}>{busyBook === item.id ? tr("Downloading…", "下载中…") : metadataRefresh ? tr("Add parts of speech", "补充词性") : update ? tr("Update", "更新") : installed ? tr("Downloaded", "已下载") : tr("Download", "下载")}</button>
+                <button className="button button--primary" type="button" disabled={refreshUnavailable || busyBook === item.id || Boolean(installed && !update && !metadataRefresh)} onClick={() => install(item)}>{busyBook === item.id ? tr("Downloading…", "下载中…") : metadataRefresh || refreshUnavailable ? tr("Refresh word details", "刷新词汇详情") : update ? tr("Update", "更新") : installed ? tr("Downloaded", "已下载") : tr("Download", "下载")}</button>
               </article>;
             })}</div>
           )}
@@ -251,15 +256,20 @@ export function TextbooksView({ api, locale = "en" }: TextbooksViewProps) {
           {downloadedError && <div className="study-notice study-notice--error" role="alert">{downloadedError}</div>}
           {downloadedLoading ? <div className="study-empty" role="status"><strong>{tr("Reading your shelf…", "正在读取词书架…")}</strong></div> : downloaded.length === 0 ? <div className="study-empty"><strong>{tr("No downloaded textbooks yet.", "尚未下载词书。")}</strong><span>{tr("Open Discover to add a curated local reference.", "前往“发现”添加精选本地词书。")}</span><button className="button button--secondary study-empty__action" type="button" onClick={() => setTab("discover")}>{tr("Browse Discover", "浏览发现")}</button></div> : (
             <div className="downloaded-list">{downloaded.map((book) => {
-              const refreshItem = book.metadataRefreshAvailable ? catalog.find((item) => item.id === book.id) : undefined;
-              return <article className={book.active ? "downloaded-book is-active" : "downloaded-book"} key={book.id}>
+              const refreshUnavailable = book.lexicalRefreshStatus === "unavailable-legacy";
+              const refreshItem = !refreshUnavailable && (book.metadataRefreshAvailable || book.lexicalRefreshStatus === "exact") ? catalog.find((item) => item.id === book.id) : undefined;
+              return <article className={book.active ? "downloaded-book is-active" : "downloaded-book"} key={book.id} aria-label={book.title}>
               <div className="downloaded-book__identity"><span aria-hidden="true">Aa</span><div><small>{book.active ? tr("Active textbook", "当前词书") : tr("Downloaded", "已下载")}</small><h3>{book.title}</h3><p>{book.sourceLanguage.toUpperCase()} → {book.targetLanguage.toUpperCase()} · {book.entryCount.toLocaleString()} {tr("words", "词")}</p></div></div>
-              <div className="downloaded-book__actions">
+              <div className="downloaded-book__footer">
+              <div className="downloaded-book__actions" role="group" aria-label={tr(`Study ${book.title}`, `学习《${book.title}》`)}>
                 <button className="button button--secondary" type="button" onClick={() => { setEntrySearch(""); loadEntries(book, "", 0); }}>{tr("Browse words", "浏览词汇")}</button>
-                {refreshItem && <button className="button button--secondary" type="button" disabled={busyBook === book.id} onClick={() => install(refreshItem)}>{busyBook === book.id ? tr("Refreshing…", "更新中…") : tr("Add parts of speech", "补充词性")}</button>}
                 <button className="button button--secondary" type="button" disabled={busyBook === book.id} onClick={() => updateShelf(() => api.setActiveTextbook(book.active ? undefined : book.id), book.id)}>{book.active ? tr("Deactivate", "停用") : tr("Make active", "设为当前")}</button>
+              </div>
+              <div className="downloaded-book__remove">
                 {confirmRemove === book.id ? <span className="inline-confirm"><span>{tr("Remove local copy?", "移除本地副本？")}</span><button className="text-button is-danger" type="button" onClick={() => updateShelf(() => api.removeTextbook(book.id), book.id).then((removed) => { if (removed) setConfirmRemove(undefined); })}>{tr("Remove", "移除")}</button><button className="text-button" type="button" onClick={() => setConfirmRemove(undefined)}>{tr("Cancel", "取消")}</button></span> : <button className="text-button is-danger" type="button" onClick={() => setConfirmRemove(book.id)}>{tr("Remove", "移除")}</button>}
               </div>
+              </div>
+              {(refreshItem || refreshUnavailable) && <div className="downloaded-book__maintenance"><span>{refreshUnavailable ? refreshUnavailableMessage : tr("Richer meanings and parts of speech available", "可补充更多释义和词性")}</span><button className="text-button" type="button" disabled={refreshUnavailable || busyBook === book.id} onClick={() => { if (refreshItem) void install(refreshItem); }}>{busyBook === book.id ? tr("Refreshing…", "更新中…") : tr("Refresh word details", "刷新词汇详情")}</button></div>}
             </article>})}</div>
           )}
         </div>
