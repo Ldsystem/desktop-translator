@@ -1,0 +1,3 @@
+# These embedded artifacts are verified by exact byte length and SHA-256.
+# Keep Git checkout from changing their bytes on Windows.
+/src-tauri/resources/lexicon/*.json text eol=lf
