@@ -815,7 +815,7 @@ impl MicrosoftTranslationProvider {
         target_language: &str,
         text: &str,
     ) -> Vec<TranslationSense> {
-        if text.chars().count() > 100 {
+        if text.chars().count() > 100 || !super::vocabulary::is_vocabulary_eligible(text) {
             return Vec::new();
         }
         let source = microsoft_dictionary_language(source_language);
@@ -1128,6 +1128,64 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn dictionary_lookup_does_not_send_sentence_or_unsupported_pair_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("proxy");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let directory = tempfile::tempdir().expect("settings directory");
+        let provider = MicrosoftTranslationProvider {
+            client: Client::builder()
+                .proxy(
+                    reqwest::Proxy::all(format!("http://{}", listener.local_addr().unwrap()))
+                        .unwrap(),
+                )
+                .timeout(Duration::from_millis(50))
+                .build()
+                .unwrap(),
+            credentials: Arc::new(ProviderCredentialStore::new()),
+            settings: Arc::new(
+                crate::services::settings::JsonSettingsStore::with_application_defaults(
+                    directory.path().join("settings.json"),
+                ),
+            ),
+        };
+        for (text, target) in [
+            ("This is a sentence.", "zh-CN"),
+            ("one two three four five six", "zh-CN"),
+            ("hello\nworld", "zh-CN"),
+            ("hello", "ja"),
+        ] {
+            assert!(provider
+                .dictionary_senses(
+                    "synthetic",
+                    MicrosoftCloud::Global,
+                    None,
+                    "en",
+                    target,
+                    text
+                )
+                .await
+                .is_empty());
+            assert!(
+                listener.accept().is_err(),
+                "ineligible request reached the proxy: {text}"
+            );
+        }
+        // Positive control: an eligible short phrase reaches the same network boundary.
+        assert!(provider
+            .dictionary_senses(
+                "synthetic",
+                MicrosoftCloud::Global,
+                None,
+                "en",
+                "zh-CN",
+                "take off"
+            )
+            .await
+            .is_empty());
+        assert!(listener.accept().is_ok());
+    }
 
     #[test]
     fn microsoft_dictionary_parses_ranked_distinct_senses_and_pos() {

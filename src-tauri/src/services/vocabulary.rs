@@ -92,6 +92,20 @@ impl VocabularyStore {
                 .map_err(storage_error)?;
         }
         migrate_senses(&mut connection)?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let ids = transaction
+            .prepare(
+                "SELECT DISTINCT vocabulary_entry_id FROM vocabulary_senses WHERE pos_key = ''",
+            )
+            .map_err(storage_error)?
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        for id in ids {
+            normalize_persisted_sense_limits(&transaction, id)?;
+        }
+        transaction.commit().map_err(storage_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -1109,7 +1123,9 @@ fn persist_senses(
                 "INSERT INTO vocabulary_senses (
                    vocabulary_entry_id, display_text, normalized_text, pos_key, rank,
                    is_primary, confidence, created_at_epoch_ms, updated_at_epoch_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now') * 1000, strftime('%s','now') * 1000)
+                 ) VALUES (?1, ?2, ?3, ?4, ?5,
+                   ?6 AND NOT EXISTS (SELECT 1 FROM vocabulary_senses WHERE vocabulary_entry_id = ?1 AND is_primary = 1),
+                   ?7, strftime('%s','now') * 1000, strftime('%s','now') * 1000)
                  ON CONFLICT(vocabulary_entry_id, normalized_text, pos_key) DO UPDATE SET
                    display_text = excluded.display_text,
                    rank = min(vocabulary_senses.rank, excluded.rank),
@@ -1131,10 +1147,70 @@ fn persist_senses(
     Ok(())
 }
 
-fn normalize_persisted_sense_limits(
+// The caller owns the transaction. Keep every origin when an unlabeled legacy
+// sense acquires authoritative POS; other known POS senses remain distinct.
+pub(super) fn coalesce_unknown_senses(
     connection: &Connection,
     entry_id: i64,
 ) -> Result<(), AppError> {
+    let pairs = {
+        let mut statement = connection.prepare(
+            "SELECT unknown.id, unknown.is_primary,
+                    (SELECT known.id FROM vocabulary_senses known
+                     WHERE known.vocabulary_entry_id = unknown.vocabulary_entry_id
+                       AND known.normalized_text = unknown.normalized_text AND known.pos_key != ''
+                     ORDER BY known.is_primary DESC, known.rank, known.confidence DESC, known.pos_key, known.id LIMIT 1)
+             FROM vocabulary_senses unknown
+             WHERE unknown.vocabulary_entry_id = ?1 AND unknown.pos_key = ''"
+        ).map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![entry_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        rows
+    };
+    for (unknown, was_primary, known) in pairs {
+        let Some(known) = known else { continue };
+        connection.execute(
+            "INSERT INTO vocabulary_sense_origins
+               (vocabulary_sense_id, origin_kind, source_id, source_version, evidence_key, source_rank, confidence)
+             SELECT ?2, origin_kind, source_id, source_version, evidence_key, source_rank, confidence
+             FROM vocabulary_sense_origins WHERE vocabulary_sense_id = ?1
+             ON CONFLICT(vocabulary_sense_id, origin_kind, source_id, source_version, evidence_key)
+             DO UPDATE SET source_rank = coalesce(min(source_rank, excluded.source_rank), source_rank, excluded.source_rank),
+                           confidence = coalesce(max(confidence, excluded.confidence), confidence, excluded.confidence)",
+            params![unknown, known],
+        ).map_err(storage_error)?;
+        connection
+            .execute(
+                "DELETE FROM vocabulary_senses WHERE id = ?1",
+                params![unknown],
+            )
+            .map_err(storage_error)?;
+        if was_primary {
+            connection
+                .execute(
+                    "UPDATE vocabulary_senses SET is_primary = 1, rank = 0 WHERE id = ?1",
+                    params![known],
+                )
+                .map_err(storage_error)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn normalize_persisted_sense_limits(
+    connection: &Connection,
+    entry_id: i64,
+) -> Result<(), AppError> {
+    coalesce_unknown_senses(connection, entry_id)?;
     let count = connection
         .query_row(
             "SELECT count(*) FROM vocabulary_senses WHERE vocabulary_entry_id = ?1",
@@ -1185,17 +1261,6 @@ fn normalize_senses(
     primary_pos: Option<PartOfSpeech>,
     candidates: &[TranslationSense],
 ) -> Vec<TranslationSense> {
-    let mut result = vec![TranslationSense {
-        text: primary_text.trim().to_owned(),
-        part_of_speech: primary_pos,
-        rank: 0,
-        is_primary: true,
-        confidence: None,
-    }];
-    let mut seen = HashSet::from([(
-        normalize_text(primary_text),
-        primary_pos.map(PartOfSpeech::as_str).unwrap_or(""),
-    )]);
     let mut ordered = candidates.to_vec();
     ordered.sort_by(|left, right| {
         left.rank
@@ -1207,10 +1272,39 @@ fn normalize_senses(
                     .total_cmp(&left.confidence.unwrap_or(0.0))
             })
             .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.part_of_speech.cmp(&right.part_of_speech))
     });
+    let primary_normalized = normalize_text(primary_text);
+    let primary_pos = primary_pos.or_else(|| {
+        ordered
+            .iter()
+            .find(|sense| {
+                sense.part_of_speech.is_some() && normalize_text(&sense.text) == primary_normalized
+            })
+            .and_then(|sense| sense.part_of_speech)
+    });
+    let known_texts = ordered
+        .iter()
+        .filter(|sense| sense.part_of_speech.is_some())
+        .map(|sense| normalize_text(&sense.text))
+        .collect::<HashSet<_>>();
+    let mut result = vec![TranslationSense {
+        text: primary_text.trim().to_owned(),
+        part_of_speech: primary_pos,
+        rank: 0,
+        is_primary: true,
+        confidence: None,
+    }];
+    let mut seen = HashSet::from([(
+        primary_normalized,
+        primary_pos.map(PartOfSpeech::as_str).unwrap_or(""),
+    )]);
     let mut discarded = 0_usize;
     for mut sense in ordered {
         let normalized = normalize_text(&sense.text);
+        if sense.part_of_speech.is_none() && known_texts.contains(&normalized) {
+            continue;
+        }
         let pos = sense.part_of_speech.map(PartOfSpeech::as_str).unwrap_or("");
         if normalized.is_empty() || !seen.insert((normalized, pos)) {
             continue;
@@ -2247,5 +2341,55 @@ mod tests {
             )
             .expect("migration version");
         assert_eq!(versions, 2);
+    }
+
+    #[test]
+    fn enrichment_coalesces_unknown_primary_preserving_known_pos_origins_and_learning() {
+        let store = VocabularyStore::in_memory().unwrap();
+        let request = request_to(1, "record", "zh-CN");
+        let result = TranslationResult {
+            selection_id: 1,
+            translated_text: "记录".into(),
+            detected_source_language: Some("en".into()),
+            effective_source_language: "en".into(),
+            target_language: "zh-CN".into(),
+            part_of_speech: None,
+            senses: vec![],
+        };
+        store.insert_miss(&request, &result, 1).unwrap();
+        let before = store.list(None, 1).unwrap().remove(0);
+        store.connection.lock().unwrap().execute("INSERT INTO vocabulary_sense_origins (vocabulary_sense_id, origin_kind, source_id, evidence_key) VALUES (?1, 'personal', 'test', 'unknown-primary')", params![before.senses[0].id]).unwrap();
+        let additions = vec![
+            TranslationSense {
+                text: "记录".into(),
+                part_of_speech: Some(PartOfSpeech::Verb),
+                rank: 1,
+                is_primary: false,
+                confidence: Some(0.9),
+            },
+            TranslationSense {
+                text: "记录".into(),
+                part_of_speech: Some(PartOfSpeech::Noun),
+                rank: 2,
+                is_primary: false,
+                confidence: Some(0.8),
+            },
+        ];
+        for _ in 0..2 {
+            let senses = store
+                .merge_senses_for_entry("record", &result, &additions, 2)
+                .unwrap();
+            assert_eq!(senses.len(), 2);
+            assert_eq!(senses[0].part_of_speech, Some(PartOfSpeech::Verb));
+            assert!(senses[0].is_primary);
+            assert_eq!(senses[1].part_of_speech, Some(PartOfSpeech::Noun));
+        }
+        let after = store.list(None, 2).unwrap().remove(0);
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.translated_text, before.translated_text);
+        assert_eq!(after.lookup_count, before.lookup_count);
+        assert_eq!(after.recall_score, before.recall_score);
+        let origins: i64 = store.connection.lock().unwrap().query_row("SELECT count(*) FROM vocabulary_sense_origins o JOIN vocabulary_senses s ON s.id = o.vocabulary_sense_id WHERE o.source_id = 'test' AND s.pos_key = 'verb' AND s.is_primary = 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(origins, 1);
     }
 }

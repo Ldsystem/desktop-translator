@@ -83,6 +83,18 @@ struct CatalogDefinition {
     scope: CatalogScope,
 }
 
+enum DownloadScope {
+    Catalog(CatalogScope),
+    // Existing rows are the already-verified scope. Refresh must not download
+    // a mutable catalog's newer word list or silently expand the installed book.
+    Installed(HashSet<String>),
+}
+
+struct DownloadPlan {
+    catalog: TextbookCatalogItem,
+    scope: DownloadScope,
+}
+
 fn catalog_item(
     id: &str,
     title: &str,
@@ -270,23 +282,88 @@ impl TextbookStore {
         self.install_verified_bytes(catalog, &bytes, now_ms)
     }
 
-    /// Downloads only a compiled catalog item with bounded native networking and staging.
+    fn download_plan(&self, catalog_id: &str) -> Result<DownloadPlan, AppError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| internal("Textbook database lock failed"))?;
+        let stored = connection
+            .query_row(
+                "SELECT id, title, source_language, target_language, version, download_url,
+                    expected_bytes, sha256, license, attribution, source_url
+             FROM textbooks WHERE id = ?1",
+                params![catalog_id],
+                |row| {
+                    Ok(TextbookCatalogItem {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        source_language: row.get(2)?,
+                        target_language: row.get(3)?,
+                        version: row.get(4)?,
+                        download_url: row.get(5)?,
+                        expected_bytes: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                        sha256: row.get(7)?,
+                        license: row.get(8)?,
+                        attribution: row.get(9)?,
+                        source_url: row.get(10)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(storage_error)?;
+        if let Some(catalog) = stored {
+            validate_catalog(&catalog)?;
+            let words = connection
+                .prepare("SELECT normalized_source FROM textbook_entries WHERE textbook_id = ?1")
+                .map_err(storage_error)?
+                .query_map(params![catalog_id], |row| row.get::<_, String>(0))
+                .map_err(storage_error)?
+                .collect::<Result<HashSet<_>, _>>()
+                .map_err(storage_error)?;
+            if words.is_empty() {
+                return Err(invalid_package());
+            }
+            return Ok(DownloadPlan {
+                catalog,
+                scope: DownloadScope::Installed(words),
+            });
+        }
+        let definition = catalog_definitions()
+            .into_iter()
+            .find(|definition| definition.item.id == catalog_id)
+            .ok_or_else(|| internal("Textbook catalog item was not found"))?;
+        validate_catalog(&definition.item)?;
+        Ok(DownloadPlan {
+            catalog: definition.item,
+            scope: DownloadScope::Catalog(definition.scope),
+        })
+    }
+
+    /// New installs use the compiled catalog; refreshes use the exact stored pin.
     pub async fn download_and_install(
         &self,
         catalog_id: &str,
         staging_directory: &Path,
         now_ms: u64,
     ) -> Result<InstalledTextbook, AppError> {
-        let definition = catalog_definitions()
-            .into_iter()
-            .find(|definition| definition.item.id == catalog_id)
-            .ok_or_else(|| internal("Textbook catalog item was not found"))?;
-        let catalog = definition.item;
-        if catalog.id == BUNDLED_STARTER_ID {
-            self.ensure_bundled_starter(now_ms)?;
-            return self
-                .get_installed(BUNDLED_STARTER_ID)?
-                .ok_or_else(|| internal("Bundled textbook could not be installed"));
+        let plan = self.download_plan(catalog_id)?;
+        let catalog = plan.catalog;
+        if catalog.id == BUNDLED_STARTER_ID
+            && catalog.expected_bytes == BUNDLED_STARTER_BYTES.len() as u64
+            && catalog
+                .sha256
+                .eq_ignore_ascii_case(&format!("{:x}", Sha256::digest(BUNDLED_STARTER_BYTES)))
+        {
+            let first_install = matches!(&plan.scope, DownloadScope::Catalog(_));
+            let scope = match &plan.scope {
+                DownloadScope::Installed(words) => Some(words),
+                _ => None,
+            };
+            self.install_verified_bytes_scoped(&catalog, BUNDLED_STARTER_BYTES, scope, now_ms)?;
+            if first_install {
+                self.ensure_bundled_starter(now_ms)?;
+            }
+            return self.get_installed(&catalog.id)?.ok_or_else(invalid_package);
         }
         validate_catalog(&catalog)?;
         let client = reqwest::Client::builder()
@@ -304,9 +381,10 @@ impl TextbookStore {
             staging_directory,
         )
         .await?;
-        let scope = match definition.scope {
-            CatalogScope::All => None,
-            CatalogScope::Words(artifact) => {
+        let scope = match plan.scope {
+            DownloadScope::Installed(words) => Some(words),
+            DownloadScope::Catalog(CatalogScope::All) => None,
+            DownloadScope::Catalog(CatalogScope::Words(artifact)) => {
                 validate_scope_artifact(&artifact)?;
                 let scope_bytes = download_exact(
                     &client,
@@ -342,7 +420,7 @@ impl TextbookStore {
             return Err(invalid_package());
         }
         let digest = format!("{:x}", Sha256::digest(bytes));
-        if digest != catalog.sha256 {
+        if !digest.eq_ignore_ascii_case(&catalog.sha256) {
             return Err(invalid_package());
         }
         let mut private_artifact = tempfile::NamedTempFile::new().map_err(|_| invalid_package())?;
@@ -392,7 +470,11 @@ impl TextbookStore {
                installed_at_epoch_ms = excluded.installed_at_epoch_ms,
                entry_count = excluded.entry_count,
                import_revision = excluded.import_revision,
-               catalog_revision = excluded.catalog_revision,
+               catalog_revision = CASE
+                 WHEN textbooks.download_url = excluded.download_url
+                  AND textbooks.expected_bytes = excluded.expected_bytes
+                  AND lower(textbooks.sha256) = lower(excluded.sha256)
+                 THEN textbooks.catalog_revision ELSE excluded.catalog_revision END,
                lexical_refresh_status = excluded.lexical_refresh_status",
             params![
                 catalog.id,
@@ -565,13 +647,6 @@ impl TextbookStore {
             }
         }
         if table_has_column(&tx, "vocabulary_senses", "normalized_text")? {
-            tx.execute(
-                "UPDATE vocabulary_senses
-                 SET pos_key = coalesce((SELECT v.part_of_speech FROM vocabulary_entries v WHERE v.id = vocabulary_senses.vocabulary_entry_id), pos_key)
-                 WHERE is_primary = 1 AND pos_key = ''",
-                [],
-            )
-            .map_err(storage_error)?;
             tx.execute(
                 "INSERT OR IGNORE INTO vocabulary_senses (
                    vocabulary_entry_id, display_text, normalized_text, pos_key, rank,
@@ -1391,22 +1466,42 @@ fn verified_scope_words(
 
 fn validate_catalog(catalog: &TextbookCatalogItem) -> Result<(), AppError> {
     catalog.validate()?;
-    if catalog.expected_bytes > MAX_ARTIFACT_BYTES {
-        return Err(invalid_package());
-    }
-    let url = Url::parse(&catalog.download_url).map_err(|_| invalid_package())?;
-    if url.scheme() != "https"
-        || url.host_str() != Some(WIKDICT_HOST)
-        || url.username() != ""
-        || url.password().is_some()
-        || url.port().is_some()
-    {
+    if !valid_package_pin(
+        &catalog.download_url,
+        catalog.expected_bytes,
+        &catalog.sha256,
+    ) {
         return Err(invalid_package());
     }
     Ok(())
 }
 
+fn valid_package_pin(download_url: &str, expected_bytes: u64, sha256: &str) -> bool {
+    expected_bytes > 0
+        && expected_bytes <= MAX_ARTIFACT_BYTES
+        && sha256.len() == 64
+        && sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && Url::parse(download_url).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str() == Some(WIKDICT_HOST)
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.port().is_none()
+                && url.fragment().is_none()
+        })
+}
+
 fn normalize_vocabulary_sense_limits(connection: &Connection) -> Result<(), AppError> {
+    let ids = connection
+        .prepare("SELECT DISTINCT vocabulary_entry_id FROM vocabulary_senses WHERE pos_key = ''")
+        .map_err(storage_error)?
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+    for id in ids {
+        super::vocabulary::coalesce_unknown_senses(connection, id)?;
+    }
     let overflow = {
         let mut statement = connection
             .prepare(
@@ -1516,12 +1611,23 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
             return Err(invalid_package());
         }
         let (display, originals, aliases) = normalized_zh_cn(&converter, &translated_text)?;
-        let part_of_speech = lexical_parts
+        let parts = lexical_parts
             .get(&(source_text.clone(), translated_text.clone()))
-            .cloned();
+            .cloned()
+            .unwrap_or_default();
+        let part_of_speech = parts.first().copied();
         let row_senses = normalized_senses(&converter, &translated_text)
             .into_iter()
-            .map(|text| (text, part_of_speech))
+            .flat_map(|text| {
+                if parts.is_empty() {
+                    vec![(text, None)]
+                } else {
+                    parts
+                        .iter()
+                        .map(|part| (text.clone(), Some(*part)))
+                        .collect()
+                }
+            })
             .collect::<Vec<_>>();
         if let Some(existing) = imported.get_mut(&key) {
             append_unique(&mut existing.original_translations, originals);
@@ -1556,7 +1662,7 @@ fn read_wikdict(path: &Path) -> Result<Vec<ImportedEntry>, AppError> {
 
 fn read_lexical_parts(
     source: &Connection,
-) -> Result<HashMap<(String, String), PartOfSpeech>, AppError> {
+) -> Result<HashMap<(String, String), Vec<PartOfSpeech>>, AppError> {
     let columns = source
         .prepare("PRAGMA table_info(translation)")
         .and_then(|mut statement| {
@@ -1606,7 +1712,7 @@ fn read_lexical_parts(
             ))
         })
         .map_err(|_| invalid_package())?;
-    let mut ranked = HashMap::<(String, String), LexicalCandidate>::new();
+    let mut ranked = HashMap::<(String, String), Vec<LexicalCandidate>>::new();
     for row in rows {
         let (source_text, translated_text, lexentry, score, is_good, importance) =
             row.map_err(|_| invalid_package())?;
@@ -1620,16 +1726,38 @@ fn read_lexical_parts(
             importance,
         };
         let key = (clean(&source_text), clean(&translated_text));
-        let replace = ranked
-            .get(&key)
-            .is_none_or(|current| lexical_candidate_precedes(&candidate, current));
-        if replace {
-            ranked.insert(key, candidate);
+        let parts = ranked.entry(key).or_default();
+        if let Some(current) = parts
+            .iter_mut()
+            .find(|current| current.part_of_speech == part_of_speech)
+        {
+            if lexical_candidate_precedes(&candidate, current) {
+                *current = candidate;
+            }
+        } else {
+            parts.push(candidate);
         }
     }
     Ok(ranked
         .into_iter()
-        .map(|(key, candidate)| (key, candidate.part_of_speech))
+        .map(|(key, mut parts)| {
+            parts.sort_by(|left, right| {
+                if lexical_candidate_precedes(left, right) {
+                    std::cmp::Ordering::Less
+                } else if lexical_candidate_precedes(right, left) {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            });
+            (
+                key,
+                parts
+                    .into_iter()
+                    .map(|candidate| candidate.part_of_speech)
+                    .collect(),
+            )
+        })
         .collect())
 }
 
@@ -1896,10 +2024,6 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
             "ALTER TABLE textbooks ADD COLUMN catalog_revision TEXT NOT NULL DEFAULT '';
              ALTER TABLE textbooks ADD COLUMN lexical_refresh_status TEXT NOT NULL DEFAULT 'exact'
                CHECK(lexical_refresh_status IN ('exact', 'enriched', 'unavailable-legacy'));
-             UPDATE textbooks SET lexical_refresh_status = CASE
-               WHEN download_url LIKE 'https://%' AND expected_bytes > 0
-                    AND length(sha256) = 64 THEN 'exact'
-               ELSE 'unavailable-legacy' END;
              CREATE TABLE textbook_entry_senses (
                id INTEGER PRIMARY KEY,
                textbook_entry_id INTEGER NOT NULL REFERENCES textbook_entries(id) ON DELETE CASCADE,
@@ -1938,6 +2062,27 @@ fn migrate(connection: &Connection) -> Result<(), AppError> {
         )
         .map_err(storage_error)?;
         tx.commit().map_err(storage_error)?;
+    }
+    // Reconcile older prerelease v5 databases as well as newly migrated v4 rows.
+    // No networking and no changes to entries, pins, active state, or provenance.
+    let pins = connection
+        .prepare("SELECT id, download_url, expected_bytes, sha256 FROM textbooks")
+        .map_err(storage_error)?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+    for (id, url, bytes, sha) in pins {
+        if !valid_package_pin(&url, u64::try_from(bytes).unwrap_or(0), &sha) {
+            connection.execute("UPDATE textbooks SET lexical_refresh_status = 'unavailable-legacy' WHERE id = ?1", params![id]).map_err(storage_error)?;
+        }
     }
     Ok(())
 }
@@ -2425,6 +2570,15 @@ mod tests {
             .expect("entries")
             .entries;
 
+        let essential = entries
+            .iter()
+            .find(|entry| entry.source_text == "essential")
+            .unwrap();
+        let connection = store.connection.lock().unwrap();
+        let parts = connection.prepare("SELECT pos_key FROM textbook_entry_senses WHERE textbook_entry_id = ?1 ORDER BY rank").unwrap().query_map(params![essential.id], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(parts, vec!["adjective", "noun"]);
+        drop(connection);
+
         assert_eq!(
             entries
                 .iter()
@@ -2439,6 +2593,111 @@ mod tests {
                 .and_then(|entry| entry.part_of_speech),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_refresh_rejects_non_hex_pins_on_reopen() {
+        let db = NamedTempFile::new().unwrap();
+        let fixture = wikdict_fixture(&[("book", "书")]);
+        let catalog = test_catalog(fixture.path(), "legacy", "old");
+        let store = TextbookStore::open(db.path()).unwrap();
+        store.install_sqlite(&catalog, fixture.path(), 1).unwrap();
+        store.connection.lock().unwrap().execute("UPDATE textbooks SET sha256 = ?1, lexical_refresh_status = 'exact' WHERE id = 'legacy'", params!["z".repeat(64)]).unwrap();
+        drop(store);
+        let reopened = TextbookStore::open(db.path()).unwrap();
+        assert_eq!(
+            reopened
+                .get_installed("legacy")
+                .unwrap()
+                .unwrap()
+                .lexical_refresh_status,
+            "unavailable-legacy"
+        );
+        assert_eq!(
+            reopened.list_entries("legacy", None, 0, 10).unwrap().total,
+            1
+        );
+        let staging = tempfile::tempdir().unwrap();
+        assert!(reopened
+            .download_and_install("legacy", staging.path(), 3)
+            .await
+            .is_err());
+        assert_eq!(fs::read_dir(staging.path()).unwrap().count(), 0);
+        assert_eq!(
+            reopened
+                .get_installed("legacy")
+                .unwrap()
+                .unwrap()
+                .installed_at_epoch_ms,
+            1
+        );
+    }
+
+    #[test]
+    fn refresh_plan_uses_stored_pin_and_membership_not_current_catalog() {
+        let db = NamedTempFile::new().unwrap();
+        let store = TextbookStore::open(db.path()).unwrap();
+        let fixture = wikdict_fixture_with_lexical_rows(
+            &[("record", "记录"), ("book", "书")],
+            &[("record", "记录", "eng/record__Verb__1", 1.0, 1, 1.0)],
+        );
+        // Deliberately share an ID with today's catalog, but not its pin/version.
+        let catalog = test_catalog(fixture.path(), "nawl-en-zh-1-2", "legacy-pin");
+        let bytes = fs::read(fixture.path()).unwrap();
+        let words = HashSet::from(["record".into()]);
+        store
+            .install_verified_bytes_scoped(&catalog, &bytes, Some(&words), 1)
+            .unwrap();
+        store.set_active(Some(&catalog.id)).unwrap();
+        let plan = store.download_plan(&catalog.id).unwrap();
+        assert_eq!(plan.catalog.download_url, catalog.download_url);
+        assert_eq!(plan.catalog.expected_bytes, catalog.expected_bytes);
+        assert_eq!(plan.catalog.sha256, catalog.sha256);
+        assert_eq!(plan.catalog.version, "legacy-pin");
+        let DownloadScope::Installed(scope) = plan.scope else {
+            panic!("refresh substituted catalog scope")
+        };
+        assert_eq!(scope, words);
+        assert!(store
+            .install_verified_bytes_scoped(&plan.catalog, b"wrong bytes", Some(&scope), 2)
+            .is_err());
+        let unchanged = store.get_installed(&catalog.id).unwrap().unwrap();
+        assert!(unchanged.active);
+        assert_eq!(unchanged.version, "legacy-pin");
+        assert_eq!(unchanged.installed_at_epoch_ms, 1);
+        let refreshed = store
+            .install_verified_bytes_scoped(&plan.catalog, &bytes, Some(&scope), 3)
+            .unwrap();
+        assert!(refreshed.active);
+        assert_eq!(refreshed.entry_count, 1);
+        assert_eq!(
+            store
+                .list_entries(&catalog.id, None, 0, 10)
+                .unwrap()
+                .entries[0]
+                .source_text,
+            "record"
+        );
+    }
+
+    #[test]
+    fn refresh_pin_validation_covers_url_size_and_hex_boundaries() {
+        let url = "https://download.wikdict.com/old.sqlite3";
+        let sha = "A0".repeat(32);
+        assert!(valid_package_pin(url, 1, &sha));
+        for bad in [
+            "https://",
+            "https://evil.example/old.sqlite3",
+            "http://download.wikdict.com/old.sqlite3",
+            "https://user@download.wikdict.com/old.sqlite3",
+            "https://download.wikdict.com:444/old.sqlite3",
+        ] {
+            assert!(!valid_package_pin(bad, 1, &sha));
+        }
+        assert!(!valid_package_pin(url, 0, &sha));
+        assert!(!valid_package_pin(url, MAX_ARTIFACT_BYTES + 1, &sha));
+        assert!(!valid_package_pin(url, 1, &"z".repeat(64)));
+        assert!(!valid_package_pin(url, 1, "abc"));
     }
 
     #[test]
