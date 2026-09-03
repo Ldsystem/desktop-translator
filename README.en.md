@@ -1,32 +1,28 @@
-# Desktop Translator — English notes
+# Desktop Translator — English guide
 
-The primary project documentation is in [README.md](README.md). This page
-records the English privacy contract for the local vocabulary feature.
+The complete, maintained English documentation is [README.md](README.md). For Chinese, see [README.zh-CN.md](README.zh-CN.md).
 
-## Privacy and local learning data
+The guide describes the **0.6.0 source**; check the selected release tag when downloading. It covers selection and Quick Translate, multiple saved meanings with POS, card-to-detail navigation, verified textbook connections, and the downloaded textbook shelf.
 
-Desktop Translator contacts the configured translation provider only after an
-explicit Translate action. Eligible words and short lexical phrases, successful
-translation payloads, lookup counts, and submitted practice outcomes are stored
-in an application-local SQLite database. Sentence-like text is not added to the
-wordbook.
+| Looking for | Read |
+| --- | --- |
+| Installation and provider setup | [Install and start](README.md#install-and-start) |
+| Vocabulary cards, details, related words, and practice | [Vocabulary Study](README.md#vocabulary-study) |
+| Dictionary coverage and connection-count rules | [Where extra meanings and connections come from](README.md#where-extra-meanings-and-connections-come-from) |
+| Downloaded books and refresh actions | [Textbook shelf](README.md#textbook-shelf) |
+| Local storage, accessibility, credentials, and network behavior | [Privacy and data](README.md#privacy-and-data) |
+| Prerequisites, checks, packaging, and source layout | [Development](README.md#development) |
 
-The database remains inside the native application, is not exposed to the
-WebView, and is not synchronized to a cloud service. A repeated lookup increases
-lookup demand but does not claim that the word was remembered. Recall state
-changes only after the user explicitly submits a practice answer.
+## Current app screenshot
 
-Downloaded textbook files and related-word discovery remain local. Connections
-combine conservative root matching with shared meanings from the personal
-wordbook and compatible downloaded textbooks. No embeddings or LLM analysis is
-involved. Textbook attribution and source links remain visible in the study UI.
+Captured from the installed pre-release macOS build on **2026-09-03**, with the user's Simplified Chinese interface retained. The [main guide](README.md#vocabulary-study) also includes fresh word-detail, related-word, and downloaded-textbook screenshots.
 
-Translation lookup follows this order: personal wordbook, active downloaded
-textbook, then the configured online translation provider. A textbook hit is
-promoted into the personal wordbook for later study.
+![Current personal wordbook in the installed macOS app](docs/screenshots/vocabulary-study-wordbook.jpg)
 
-Windows 10/11 x64 is distributed as an unsigned NSIS installer. Compile, gating
-CI, and silent install/launch/uninstall were recorded on Windows 11 25H2 x64;
-interactive overlay and speech fixtures remain manual-only. See
-[README.md](README.md) and
-[docs/windows-signing-and-supply-chain.md](docs/windows-signing-and-supply-chain.md).
+## Privacy at a glance
+
+Learning records stay in local SQLite storage, without built-in cloud sync. A repeated lookup increases lookup demand; recall changes after a submitted practice answer. Credentials stay in native system-vault storage, and the web interface receives status rather than secret values.
+
+Selection access may read surrounding accessibility text to record a local example; it does not use screenshots, OCR, or an automatic clipboard fallback. Translation requests send the requested text and language direction to the selected provider, not the saved example. Explicit enrichment, provider checks, language retrieval, and textbook downloads can also use the network.
+
+Related words use verified local lexical data and compatible installed textbooks, not embeddings or an LLM. “All meanings” refers to available saved senses, not complete dictionary coverage for every word.

@@ -178,6 +178,9 @@ input:focus-visible,
 .vocabulary-card__open:focus-visible { border-radius: var(--radius-sm); outline: 2px solid var(--accent); outline-offset: 5px; }
 .vocabulary-card__copy { display: grid; align-content: start; gap: 5px; min-width: 0; }
 .vocabulary-card__word-row { display: grid; grid-template-columns: 36px minmax(0, 1fr); min-height: 38px; align-items: center; gap: 6px; min-width: 0; }
+.vocabulary-card__senses { display: grid; gap: 4px; margin-left: 42px; }
+.vocabulary-card__sense { display: flex; min-width: 0; align-items: baseline; gap: 7px; line-height: 1.35; }
+.vocabulary-card__sense > .lexical-text { color: var(--study-ink); font-family: var(--font-lexical); font-size: 0.98rem; }
 .vocabulary-card__copy strong { color: var(--study-ink); font-family: var(--font-lexical); font-size: clamp(1.05rem, 1.7vw, 1.35rem); font-weight: 500; }
 .vocabulary-card__copy span { color: var(--ink-muted); }
 .vocabulary-card__copy small { color: var(--ink-muted); font-family: var(--font-utility); font-size: 0.65rem; text-transform: uppercase; }
@@ -219,6 +222,27 @@ input:focus-visible,
 .relation-tail { display: flex; align-items: center; justify-content: end; gap: 10px; min-width: 0; }
 .relation-origins { display: flex; flex-wrap: wrap; justify-content: end; gap: 5px; }
 .relation-origin { border: 1px solid var(--study-rule); border-radius: 999px; padding: 4px 7px; color: var(--accent-strong); font-family: var(--font-utility); font-size: 0.62rem; font-weight: 700; white-space: nowrap; }
+.vocabulary-detail { max-width: 920px; }
+.vocabulary-detail__header h2 { margin-top: 6px; font-family: var(--font-lexical); font-size: clamp(2.1rem, 5vw, 4rem); font-weight: 500; letter-spacing: -0.035em; }
+.vocabulary-detail__word { display: flex; align-items: center; gap: 10px; }
+.vocabulary-detail__word h2 { margin-block: 6px; }
+.vocabulary-detail__example { max-width: 720px; border-left: 2px solid var(--accent); padding-left: 14px; color: var(--ink-muted); font-family: var(--font-lexical); font-size: 1rem; font-style: italic; line-height: 1.55; }
+.detail-section { margin-top: 28px; border-top: 1px solid var(--study-rule); padding-top: 20px; }
+.detail-section__heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.detail-section__heading h3 { margin: 3px 0 0; color: var(--study-ink); font-family: var(--font-lexical); font-size: 1.35rem; font-weight: 500; }
+.detail-section__heading > span { display: grid; min-width: 30px; height: 30px; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent-strong); font-size: 0.72rem; font-weight: 750; }
+.detail-section__empty, .detail-section__note { color: var(--ink-muted); font-size: 0.78rem; line-height: 1.5; }
+.morpheme-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.morpheme-chip { display: grid; gap: 3px; min-width: 128px; border: 1px solid var(--study-rule); border-radius: var(--radius-sm); padding: 12px 14px; background: var(--surface); color: var(--study-ink); text-align: left; cursor: pointer; }
+.morpheme-chip:hover, .morpheme-chip:focus-visible, .detail-sense:hover, .detail-sense:focus-visible { border-color: var(--accent); background: var(--accent-soft); outline: none; }
+.morpheme-chip strong { font-family: var(--font-lexical); font-size: 1.1rem; font-weight: 550; }
+.morpheme-chip span { color: var(--ink-muted); font-size: 0.68rem; }
+.detail-sense-list { display: grid; }
+.detail-refresh { margin-bottom: 10px; }
+.detail-sense { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 18px; border: 0; border-bottom: 1px solid var(--study-rule); padding: 15px 4px; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.detail-sense__copy { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+.detail-sense__copy strong { color: var(--study-ink); font-family: var(--font-lexical); font-size: 1.15rem; font-weight: 500; }
+.detail-sense__count { flex: none; color: var(--ink-muted); font-size: 0.72rem; }
 .word-manage { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(440px, calc(100vw - 48px)); height: min(300px, calc(100dvh - 112px)); overflow: hidden; border: 1px solid var(--study-rule); border-left: 3px solid var(--accent); border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--shadow-card); }
 .word-manage--drawer { position: fixed; z-index: 20; top: 88px; right: 24px; }
 .word-manage__header, .word-manage__footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 18px; }
@@ -274,13 +298,21 @@ input:focus-visible,
 .textbook-volume__source { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; font-size: 0.66rem; }
 .textbook-volume > .button { justify-self: start; margin: 0 22px 22px; }
 .downloaded-list { display: grid; gap: 12px; }
-.downloaded-book { display: flex; align-items: center; justify-content: space-between; gap: 22px; border: 1px solid var(--study-rule); border-radius: var(--radius-md); padding: 18px 20px; background: var(--surface); box-shadow: var(--shadow-panel); }
+.downloaded-book { display: grid; gap: 16px; min-width: 0; border: 1px solid var(--study-rule); border-radius: var(--radius-md); padding: 20px; background: var(--surface); }
 .downloaded-book.is-active { border-color: var(--accent); box-shadow: inset 4px 0 var(--accent), var(--shadow-panel); }
 .downloaded-book__identity { display: flex; min-width: 0; align-items: center; gap: 16px; }
+.downloaded-book__identity > div { min-width: 0; }
+.downloaded-book__identity h3 { overflow-wrap: anywhere; text-wrap: pretty; }
 .downloaded-book__identity > span { display: grid; width: 46px; height: 54px; flex: 0 0 auto; place-items: center; border-radius: 4px 9px 9px 4px; background: var(--study-ink); color: var(--study-paper); font-family: Georgia, serif; font-style: italic; }
 .downloaded-book__identity small { color: var(--accent-strong); font-family: var(--font-utility); font-size: 0.64rem; font-weight: 700; text-transform: uppercase; }
 .downloaded-book__identity p { margin: 6px 0 0; color: var(--ink-muted); font-size: 0.72rem; }
-.downloaded-book__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: 8px; }
+.downloaded-book__footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; border-top: 1px solid var(--study-rule); padding-top: 12px; }
+.downloaded-book__actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 8px; }
+.downloaded-book__actions .button { min-width: 0; min-height: 44px; padding: 10px 16px; }
+.downloaded-book__remove { margin-left: auto; }
+.downloaded-book__remove .text-button, .downloaded-book__maintenance .text-button { min-height: 44px; }
+.downloaded-book__remove .inline-confirm { flex-wrap: wrap; justify-content: end; }
+.downloaded-book__maintenance { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; border-top: 1px solid var(--study-rule); padding-top: 8px; color: var(--ink-muted); font-size: 0.72rem; }
 .inline-confirm { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; border-left: 1px solid var(--study-rule); padding-left: 10px; color: var(--ink-muted); font-size: 0.7rem; }
 .text-button { border: 0; padding: 0 8px; background: transparent; color: var(--accent-strong); cursor: pointer; font-weight: 700; }
 .text-button.is-danger { color: var(--danger); }
@@ -331,8 +363,7 @@ input:focus-visible,
   .study-header { align-items: stretch; flex-direction: column; }
   .study-search { width: 100%; }
   .vocabulary-grid { grid-template-columns: 1fr; }
-  .downloaded-book { align-items: stretch; flex-direction: column; }
-  .downloaded-book__actions { justify-content: start; }
+  .downloaded-book__actions { flex: 1 1 auto; }
 }
 
 @media (max-height: 720px) and (min-width: 621px) {
@@ -777,6 +808,10 @@ input:focus-visible,
   font-size: 1.13rem;
   font-weight: 560;
 }
+.translation-senses { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+.translation-senses__heading { width: fit-content; color: var(--accent-strong); font-family: var(--font-utility); font-size: 0.72rem; font-weight: 700; }
+.translation-senses__list { display: grid; gap: 7px; margin-top: 10px; }
+.translation-senses__item { display: flex; align-items: baseline; gap: 8px; color: var(--ink); font-size: 0.92rem; }
 
 .error-state {
   display: grid;

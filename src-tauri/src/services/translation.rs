@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     contracts::{
-        AppError, AppErrorCode, LanguageCode, MicrosoftCloud, TranslationProviderId,
-        TranslationRequest, TranslationResult, ValidateContract,
+        AppError, AppErrorCode, LanguageCode, MicrosoftCloud, PartOfSpeech, TranslationProviderId,
+        TranslationRequest, TranslationResult, TranslationSense, ValidateContract,
     },
     services::{
         credentials::{ProviderCredentialStore, ProviderSecretField},
@@ -323,11 +323,18 @@ fn parse_translation_response(
 
     let result = TranslationResult {
         selection_id: request.selection_id,
-        translated_text,
+        translated_text: translated_text.clone(),
         detected_source_language: detected,
         effective_source_language,
         target_language: request.target_language.clone(),
         part_of_speech: None,
+        senses: vec![TranslationSense {
+            text: translated_text.clone(),
+            part_of_speech: None,
+            rank: 0,
+            is_primary: true,
+            confidence: None,
+        }],
     };
     result.validate()?;
     Ok(result)
@@ -498,6 +505,65 @@ fn microsoft_translation_url(
     Ok(url)
 }
 
+fn microsoft_dictionary_url(
+    cloud: MicrosoftCloud,
+    source_language: &str,
+    target_language: &str,
+) -> Result<reqwest::Url, AppError> {
+    let mut url = reqwest::Url::parse(&format!("{}/dictionary/lookup", microsoft_endpoint(cloud)))
+        .map_err(|_| internal_error("Microsoft Dictionary endpoint is invalid"))?;
+    url.query_pairs_mut()
+        .append_pair("api-version", "3.0")
+        .append_pair("from", source_language)
+        .append_pair("to", target_language);
+    Ok(url)
+}
+
+fn microsoft_dictionary_language(value: &str) -> &str {
+    match value {
+        "zh-CN" | "zh-Hans" => "zh-Hans",
+        value => value,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DictionaryCapabilityArtifact {
+    schema_version: u8,
+    documentation_url: String,
+    reviewed_at: String,
+    pairs: Vec<DictionaryPair>,
+}
+
+#[derive(Deserialize)]
+struct DictionaryPair {
+    source: String,
+    target: String,
+}
+
+fn microsoft_dictionary_pair_supported(source: &str, target: &str) -> bool {
+    let Ok(artifact) = serde_json::from_str::<DictionaryCapabilityArtifact>(include_str!(
+        "../../resources/providers/microsoft-dictionary-pairs-v1.json"
+    )) else {
+        return false;
+    };
+    artifact.schema_version == 1
+        && artifact
+            .documentation_url
+            .starts_with("https://learn.microsoft.com/")
+        && !artifact.reviewed_at.trim().is_empty()
+        && artifact.pairs.iter().any(|pair| {
+            pair.source.eq_ignore_ascii_case(source) && pair.target.eq_ignore_ascii_case(target)
+        })
+}
+
+pub fn microsoft_dictionary_supported(source: &str, target: &str) -> bool {
+    microsoft_dictionary_pair_supported(
+        microsoft_dictionary_language(source),
+        microsoft_dictionary_language(target),
+    )
+}
+
 /// Selects one explicit provider per request. It never silently changes provider.
 pub struct ProviderRouter {
     settings: Arc<dyn SettingsStore>,
@@ -664,7 +730,7 @@ impl TranslationProvider for BaiduTranslationProvider {
         let detected = (!envelope.from.trim().is_empty()).then_some(envelope.from);
         Ok(TranslationResult {
             selection_id: request.selection_id,
-            translated_text,
+            translated_text: translated_text.clone(),
             detected_source_language: detected.clone(),
             effective_source_language: if request.source_language.eq_ignore_ascii_case("auto") {
                 detected.unwrap_or_else(|| "auto".to_owned())
@@ -673,6 +739,13 @@ impl TranslationProvider for BaiduTranslationProvider {
             },
             target_language: request.target_language.clone(),
             part_of_speech: None,
+            senses: vec![TranslationSense {
+                text: translated_text.clone(),
+                part_of_speech: None,
+                rank: 0,
+                is_primary: true,
+                confidence: None,
+            }],
         })
     }
 
@@ -732,6 +805,47 @@ impl MicrosoftTranslationProvider {
             settings,
         })
     }
+
+    async fn dictionary_senses(
+        &self,
+        key: &str,
+        cloud: MicrosoftCloud,
+        region: Option<&str>,
+        source_language: &str,
+        target_language: &str,
+        text: &str,
+    ) -> Vec<TranslationSense> {
+        if text.chars().count() > 100 || !super::vocabulary::is_vocabulary_eligible(text) {
+            return Vec::new();
+        }
+        let source = microsoft_dictionary_language(source_language);
+        let target = microsoft_dictionary_language(target_language);
+        if !microsoft_dictionary_pair_supported(source, target) {
+            return Vec::new();
+        }
+        let Ok(url) = microsoft_dictionary_url(cloud, source, target) else {
+            return Vec::new();
+        };
+        let mut outbound = self
+            .client
+            .post(url)
+            .header("Ocp-Apim-Subscription-Key", key)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .json(&[MicrosoftRequest { text }]);
+        if let Some(region) = region.filter(|value| !value.trim().is_empty()) {
+            outbound = outbound.header("Ocp-Apim-Subscription-Region", region);
+        }
+        let Ok(response) = outbound.send().await else {
+            return Vec::new();
+        };
+        if !response.status().is_success() {
+            return Vec::new();
+        }
+        let Ok(body) = read_bounded_body(response).await else {
+            return Vec::new();
+        };
+        parse_microsoft_dictionary(&body).unwrap_or_default()
+    }
 }
 
 #[derive(Serialize)]
@@ -752,6 +866,80 @@ struct MicrosoftDetected {
 #[derive(Deserialize)]
 struct MicrosoftTranslation {
     text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MicrosoftDictionaryResponse {
+    translations: Vec<MicrosoftDictionaryTranslation>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MicrosoftDictionaryTranslation {
+    display_target: String,
+    #[serde(default)]
+    prefix_word: String,
+    #[serde(default)]
+    pos_tag: String,
+    #[serde(default)]
+    confidence: Option<f64>,
+}
+
+fn microsoft_pos(value: &str) -> Option<PartOfSpeech> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "ADJ" => Some(PartOfSpeech::Adjective),
+        "ADV" => Some(PartOfSpeech::Adverb),
+        "CONJ" => Some(PartOfSpeech::Conjunction),
+        "DET" => Some(PartOfSpeech::Determiner),
+        "NOUN" => Some(PartOfSpeech::Noun),
+        "PREP" => Some(PartOfSpeech::Preposition),
+        "PRON" => Some(PartOfSpeech::Pronoun),
+        "VERB" | "MODAL" => Some(PartOfSpeech::Verb),
+        _ => None,
+    }
+}
+
+fn parse_microsoft_dictionary(body: &[u8]) -> Result<Vec<TranslationSense>, AppError> {
+    let entries: Vec<MicrosoftDictionaryResponse> = serde_json::from_slice(body)
+        .map_err(|_| internal_error("Microsoft Dictionary returned an invalid response"))?;
+    let mut senses = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for translation in entries.into_iter().flat_map(|entry| entry.translations) {
+        let text = format!("{}{}", translation.prefix_word, translation.display_target)
+            .trim()
+            .to_owned();
+        let pos = microsoft_pos(&translation.pos_tag);
+        if text.is_empty() || !seen.insert((text.to_lowercase(), pos)) {
+            continue;
+        }
+        senses.push(TranslationSense {
+            text,
+            part_of_speech: pos,
+            rank: 0,
+            is_primary: false,
+            confidence: translation.confidence.filter(|value| value.is_finite()),
+        });
+    }
+    senses.sort_by(|left, right| {
+        right
+            .confidence
+            .partial_cmp(&left.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.part_of_speech.cmp(&right.part_of_speech))
+    });
+    if senses.len() > 32 {
+        eprintln!(
+            "lexical sense overflow: provider=microsoft retained=32 discarded={}",
+            senses.len() - 32
+        );
+        senses.truncate(32);
+    }
+    for (rank, sense) in senses.iter_mut().enumerate() {
+        sense.rank = rank.min(31) as u8;
+    }
+    Ok(senses)
 }
 
 #[async_trait]
@@ -781,13 +969,14 @@ impl TranslationProvider for MicrosoftTranslationProvider {
         let mut outbound = self
             .client
             .post(url)
-            .header("Ocp-Apim-Subscription-Key", key)
+            .header("Ocp-Apim-Subscription-Key", key.as_str())
             .header(reqwest::header::ACCEPT, "application/json")
             .json(&[MicrosoftRequest {
                 text: &request.text,
             }]);
         if let Some(region) = settings
             .microsoft_region
+            .as_deref()
             .filter(|value| !value.trim().is_empty())
         {
             outbound = outbound.header("Ocp-Apim-Subscription-Region", region);
@@ -814,17 +1003,56 @@ impl TranslationProvider for MicrosoftTranslationProvider {
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| internal_error("Microsoft Translator returned no translation"))?;
         let detected = first.detected_language.map(|item| item.language);
+        let effective_source_language = if request.source_language.eq_ignore_ascii_case("auto") {
+            detected.clone().unwrap_or_else(|| "auto".to_owned())
+        } else {
+            request.source_language.clone()
+        };
+        let mut alternatives = self
+            .dictionary_senses(
+                &key,
+                settings.microsoft_cloud,
+                settings.microsoft_region.as_deref(),
+                &effective_source_language,
+                &request.target_language,
+                &request.text,
+            )
+            .await;
+        let primary_pos = alternatives
+            .iter()
+            .find(|sense| {
+                sense
+                    .text
+                    .trim()
+                    .eq_ignore_ascii_case(translated_text.trim())
+            })
+            .and_then(|sense| sense.part_of_speech);
+        alternatives.retain(|sense| {
+            !sense
+                .text
+                .trim()
+                .eq_ignore_ascii_case(translated_text.trim())
+                || sense.part_of_speech != primary_pos
+        });
+        let mut senses = vec![TranslationSense {
+            text: translated_text.clone(),
+            part_of_speech: primary_pos,
+            rank: 0,
+            is_primary: true,
+            confidence: None,
+        }];
+        for mut sense in alternatives.into_iter().take(31) {
+            sense.rank = senses.len() as u8;
+            senses.push(sense);
+        }
         Ok(TranslationResult {
             selection_id: request.selection_id,
-            translated_text,
+            translated_text: translated_text.clone(),
             detected_source_language: detected.clone(),
-            effective_source_language: if request.source_language.eq_ignore_ascii_case("auto") {
-                detected.unwrap_or_else(|| "auto".to_owned())
-            } else {
-                request.source_language.clone()
-            },
+            effective_source_language,
             target_language: request.target_language.clone(),
-            part_of_speech: None,
+            part_of_speech: primary_pos,
+            senses,
         })
     }
 
@@ -900,6 +1128,103 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn dictionary_lookup_does_not_send_sentence_or_unsupported_pair_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("proxy");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let directory = tempfile::tempdir().expect("settings directory");
+        let provider = MicrosoftTranslationProvider {
+            client: Client::builder()
+                .proxy(
+                    reqwest::Proxy::all(format!("http://{}", listener.local_addr().unwrap()))
+                        .unwrap(),
+                )
+                .timeout(Duration::from_millis(50))
+                .build()
+                .unwrap(),
+            credentials: Arc::new(ProviderCredentialStore::new()),
+            settings: Arc::new(
+                crate::services::settings::JsonSettingsStore::with_application_defaults(
+                    directory.path().join("settings.json"),
+                ),
+            ),
+        };
+        for (text, target) in [
+            ("This is a sentence.", "zh-CN"),
+            ("one two three four five six", "zh-CN"),
+            ("hello\nworld", "zh-CN"),
+            ("hello", "ja"),
+        ] {
+            assert!(provider
+                .dictionary_senses(
+                    "synthetic",
+                    MicrosoftCloud::Global,
+                    None,
+                    "en",
+                    target,
+                    text
+                )
+                .await
+                .is_empty());
+            assert!(
+                listener.accept().is_err(),
+                "ineligible request reached the proxy: {text}"
+            );
+        }
+        // Positive control: an eligible short phrase reaches the same network boundary.
+        assert!(provider
+            .dictionary_senses(
+                "synthetic",
+                MicrosoftCloud::Global,
+                None,
+                "en",
+                "zh-CN",
+                "take off"
+            )
+            .await
+            .is_empty());
+        assert!(listener.accept().is_ok());
+    }
+
+    #[test]
+    fn microsoft_dictionary_parses_ranked_distinct_senses_and_pos() {
+        let body = r#"[{
+          "normalizedSource":"rationality",
+          "displaySource":"rationality",
+          "translations":[
+            {"normalizedTarget":"理性","displayTarget":"理性","posTag":"NOUN","confidence":0.91,"prefixWord":"","backTranslations":[]},
+            {"normalizedTarget":"合理","displayTarget":"合理","posTag":"ADJ","confidence":0.72,"prefixWord":"","backTranslations":[]},
+            {"normalizedTarget":"理性","displayTarget":"理性","posTag":"NOUN","confidence":0.40,"prefixWord":"","backTranslations":[]}
+          ]
+        }]"#;
+        let senses = parse_microsoft_dictionary(body.as_bytes()).expect("dictionary response");
+        assert_eq!(senses.len(), 2);
+        assert_eq!(senses[0].text, "理性");
+        assert_eq!(senses[0].part_of_speech, Some(PartOfSpeech::Noun));
+        assert_eq!(senses[1].part_of_speech, Some(PartOfSpeech::Adjective));
+        assert!(microsoft_dictionary_pair_supported("en", "zh-Hans"));
+        assert!(!microsoft_dictionary_pair_supported("en", "ja"));
+    }
+
+    #[test]
+    fn microsoft_dictionary_records_a_bounded_ranked_result() {
+        let translations = (0..35)
+            .map(|index| {
+                format!(
+                    r#"{{"normalizedTarget":"sense-{index}","displayTarget":"sense-{index}","posTag":"NOUN","confidence":0.5,"prefixWord":"","backTranslations":[]}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = format!(
+            r#"[{{"normalizedSource":"word","displaySource":"word","translations":[{translations}]}}]"#
+        );
+        let senses = parse_microsoft_dictionary(body.as_bytes()).expect("dictionary response");
+        assert_eq!(senses.len(), 32);
+        assert_eq!(senses.first().map(|sense| sense.rank), Some(0));
+        assert_eq!(senses.last().map(|sense| sense.rank), Some(31));
+    }
 
     struct StaticCredentialStore(String);
 

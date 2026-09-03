@@ -36,6 +36,7 @@ impl TranslationProvider for CountingProvider {
             effective_source_language: "en".into(),
             target_language: request.target_language.clone(),
             part_of_speech: None,
+            senses: Vec::new(),
         })
     }
 

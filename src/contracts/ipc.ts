@@ -81,6 +81,23 @@ export interface TranslationResult {
   effectiveSourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
   partOfSpeech?: PartOfSpeech;
+  senses?: TranslationSense[];
+}
+
+export interface TranslationSense {
+  text: string;
+  partOfSpeech?: PartOfSpeech;
+  rank: number;
+  isPrimary: boolean;
+  confidence?: number;
+}
+
+export interface VocabularySenseSummary {
+  id: number;
+  text: string;
+  partOfSpeech?: PartOfSpeech;
+  rank: number;
+  isPrimary: boolean;
 }
 
 export interface VocabularyEntry {
@@ -92,6 +109,7 @@ export interface VocabularyEntry {
   effectiveSourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
   partOfSpeech?: PartOfSpeech;
+  senses: VocabularySenseSummary[];
   lookupCount: number;
   recallScore: number;
   effectiveRecall: number;
@@ -171,6 +189,7 @@ export interface InstalledTextbook {
   installedAtEpochMs: number;
   active: boolean;
   metadataRefreshAvailable: boolean;
+  lexicalRefreshStatus: "exact" | "enriched" | "unavailable-legacy";
 }
 
 /** One normalized entry imported from a validated textbook artifact. */
@@ -230,6 +249,53 @@ export interface RelatedOrigin {
   kind: "personal" | "textbook";
   textbookId?: string;
   textbookTitle?: string;
+}
+
+export type RelatedFilter =
+  | { kind: "morpheme"; morphemeId: string }
+  | { kind: "translation"; vocabularySenseId: number };
+
+export interface VocabularySenseDetail extends VocabularySenseSummary {
+  textbookWordCount: number;
+}
+
+export interface VocabularyMorpheme {
+  id: string;
+  display: string;
+  kind: "prefix" | "root" | "suffix";
+  accessibleLabel: string;
+  textbookWordCount: number;
+}
+
+export type MeaningRefreshStatus =
+  | { status: "available" }
+  | { status: "unsupported" | "offline" | "unavailable-legacy" }
+  | { status: "failed-retryable"; reason: "network" | "provider" | "validation" };
+
+export interface VocabularyDetail {
+  entry: Omit<VocabularyEntry, "senses">;
+  senses: VocabularySenseDetail[];
+  morphemes: VocabularyMorpheme[];
+  meaningRefresh: MeaningRefreshStatus;
+}
+
+export interface FilteredRelatedWord {
+  key: string;
+  sourceText: string;
+  translatedText: string;
+  sourceLanguage: LanguageCode;
+  targetLanguage: LanguageCode;
+  partOfSpeech?: PartOfSpeech;
+  savedVocabularyEntryId?: number;
+  origins: RelatedOrigin[];
+}
+
+export interface RelatedWordPage {
+  items: FilteredRelatedWord[];
+  total: number;
+  offset: number;
+  limit: number;
+  relationLabel: string;
 }
 
 export type PracticeDirection =
@@ -406,8 +472,27 @@ export function isTranslationResult(value: unknown): value is TranslationResult 
     isNonEmptyString(value.targetLanguage) &&
     (value.detectedSourceLanguage === undefined ||
       isNonEmptyString(value.detectedSourceLanguage)) &&
-    (value.partOfSpeech === undefined || isPartOfSpeech(value.partOfSpeech))
+    (value.partOfSpeech === undefined || isPartOfSpeech(value.partOfSpeech)) &&
+    (value.senses === undefined || isTranslationSenses(value.senses, value.translatedText))
   );
+}
+
+function isTranslationSenses(value: unknown, primary: unknown): value is TranslationSense[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 32) return false;
+  let primaryCount = 0;
+  const keys = new Set<string>();
+  for (const [expectedRank, sense] of value.entries()) {
+    if (!isRecord(sense) || !isNonEmptyString(sense.text) ||
+        !Number.isSafeInteger(sense.rank) || Number(sense.rank) !== expectedRank ||
+        typeof sense.isPrimary !== "boolean" ||
+        (sense.partOfSpeech !== undefined && !isPartOfSpeech(sense.partOfSpeech)) ||
+        (sense.confidence !== undefined && (typeof sense.confidence !== "number" || !Number.isFinite(sense.confidence)))) return false;
+    if (sense.isPrimary) { primaryCount += 1; if (sense.text !== primary || sense.rank !== 0) return false; }
+    const key = `${sense.text.trim().toLocaleLowerCase()}\u0000${sense.partOfSpeech ?? ""}`;
+    if (keys.has(key)) return false;
+    keys.add(key);
+  }
+  return primaryCount === 1;
 }
 
 /** Validates pinned textbook metadata before it is shown by the renderer. */
@@ -454,7 +539,8 @@ export function isInstalledTextbook(value: unknown): value is InstalledTextbook 
     isNonNegativeInteger(value.entryCount) &&
     isNonNegativeInteger(value.installedAtEpochMs) &&
     typeof value.active === "boolean" &&
-    typeof value.metadataRefreshAvailable === "boolean"
+    typeof value.metadataRefreshAvailable === "boolean" &&
+    ["exact", "enriched", "unavailable-legacy"].includes(String(value.lexicalRefreshStatus))
   );
 }
 

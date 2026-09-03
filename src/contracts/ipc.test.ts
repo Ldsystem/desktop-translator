@@ -74,6 +74,7 @@ describe("IPC contracts", () => {
         installedAtEpochMs: 42,
         active: false,
         metadataRefreshAvailable: false,
+        lexicalRefreshStatus: "enriched",
       }),
     ).toBe(true);
     expect(
@@ -152,6 +153,29 @@ describe("IPC contracts", () => {
         promptPartOfSpeech: "oracle",
       }),
     ).toBe(false);
+  });
+
+  it("accepts one primary and several evidence-backed translation senses", () => {
+    expect(isTranslationResult({
+      selectionId: 1,
+      translatedText: "理性",
+      effectiveSourceLanguage: "en",
+      targetLanguage: "zh-CN",
+      senses: [
+        { text: "理性", partOfSpeech: "noun", rank: 0, isPrimary: true },
+        { text: "合理", partOfSpeech: "adjective", rank: 1, isPrimary: false },
+      ],
+    })).toBe(true);
+  });
+
+  it("rejects senses without exactly one matching primary", () => {
+    expect(isTranslationResult({
+      selectionId: 1,
+      translatedText: "理性",
+      effectiveSourceLanguage: "en",
+      targetLanguage: "zh-CN",
+      senses: [{ text: "合理", rank: 0, isPrimary: true }],
+    })).toBe(false);
   });
 });
 

@@ -15,10 +15,11 @@ use zeroize::Zeroize;
 use crate::{
     contracts::{
         AppError, AppErrorCode, InstalledTextbook, PracticeDirection, PracticePreferences,
-        RelatedWord, SelectionSnapshot, StudyPracticeOutcome, StudyPracticeQuestion,
-        TextbookCatalogItem, TextbookEntryPage, TextbookPromotionResult, TranslationProviderId,
-        TranslationRequest, TranslationResult, UserSettings, ValidateContract, VocabularyEntry,
-        VocabularyProvenance, VocabularyRevision, VocabularyRevisionKind,
+        RelatedFilter, RelatedWord, RelatedWordPage, SelectionSnapshot, StudyPracticeOutcome,
+        StudyPracticeQuestion, TextbookCatalogItem, TextbookEntryPage, TextbookPromotionResult,
+        TranslationProviderId, TranslationRequest, TranslationResult, UserSettings,
+        ValidateContract, VocabularyDetail, VocabularyEntry, VocabularyProvenance,
+        VocabularyRevision, VocabularyRevisionKind,
     },
     coordinator::{CoordinatorEvent, OverlayState},
     platform::{
@@ -30,7 +31,7 @@ use crate::{
         settings::JsonSettingsStore,
         study::StudyService,
         textbooks::{curated_catalog, TextbookStore},
-        translation::ProviderRouter,
+        translation::{microsoft_dictionary_supported, ProviderRouter},
         vocabulary::{
             is_vocabulary_eligible, TextbookTranslationProvider, VocabularyStore,
             VocabularyTranslationProvider,
@@ -404,9 +405,12 @@ impl RuntimeState {
         let textbook_provider: Arc<dyn TranslationProvider> = Arc::new(
             TextbookTranslationProvider::new(upstream, textbooks.clone()),
         );
-        let translation: Arc<dyn TranslationProvider> = Arc::new(
-            VocabularyTranslationProvider::new(textbook_provider, vocabulary.clone()),
-        );
+        let translation: Arc<dyn TranslationProvider> =
+            Arc::new(VocabularyTranslationProvider::with_textbooks(
+                textbook_provider,
+                vocabulary.clone(),
+                textbooks.clone(),
+            ));
 
         #[cfg(target_os = "macos")]
         let speech: Arc<dyn SpeechAdapter> = Arc::new(MacSpeechAdapter::new()?);
@@ -750,6 +754,118 @@ pub fn get_related_vocabulary(
     state
         .study
         .related(entry_id, seed.unwrap_or(now_ms), now_ms)
+}
+
+#[tauri::command]
+pub fn get_vocabulary_detail(
+    state: State<'_, RuntimeState>,
+    entry_id: i64,
+) -> Result<VocabularyDetail, AppError> {
+    let mut detail = state.study.vocabulary_detail(entry_id, now_epoch_ms())?;
+    let settings = state.settings.load()?;
+    detail.meaning_refresh = if settings.translation_provider == TranslationProviderId::Microsoft
+        && microsoft_dictionary_supported(
+            &detail.entry.effective_source_language,
+            &detail.entry.target_language,
+        ) {
+        crate::contracts::MeaningRefreshStatus::Available
+    } else {
+        crate::contracts::MeaningRefreshStatus::Unsupported
+    };
+    Ok(detail)
+}
+
+#[tauri::command]
+pub async fn refresh_vocabulary_meanings(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    entry_id: i64,
+) -> Result<VocabularyDetail, AppError> {
+    let now_ms = now_epoch_ms();
+    let entry = state.vocabulary.get(entry_id, now_ms)?;
+    let settings = state.settings.load()?;
+    if settings.translation_provider != TranslationProviderId::Microsoft
+        || !microsoft_dictionary_supported(&entry.effective_source_language, &entry.target_language)
+    {
+        return get_vocabulary_detail(state, entry_id);
+    }
+    let request = TranslationRequest {
+        selection_id: 0,
+        text: entry.source_text.clone(),
+        example_sentence: None,
+        source_language: entry.effective_source_language.clone(),
+        target_language: entry.target_language.clone(),
+    };
+    let additions = match state.provider_router.translate(&request).await {
+        Ok(result) => {
+            if result.validate().is_err() {
+                let mut detail = state.study.vocabulary_detail(entry_id, now_ms)?;
+                detail.meaning_refresh = crate::contracts::MeaningRefreshStatus::FailedRetryable {
+                    reason: "validation".into(),
+                };
+                return Ok(detail);
+            }
+            result.senses
+        }
+        Err(error) => {
+            let mut detail = state.study.vocabulary_detail(entry_id, now_ms)?;
+            detail.meaning_refresh = match error.code {
+                AppErrorCode::Offline => crate::contracts::MeaningRefreshStatus::Offline,
+                _ => crate::contracts::MeaningRefreshStatus::FailedRetryable {
+                    reason: if error.retryable {
+                        "network"
+                    } else {
+                        "provider"
+                    }
+                    .into(),
+                },
+            };
+            return Ok(detail);
+        }
+    };
+    let local = state.textbooks.senses_for_word(
+        &entry.source_text,
+        &entry.effective_source_language,
+        &entry.target_language,
+    )?;
+    let base = TranslationResult {
+        selection_id: 0,
+        translated_text: entry.translated_text.clone(),
+        detected_source_language: None,
+        effective_source_language: entry.effective_source_language.clone(),
+        target_language: entry.target_language.clone(),
+        part_of_speech: entry.part_of_speech,
+        senses: entry
+            .senses
+            .iter()
+            .map(|sense| crate::contracts::TranslationSense {
+                text: sense.text.clone(),
+                part_of_speech: sense.part_of_speech,
+                rank: sense.rank,
+                is_primary: sense.is_primary,
+                confidence: None,
+            })
+            .collect(),
+    };
+    let merged = additions.into_iter().chain(local).collect::<Vec<_>>();
+    state
+        .vocabulary
+        .merge_senses_for_entry(&entry.source_text, &base, &merged, now_ms)?;
+    state.emit_vocabulary_revision(&app, VocabularyRevisionKind::Updated, Some(entry_id));
+    get_vocabulary_detail(state, entry_id)
+}
+
+#[tauri::command]
+pub fn get_filtered_related_vocabulary(
+    state: State<'_, RuntimeState>,
+    entry_id: i64,
+    filter: RelatedFilter,
+    offset: u64,
+    limit: u64,
+) -> Result<RelatedWordPage, AppError> {
+    state
+        .study
+        .filtered_related(entry_id, filter, offset, limit, now_epoch_ms())
 }
 
 #[tauri::command]

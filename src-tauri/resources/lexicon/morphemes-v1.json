@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "2026-09-02.1",
+  "license": "CC-BY-SA-4.0",
+  "attribution": "Adapted from English Wiktionary contributors; source page histories are linked per headword.",
+  "morphemes": [
+    { "id": "en-prefix-con", "language": "en", "canonicalForm": "con", "display": "con+", "kind": "prefix" },
+    { "id": "en-prefix-intro", "language": "en", "canonicalForm": "intro", "display": "intro+", "kind": "prefix" },
+    { "id": "en-prefix-pro", "language": "en", "canonicalForm": "pro", "display": "pro+", "kind": "prefix" },
+    { "id": "en-prefix-re", "language": "en", "canonicalForm": "re", "display": "re+", "kind": "prefix" },
+    { "id": "en-root-duce", "language": "en", "canonicalForm": "duce", "display": "+duce", "kind": "root" },
+    { "id": "en-root-ration", "language": "en", "canonicalForm": "ration", "display": "ration+", "kind": "root" },
+    { "id": "en-suffix-al", "language": "en", "canonicalForm": "al", "display": "+al", "kind": "suffix" },
+    { "id": "en-suffix-ity", "language": "en", "canonicalForm": "ity", "display": "+ity", "kind": "suffix" }
+  ],
+  "headwords": [
+    { "normalizedHeadword": "conduce", "sourceUrl": "https://en.wiktionary.org/w/index.php?title=conduce&oldid=92137080", "sourceRevision": "92137080", "reviewedAt": "2026-09-02", "components": [{ "morphemeId": "en-prefix-con", "surface": "con", "ordinal": 0 }, { "morphemeId": "en-root-duce", "surface": "duce", "ordinal": 1 }] },
+    { "normalizedHeadword": "introduce", "sourceUrl": "https://en.wiktionary.org/w/index.php?title=introduce&oldid=92422569", "sourceRevision": "92422569", "reviewedAt": "2026-09-02", "components": [{ "morphemeId": "en-prefix-intro", "surface": "intro", "ordinal": 0 }, { "morphemeId": "en-root-duce", "surface": "duce", "ordinal": 1 }] },
+    { "normalizedHeadword": "produce", "sourceUrl": "https://en.wiktionary.org/w/index.php?title=produce&oldid=92338519", "sourceRevision": "92338519", "reviewedAt": "2026-09-02", "components": [{ "morphemeId": "en-prefix-pro", "surface": "pro", "ordinal": 0 }, { "morphemeId": "en-root-duce", "surface": "duce", "ordinal": 1 }] },
+    { "normalizedHeadword": "reduce", "sourceUrl": "https://en.wiktionary.org/w/index.php?title=reduce&oldid=91782838", "sourceRevision": "91782838", "reviewedAt": "2026-09-02", "components": [{ "morphemeId": "en-prefix-re", "surface": "re", "ordinal": 0 }, { "morphemeId": "en-root-duce", "surface": "duce", "ordinal": 1 }] },
+    { "normalizedHeadword": "rationality", "sourceUrl": "https://en.wiktionary.org/w/index.php?title=rationality&oldid=91954315", "sourceRevision": "91954315", "reviewedAt": "2026-09-02", "components": [{ "morphemeId": "en-root-ration", "surface": "ration", "ordinal": 0 }, { "morphemeId": "en-suffix-al", "surface": "al", "ordinal": 1 }, { "morphemeId": "en-suffix-ity", "surface": "ity", "ordinal": 2 }] }
+  ]
+}

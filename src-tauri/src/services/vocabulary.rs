@@ -14,7 +14,7 @@ use crate::{
     contracts::{
         AppError, AppErrorCode, PartOfSpeech, PracticeDirection, PracticeOutcome, PracticeQuestion,
         RelatedVocabulary, StudyPracticeOutcome, TranslationRequest, TranslationResult,
-        VocabularyEntry, VocabularyProvenance,
+        TranslationSense, VocabularyEntry, VocabularyProvenance, VocabularySenseSummary,
     },
     services::{textbooks::TextbookStore, TranslationProvider},
 };
@@ -33,7 +33,7 @@ impl VocabularyStore {
         Self::from_connection(Connection::open_in_memory().map_err(storage_error)?)
     }
 
-    fn from_connection(connection: Connection) -> Result<Self, AppError> {
+    fn from_connection(mut connection: Connection) -> Result<Self, AppError> {
         connection
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
@@ -91,6 +91,21 @@ impl VocabularyStore {
                 )
                 .map_err(storage_error)?;
         }
+        migrate_senses(&mut connection)?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let ids = transaction
+            .prepare(
+                "SELECT DISTINCT vocabulary_entry_id FROM vocabulary_senses WHERE pos_key = ''",
+            )
+            .map_err(storage_error)?
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        for id in ids {
+            normalize_persisted_sense_limits(&transaction, id)?;
+        }
+        transaction.commit().map_err(storage_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -178,14 +193,28 @@ impl VocabularyStore {
             )
             .map_err(storage_error)?;
         insert_event(&transaction, entry_id, "lookup-hit", now_ms, None, None)?;
+        let senses = load_senses(&transaction, entry_id)?;
         transaction.commit().map_err(storage_error)?;
+        let parsed_pos = part_of_speech
+            .as_deref()
+            .and_then(PartOfSpeech::from_normalized);
         Ok(Some(TranslationResult {
             selection_id: request.selection_id,
-            translated_text,
+            translated_text: translated_text.clone(),
             detected_source_language,
             effective_source_language,
             target_language,
-            part_of_speech: part_of_speech.and_then(|value| PartOfSpeech::from_normalized(&value)),
+            part_of_speech: parsed_pos,
+            senses: senses
+                .into_iter()
+                .map(|sense| TranslationSense {
+                    text: sense.text,
+                    part_of_speech: sense.part_of_speech,
+                    rank: sense.rank,
+                    is_primary: sense.is_primary,
+                    confidence: None,
+                })
+                .collect(),
         }))
     }
 
@@ -254,6 +283,7 @@ impl VocabularyStore {
             params![normalize_text(source_text), requested_source_language, target_language],
             |row| row.get::<_, i64>(0),
         ).map_err(storage_error)?;
+        persist_senses(&transaction, entry_id, result, translated_text)?;
         insert_event(&transaction, entry_id, "lookup-miss", now_ms, None, None)?;
         transaction.commit().map_err(storage_error)
     }
@@ -278,12 +308,22 @@ impl VocabularyStore {
                     , part_of_speech, example_sentence
              FROM vocabulary_entries
              WHERE ?1 IS NULL OR normalized_text LIKE ?1 OR lower(translated_text) LIKE ?1
+                OR EXISTS (
+                  SELECT 1 FROM vocabulary_senses vs
+                  WHERE vs.vocabulary_entry_id = vocabulary_entries.id
+                    AND vs.normalized_text LIKE ?1
+                )
              ORDER BY last_seen_epoch_ms DESC, id DESC",
         ).map_err(storage_error)?;
         let rows = statement
             .query_map(params![query], |row| row_to_entry(row, now_ms))
             .map_err(storage_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+        let mut entries = rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
+        drop(statement);
+        for entry in &mut entries {
+            entry.senses = load_senses(&connection, entry.id)?;
+        }
+        Ok(entries)
     }
 
     pub fn delete(&self, entry_id: i64) -> Result<(), AppError> {
@@ -302,6 +342,73 @@ impl VocabularyStore {
             return Err(internal("Vocabulary entry was not found"));
         }
         transaction.commit().map_err(storage_error)
+    }
+
+    pub fn get(&self, entry_id: i64, now_ms: u64) -> Result<VocabularyEntry, AppError> {
+        self.list(None, now_ms)?
+            .into_iter()
+            .find(|entry| entry.id == entry_id)
+            .ok_or_else(|| internal("Vocabulary entry was not found"))
+    }
+
+    pub fn merge_senses_for_entry(
+        &self,
+        source_text: &str,
+        result: &TranslationResult,
+        additions: &[TranslationSense],
+        now_ms: u64,
+    ) -> Result<Vec<TranslationSense>, AppError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| internal("Vocabulary database lock failed"))?;
+        let transaction = connection.transaction().map_err(storage_error)?;
+        let entry_id = transaction
+            .query_row(
+                "SELECT id FROM vocabulary_entries
+                 WHERE normalized_text = ?1
+                   AND effective_source_language = ?2 COLLATE NOCASE
+                   AND target_language = ?3 COLLATE NOCASE
+                 ORDER BY id LIMIT 1",
+                params![
+                    normalize_text(source_text),
+                    result.effective_source_language,
+                    result.target_language
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(storage_error)?;
+        let mut merged = result.clone();
+        merged
+            .senses
+            .extend(additions.iter().cloned().map(|mut sense| {
+                sense.is_primary = false;
+                sense
+            }));
+        merged.senses = normalize_senses(
+            &merged.translated_text,
+            merged.part_of_speech,
+            &merged.senses,
+        );
+        persist_senses(&transaction, entry_id, &merged, &merged.translated_text)?;
+        let senses = load_senses(&transaction, entry_id)?;
+        transaction
+            .execute(
+                "UPDATE vocabulary_senses SET updated_at_epoch_ms = ?1 WHERE vocabulary_entry_id = ?2",
+                params![to_i64(now_ms), entry_id],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(senses
+            .into_iter()
+            .map(|sense| TranslationSense {
+                text: sense.text,
+                part_of_speech: sense.part_of_speech,
+                rank: sense.rank,
+                is_primary: sense.is_primary,
+                confidence: None,
+            })
+            .collect())
     }
 
     pub fn correct_effective_source_language(
@@ -611,6 +718,7 @@ impl VocabularyStore {
 pub struct VocabularyTranslationProvider {
     upstream: Arc<dyn TranslationProvider>,
     store: Arc<VocabularyStore>,
+    textbooks: Option<Arc<TextbookStore>>,
 }
 
 /// Consults only the singular active textbook before delegating to the online provider.
@@ -656,6 +764,16 @@ impl TranslationProvider for TextbookTranslationProvider {
                         .find(|entry| normalize_text(&entry.source_text) == normalized);
                     if let Some(entry) = entry {
                         self.textbooks.promote_entry(entry.id, now_epoch_ms())?;
+                        let mut senses = self.textbooks.senses_for_word(
+                            &entry.source_text,
+                            &entry.source_language,
+                            &entry.target_language,
+                        )?;
+                        senses = normalize_senses(
+                            &display_translation(&entry.translated_text),
+                            entry.part_of_speech,
+                            &senses,
+                        );
                         return Ok(TranslationResult {
                             selection_id: request.selection_id,
                             translated_text: display_translation(&entry.translated_text),
@@ -663,6 +781,7 @@ impl TranslationProvider for TextbookTranslationProvider {
                             effective_source_language: entry.source_language,
                             target_language: entry.target_language,
                             part_of_speech: entry.part_of_speech,
+                            senses,
                         });
                     }
                 }
@@ -676,6 +795,25 @@ impl TranslationProvider for TextbookTranslationProvider {
                 &result.effective_source_language,
             )?;
         }
+        if is_vocabulary_eligible(&request.text) {
+            let local = self.textbooks.senses_for_word(
+                &request.text,
+                &result.effective_source_language,
+                &result.target_language,
+            )?;
+            if !local.is_empty() {
+                result.senses = normalize_senses(
+                    &result.translated_text,
+                    result.part_of_speech,
+                    &result
+                        .senses
+                        .iter()
+                        .cloned()
+                        .chain(local)
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
         Ok(result)
     }
 
@@ -686,7 +824,23 @@ impl TranslationProvider for TextbookTranslationProvider {
 
 impl VocabularyTranslationProvider {
     pub fn new(upstream: Arc<dyn TranslationProvider>, store: Arc<VocabularyStore>) -> Self {
-        Self { upstream, store }
+        Self {
+            upstream,
+            store,
+            textbooks: None,
+        }
+    }
+
+    pub fn with_textbooks(
+        upstream: Arc<dyn TranslationProvider>,
+        store: Arc<VocabularyStore>,
+        textbooks: Arc<TextbookStore>,
+    ) -> Self {
+        Self {
+            upstream,
+            store,
+            textbooks: Some(textbooks),
+        }
     }
 }
 
@@ -739,7 +893,22 @@ impl TranslationProvider for VocabularyTranslationProvider {
             return self.upstream.translate(request).await;
         }
         let now_ms = now_epoch_ms();
-        if let Some(result) = self.store.lookup_and_touch(request, now_ms)? {
+        if let Some(mut result) = self.store.lookup_and_touch(request, now_ms)? {
+            if let Some(textbooks) = &self.textbooks {
+                let local = textbooks.senses_for_word(
+                    &request.text,
+                    &result.effective_source_language,
+                    &result.target_language,
+                )?;
+                if !local.is_empty() {
+                    result.senses = self.store.merge_senses_for_entry(
+                        &request.text,
+                        &result,
+                        &local,
+                        now_ms,
+                    )?;
+                }
+            }
             return Ok(result);
         }
         let result = self.upstream.translate(request).await?;
@@ -839,21 +1008,348 @@ fn to_i64(value: u64) -> i64 {
     value.min(i64::MAX as u64) as i64
 }
 
+fn migrate_senses(connection: &mut Connection) -> Result<(), AppError> {
+    let transaction = connection.transaction().map_err(storage_error)?;
+    transaction
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS vocabulary_schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at_epoch_ms INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS vocabulary_senses (
+               id INTEGER PRIMARY KEY,
+               vocabulary_entry_id INTEGER NOT NULL REFERENCES vocabulary_entries(id) ON DELETE CASCADE,
+               display_text TEXT NOT NULL,
+               normalized_text TEXT NOT NULL,
+               pos_key TEXT NOT NULL DEFAULT '',
+               rank INTEGER NOT NULL,
+               is_primary INTEGER NOT NULL CHECK(is_primary IN (0, 1)),
+               confidence REAL,
+               created_at_epoch_ms INTEGER NOT NULL,
+               updated_at_epoch_ms INTEGER NOT NULL,
+               UNIQUE(vocabulary_entry_id, normalized_text, pos_key)
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS vocabulary_senses_one_primary
+               ON vocabulary_senses(vocabulary_entry_id) WHERE is_primary = 1;
+             CREATE INDEX IF NOT EXISTS vocabulary_senses_translation_search
+               ON vocabulary_senses(normalized_text, vocabulary_entry_id);
+             CREATE TABLE IF NOT EXISTS vocabulary_sense_origins (
+               id INTEGER PRIMARY KEY,
+               vocabulary_sense_id INTEGER NOT NULL REFERENCES vocabulary_senses(id) ON DELETE CASCADE,
+               origin_kind TEXT NOT NULL CHECK(origin_kind IN ('personal', 'textbook', 'provider')),
+               source_id TEXT NOT NULL,
+               source_version TEXT NOT NULL DEFAULT '',
+               evidence_key TEXT NOT NULL DEFAULT '',
+               source_rank INTEGER,
+               confidence REAL,
+               UNIQUE(vocabulary_sense_id, origin_kind, source_id, source_version, evidence_key)
+             );
+             INSERT OR IGNORE INTO vocabulary_senses (
+               vocabulary_entry_id, display_text, normalized_text, pos_key, rank,
+               is_primary, confidence, created_at_epoch_ms, updated_at_epoch_ms
+             )
+             SELECT id, translated_text, lower(trim(translated_text)),
+                    coalesce(part_of_speech, ''), 0, 1, NULL,
+                    first_seen_epoch_ms, last_seen_epoch_ms
+             FROM vocabulary_entries;
+             INSERT OR IGNORE INTO vocabulary_sense_origins (
+               vocabulary_sense_id, origin_kind, source_id, source_version, evidence_key
+             )
+             SELECT id, 'personal', 'vocabulary', '', 'primary' FROM vocabulary_senses
+             WHERE is_primary = 1;
+             INSERT OR IGNORE INTO vocabulary_schema_migrations(version, applied_at_epoch_ms)
+             VALUES (1, 0);
+             INSERT OR IGNORE INTO vocabulary_schema_migrations(version, applied_at_epoch_ms)
+             VALUES (2, strftime('%s','now') * 1000);",
+        )
+        .map_err(storage_error)?;
+    transaction.commit().map_err(storage_error)
+}
+
+fn load_senses(
+    connection: &Connection,
+    entry_id: i64,
+) -> Result<Vec<VocabularySenseSummary>, AppError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, display_text, pos_key, rank, is_primary
+             FROM vocabulary_senses
+             WHERE vocabulary_entry_id = ?1
+             ORDER BY is_primary DESC, rank, normalized_text, pos_key",
+        )
+        .map_err(storage_error)?;
+    let rows = statement
+        .query_map(params![entry_id], |row| {
+            let pos_key: String = row.get(2)?;
+            Ok(VocabularySenseSummary {
+                id: row.get(0)?,
+                text: row.get(1)?,
+                part_of_speech: PartOfSpeech::from_normalized(&pos_key),
+                rank: row.get::<_, i64>(3)?.clamp(0, u8::MAX as i64) as u8,
+                is_primary: row.get::<_, i64>(4)? == 1,
+            })
+        })
+        .map_err(storage_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+}
+
+fn persist_senses(
+    connection: &Connection,
+    entry_id: i64,
+    result: &TranslationResult,
+    primary_text: &str,
+) -> Result<(), AppError> {
+    let fallback = TranslationSense {
+        text: primary_text.to_owned(),
+        part_of_speech: result.part_of_speech,
+        rank: 0,
+        is_primary: true,
+        confidence: None,
+    };
+    let candidates: Vec<&TranslationSense> = if result.senses.is_empty() {
+        vec![&fallback]
+    } else {
+        result.senses.iter().take(32).collect()
+    };
+    let mut seen = HashSet::new();
+    for sense in candidates {
+        let normalized = normalize_text(&sense.text);
+        let pos_key = sense.part_of_speech.map(PartOfSpeech::as_str).unwrap_or("");
+        if normalized.is_empty() || !seen.insert((normalized.clone(), pos_key)) {
+            continue;
+        }
+        connection
+            .execute(
+                "INSERT INTO vocabulary_senses (
+                   vocabulary_entry_id, display_text, normalized_text, pos_key, rank,
+                   is_primary, confidence, created_at_epoch_ms, updated_at_epoch_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5,
+                   ?6 AND NOT EXISTS (SELECT 1 FROM vocabulary_senses WHERE vocabulary_entry_id = ?1 AND is_primary = 1),
+                   ?7, strftime('%s','now') * 1000, strftime('%s','now') * 1000)
+                 ON CONFLICT(vocabulary_entry_id, normalized_text, pos_key) DO UPDATE SET
+                   display_text = excluded.display_text,
+                   rank = min(vocabulary_senses.rank, excluded.rank),
+                   confidence = coalesce(excluded.confidence, vocabulary_senses.confidence),
+                   updated_at_epoch_ms = excluded.updated_at_epoch_ms",
+                params![
+                    entry_id,
+                    sense.text.trim(),
+                    normalized,
+                    pos_key,
+                    i64::from(sense.rank),
+                    i64::from(sense.is_primary),
+                    sense.confidence
+                ],
+            )
+            .map_err(storage_error)?;
+    }
+    normalize_persisted_sense_limits(connection, entry_id)?;
+    Ok(())
+}
+
+// The caller owns the transaction. Keep every origin when an unlabeled legacy
+// sense acquires authoritative POS; other known POS senses remain distinct.
+pub(super) fn coalesce_unknown_senses(
+    connection: &Connection,
+    entry_id: i64,
+) -> Result<(), AppError> {
+    let pairs = {
+        let mut statement = connection.prepare(
+            "SELECT unknown.id, unknown.is_primary,
+                    (SELECT known.id FROM vocabulary_senses known
+                     WHERE known.vocabulary_entry_id = unknown.vocabulary_entry_id
+                       AND known.normalized_text = unknown.normalized_text AND known.pos_key != ''
+                     ORDER BY known.is_primary DESC, known.rank, known.confidence DESC, known.pos_key, known.id LIMIT 1)
+             FROM vocabulary_senses unknown
+             WHERE unknown.vocabulary_entry_id = ?1 AND unknown.pos_key = ''"
+        ).map_err(storage_error)?;
+        let rows = statement
+            .query_map(params![entry_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        rows
+    };
+    for (unknown, was_primary, known) in pairs {
+        let Some(known) = known else { continue };
+        connection.execute(
+            "INSERT INTO vocabulary_sense_origins
+               (vocabulary_sense_id, origin_kind, source_id, source_version, evidence_key, source_rank, confidence)
+             SELECT ?2, origin_kind, source_id, source_version, evidence_key, source_rank, confidence
+             FROM vocabulary_sense_origins WHERE vocabulary_sense_id = ?1
+             ON CONFLICT(vocabulary_sense_id, origin_kind, source_id, source_version, evidence_key)
+             DO UPDATE SET source_rank = coalesce(min(source_rank, excluded.source_rank), source_rank, excluded.source_rank),
+                           confidence = coalesce(max(confidence, excluded.confidence), confidence, excluded.confidence)",
+            params![unknown, known],
+        ).map_err(storage_error)?;
+        connection
+            .execute(
+                "DELETE FROM vocabulary_senses WHERE id = ?1",
+                params![unknown],
+            )
+            .map_err(storage_error)?;
+        if was_primary {
+            connection
+                .execute(
+                    "UPDATE vocabulary_senses SET is_primary = 1, rank = 0 WHERE id = ?1",
+                    params![known],
+                )
+                .map_err(storage_error)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn normalize_persisted_sense_limits(
+    connection: &Connection,
+    entry_id: i64,
+) -> Result<(), AppError> {
+    coalesce_unknown_senses(connection, entry_id)?;
+    let count = connection
+        .query_row(
+            "SELECT count(*) FROM vocabulary_senses WHERE vocabulary_entry_id = ?1",
+            params![entry_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(storage_error)?;
+    if count > 32 {
+        eprintln!(
+            "lexical sense overflow: provider=vocabulary-store vocabulary_entry_id={entry_id} retained=32 discarded={}",
+            count - 32
+        );
+        connection
+            .execute(
+                "DELETE FROM vocabulary_senses
+                 WHERE vocabulary_entry_id = ?1
+                   AND id NOT IN (
+                     SELECT id FROM vocabulary_senses
+                     WHERE vocabulary_entry_id = ?1
+                     ORDER BY is_primary DESC, rank, id
+                     LIMIT 32
+                   )",
+                params![entry_id],
+            )
+            .map_err(storage_error)?;
+    }
+    connection
+        .execute(
+            "UPDATE vocabulary_senses AS current
+             SET rank = (
+               SELECT count(*) FROM vocabulary_senses AS prior
+               WHERE prior.vocabulary_entry_id = current.vocabulary_entry_id
+                 AND (
+                   prior.is_primary > current.is_primary
+                   OR (prior.is_primary = current.is_primary AND prior.rank < current.rank)
+                   OR (prior.is_primary = current.is_primary AND prior.rank = current.rank AND prior.id < current.id)
+                 )
+             )
+             WHERE current.vocabulary_entry_id = ?1",
+            params![entry_id],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn normalize_senses(
+    primary_text: &str,
+    primary_pos: Option<PartOfSpeech>,
+    candidates: &[TranslationSense],
+) -> Vec<TranslationSense> {
+    let mut ordered = candidates.to_vec();
+    ordered.sort_by(|left, right| {
+        left.rank
+            .cmp(&right.rank)
+            .then_with(|| {
+                right
+                    .confidence
+                    .unwrap_or(0.0)
+                    .total_cmp(&left.confidence.unwrap_or(0.0))
+            })
+            .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.part_of_speech.cmp(&right.part_of_speech))
+    });
+    let primary_normalized = normalize_text(primary_text);
+    let primary_pos = primary_pos.or_else(|| {
+        ordered
+            .iter()
+            .find(|sense| {
+                sense.part_of_speech.is_some() && normalize_text(&sense.text) == primary_normalized
+            })
+            .and_then(|sense| sense.part_of_speech)
+    });
+    let known_texts = ordered
+        .iter()
+        .filter(|sense| sense.part_of_speech.is_some())
+        .map(|sense| normalize_text(&sense.text))
+        .collect::<HashSet<_>>();
+    let mut result = vec![TranslationSense {
+        text: primary_text.trim().to_owned(),
+        part_of_speech: primary_pos,
+        rank: 0,
+        is_primary: true,
+        confidence: None,
+    }];
+    let mut seen = HashSet::from([(
+        primary_normalized,
+        primary_pos.map(PartOfSpeech::as_str).unwrap_or(""),
+    )]);
+    let mut discarded = 0_usize;
+    for mut sense in ordered {
+        let normalized = normalize_text(&sense.text);
+        if sense.part_of_speech.is_none() && known_texts.contains(&normalized) {
+            continue;
+        }
+        let pos = sense.part_of_speech.map(PartOfSpeech::as_str).unwrap_or("");
+        if normalized.is_empty() || !seen.insert((normalized, pos)) {
+            continue;
+        }
+        if result.len() == 32 {
+            discarded += 1;
+            continue;
+        }
+        sense.is_primary = false;
+        sense.rank = result.len() as u8;
+        result.push(sense);
+    }
+    if discarded > 0 {
+        eprintln!(
+            "lexical sense overflow: provider=vocabulary-merge retained=32 discarded={discarded}"
+        );
+    }
+    result
+}
+
 fn row_to_entry(row: &Row<'_>, now_ms: u64) -> rusqlite::Result<VocabularyEntry> {
     let recall_score = row.get::<_, f64>(7)?;
     let last_reviewed_epoch_ms = row.get::<_, Option<i64>>(14)?.map(|value| value as u64);
     let effective_recall = effective_recall(recall_score, last_reviewed_epoch_ms, now_ms);
+    let id = row.get(0)?;
+    let translated_text: String = row.get(2)?;
+    let part_of_speech = row
+        .get::<_, Option<String>>(15)?
+        .and_then(|value| PartOfSpeech::from_normalized(&value));
     Ok(VocabularyEntry {
-        id: row.get(0)?,
+        id,
         source_text: row.get(1)?,
-        translated_text: row.get(2)?,
+        translated_text: translated_text.clone(),
         example_sentence: row.get(16)?,
         requested_source_language: row.get(3)?,
         effective_source_language: row.get(4)?,
         target_language: row.get(5)?,
-        part_of_speech: row
-            .get::<_, Option<String>>(15)?
-            .and_then(|value| PartOfSpeech::from_normalized(&value)),
+        part_of_speech,
+        senses: vec![VocabularySenseSummary {
+            id,
+            text: translated_text,
+            part_of_speech,
+            rank: 0,
+            is_primary: true,
+        }],
         lookup_count: row.get::<_, i64>(6)? as u64,
         recall_score,
         effective_recall,
@@ -996,6 +1492,7 @@ mod tests {
                 target_language: request.target_language.clone(),
                 part_of_speech: (request.text.trim().eq_ignore_ascii_case("hello"))
                     .then_some(PartOfSpeech::Interjection),
+                senses: Vec::new(),
             })
         }
 
@@ -1035,10 +1532,22 @@ mod tests {
             .expect("fixture entry");
         connection
             .execute(
+                "INSERT INTO simple_translation VALUES ('ephemeral', '短命的')",
+                [],
+            )
+            .expect("alternative fixture entry");
+        connection
+            .execute(
                 "INSERT INTO translation VALUES ('eng/ephemeral__Adjective__1', 'ephemeral', '短暂的', 1)",
                 [],
             )
             .expect("lexical fixture entry");
+        connection
+            .execute(
+                "INSERT INTO translation VALUES ('eng/ephemeral__Adjective__2', 'ephemeral', '短命的', 0.8)",
+                [],
+            )
+            .expect("alternative lexical fixture entry");
         drop(connection);
         let bytes = std::fs::read(fixture.path()).expect("fixture bytes");
         let catalog = TextbookCatalogItem {
@@ -1081,6 +1590,7 @@ mod tests {
             .await
             .expect("textbook hit");
         assert_eq!(first.translated_text, "短暂的");
+        assert_eq!(first.senses.len(), 2);
         assert_eq!(first.part_of_speech, Some(PartOfSpeech::Adjective));
         assert_eq!(api.calls.load(Ordering::SeqCst), 0);
         let promoted = personal.list(None, 2).expect("personal");
@@ -1241,6 +1751,7 @@ mod tests {
                     effective_source_language: "zh-CN".into(),
                     target_language: "en".into(),
                     part_of_speech: None,
+                    senses: Vec::new(),
                 })
             }
 
@@ -1337,6 +1848,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn old_cache_hit_merges_installed_textbook_senses_without_online_call() {
+        let file = NamedTempFile::new().expect("app db");
+        let store = Arc::new(VocabularyStore::open(file.path()).expect("store"));
+        let textbooks = install_test_textbook(file.path());
+        let request = request_to(1, "ephemeral", "zh-CN");
+        let primary = TranslationResult {
+            selection_id: 1,
+            translated_text: "短暂的".into(),
+            detected_source_language: Some("en".into()),
+            effective_source_language: "en".into(),
+            target_language: "zh-CN".into(),
+            part_of_speech: Some(PartOfSpeech::Adjective),
+            senses: Vec::new(),
+        };
+        store
+            .insert_miss(&request, &primary, 1)
+            .expect("legacy row");
+        let upstream = Arc::new(FakeProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let provider =
+            VocabularyTranslationProvider::with_textbooks(upstream.clone(), store, textbooks);
+
+        let result = provider.translate(&request).await.expect("cache hit");
+        assert_eq!(upstream.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(result.translated_text, "短暂的");
+        assert_eq!(result.senses.len(), 2);
+        assert!(result.senses[0].is_primary);
+    }
+
+    #[tokio::test]
     async fn online_translation_can_enrich_from_an_installed_compatible_textbook() {
         struct DifferentSenseProvider;
         #[async_trait]
@@ -1352,6 +1894,7 @@ mod tests {
                     effective_source_language: "en".into(),
                     target_language: request.target_language.clone(),
                     part_of_speech: None,
+                    senses: Vec::new(),
                 })
             }
 
@@ -1735,6 +2278,7 @@ mod tests {
                     effective_source_language: "en".into(),
                     target_language: request.target_language.clone(),
                     part_of_speech: None,
+                    senses: Vec::new(),
                 })
             }
             async fn supported_languages(&self) -> Result<Vec<String>, AppError> {
@@ -1750,5 +2294,102 @@ mod tests {
             .expect("translation");
         assert_eq!(result.translated_text, "same");
         assert!(store.list(None, 1).expect("list").is_empty());
+    }
+
+    #[test]
+    fn persists_lists_and_searches_all_translation_senses() {
+        let store = VocabularyStore::in_memory().expect("store");
+        let request = request(8, "rationality");
+        let result = TranslationResult {
+            selection_id: 8,
+            translated_text: "理性".into(),
+            detected_source_language: Some("en".into()),
+            effective_source_language: "en".into(),
+            target_language: "zh-CN".into(),
+            part_of_speech: Some(PartOfSpeech::Noun),
+            senses: vec![
+                TranslationSense {
+                    text: "理性".into(),
+                    part_of_speech: Some(PartOfSpeech::Noun),
+                    rank: 0,
+                    is_primary: true,
+                    confidence: None,
+                },
+                TranslationSense {
+                    text: "合理".into(),
+                    part_of_speech: Some(PartOfSpeech::Adjective),
+                    rank: 1,
+                    is_primary: false,
+                    confidence: Some(0.8),
+                },
+            ],
+        };
+        store.insert_miss(&request, &result, 10).expect("insert");
+        let entries = store.list(Some("合理"), 11).expect("search sense");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].senses.len(), 2);
+        assert_eq!(
+            entries[0].senses[1].part_of_speech,
+            Some(PartOfSpeech::Adjective)
+        );
+        let connection = store.connection.lock().expect("connection");
+        let versions: i64 = connection
+            .query_row(
+                "SELECT max(version) FROM vocabulary_schema_migrations",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration version");
+        assert_eq!(versions, 2);
+    }
+
+    #[test]
+    fn enrichment_coalesces_unknown_primary_preserving_known_pos_origins_and_learning() {
+        let store = VocabularyStore::in_memory().unwrap();
+        let request = request_to(1, "record", "zh-CN");
+        let result = TranslationResult {
+            selection_id: 1,
+            translated_text: "记录".into(),
+            detected_source_language: Some("en".into()),
+            effective_source_language: "en".into(),
+            target_language: "zh-CN".into(),
+            part_of_speech: None,
+            senses: vec![],
+        };
+        store.insert_miss(&request, &result, 1).unwrap();
+        let before = store.list(None, 1).unwrap().remove(0);
+        store.connection.lock().unwrap().execute("INSERT INTO vocabulary_sense_origins (vocabulary_sense_id, origin_kind, source_id, evidence_key) VALUES (?1, 'personal', 'test', 'unknown-primary')", params![before.senses[0].id]).unwrap();
+        let additions = vec![
+            TranslationSense {
+                text: "记录".into(),
+                part_of_speech: Some(PartOfSpeech::Verb),
+                rank: 1,
+                is_primary: false,
+                confidence: Some(0.9),
+            },
+            TranslationSense {
+                text: "记录".into(),
+                part_of_speech: Some(PartOfSpeech::Noun),
+                rank: 2,
+                is_primary: false,
+                confidence: Some(0.8),
+            },
+        ];
+        for _ in 0..2 {
+            let senses = store
+                .merge_senses_for_entry("record", &result, &additions, 2)
+                .unwrap();
+            assert_eq!(senses.len(), 2);
+            assert_eq!(senses[0].part_of_speech, Some(PartOfSpeech::Verb));
+            assert!(senses[0].is_primary);
+            assert_eq!(senses[1].part_of_speech, Some(PartOfSpeech::Noun));
+        }
+        let after = store.list(None, 2).unwrap().remove(0);
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.translated_text, before.translated_text);
+        assert_eq!(after.lookup_count, before.lookup_count);
+        assert_eq!(after.recall_score, before.recall_score);
+        let origins: i64 = store.connection.lock().unwrap().query_row("SELECT count(*) FROM vocabulary_sense_origins o JOIN vocabulary_senses s ON s.id = o.vocabulary_sense_id WHERE o.source_id = 'test' AND s.pos_key = 'verb' AND s.is_primary = 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(origins, 1);
     }
 }

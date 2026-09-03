@@ -27,13 +27,15 @@ fn builder() -> tauri::Builder<tauri::Wry> {
     use commands::{
         add_textbook_entry_to_personal, correct_vocabulary_source_language,
         delete_vocabulary_entry, dismiss_overlay, download_textbook, get_credential_status,
-        get_permission_status, get_practice_preferences, get_practice_question,
-        get_related_vocabulary, get_settings, get_speech_availability, list_downloaded_textbooks,
-        list_textbook_catalog, list_textbook_entries, list_vocabulary, list_vocabulary_provenance,
+        get_filtered_related_vocabulary, get_permission_status, get_practice_preferences,
+        get_practice_question, get_related_vocabulary, get_settings, get_speech_availability,
+        get_vocabulary_detail, list_downloaded_textbooks, list_textbook_catalog,
+        list_textbook_entries, list_vocabulary, list_vocabulary_provenance,
         open_accessibility_settings, overlay_ready, prompt_and_save_credential, quit_application,
-        remove_credential, remove_downloaded_textbook, save_practice_preferences, save_settings,
-        set_active_textbook, speak_text, stop_speech, submit_practice_answer, sync_permission,
-        test_credential, translate_input, translate_selection, RuntimeState,
+        refresh_vocabulary_meanings, remove_credential, remove_downloaded_textbook,
+        save_practice_preferences, save_settings, set_active_textbook, speak_text, stop_speech,
+        submit_practice_answer, sync_permission, test_credential, translate_input,
+        translate_selection, RuntimeState,
     };
     use tauri_plugin_autostart::MacosLauncher;
 
@@ -63,6 +65,9 @@ fn builder() -> tauri::Builder<tauri::Wry> {
             list_textbook_entries,
             add_textbook_entry_to_personal,
             get_related_vocabulary,
+            get_vocabulary_detail,
+            refresh_vocabulary_meanings,
+            get_filtered_related_vocabulary,
             get_practice_preferences,
             save_practice_preferences,
             get_practice_question,

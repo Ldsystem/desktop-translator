@@ -100,10 +100,40 @@ describe("QuickTranslatePanel", () => {
         detectedSourceLanguage: "fr",
         effectiveSourceLanguage: "fr",
         targetLanguage: "es",
+        senses: [
+          { text: "hola", rank: 0, isPrimary: true, partOfSpeech: "interjection" },
+          { text: "buenas", rank: 1, isPrimary: false, partOfSpeech: "interjection" },
+        ],
       },
     });
 
     expect(container.textContent).toContain("hola");
+    expect(container.querySelector(".translation-senses")?.textContent).toContain("Other translations (1)");
+    expect(container.querySelector(".translation-senses")?.textContent).toContain("buenas");
+  });
+
+  it("bounds a large alternative set until Show all is activated", () => {
+    render({
+      mode: "result",
+      result: {
+        selectionId: 0,
+        translatedText: "one",
+        effectiveSourceLanguage: "en",
+        targetLanguage: "es",
+        senses: [
+          { text: "one", rank: 0, isPrimary: true },
+          ...["two", "three", "four", "five", "six"].map((text, index) => ({ text, rank: index + 1, isPrimary: false })),
+        ],
+      },
+    });
+    const toggle = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Show all");
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelectorAll(".translation-senses__item")).toHaveLength(3);
+    expect(container.querySelector("details:not([open]) .translation-senses__item")).toBeNull();
+    expect(container.querySelector(".translation-senses")?.tagName).toBe("SECTION");
+    act(() => toggle?.click());
+    expect(container.querySelectorAll(".translation-senses__item")).toHaveLength(5);
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("reports a failure without clearing the typed text", () => {
