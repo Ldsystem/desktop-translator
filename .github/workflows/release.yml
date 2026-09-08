@@ -166,6 +166,7 @@ jobs:
     name: Tencent COS release mirror
     needs: [macos, windows]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
 
@@ -186,35 +187,22 @@ jobs:
             exit 1
           fi
 
-      - name: Install COSCLI
-        env:
-          COSCLI_VERSION: v1.0.9
-          COSCLI_SHA256: a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
-        run: |
-          set -euo pipefail
-          coscli="$RUNNER_TEMP/coscli"
-          curl --fail --location --silent --show-error \
-            --connect-timeout 30 \
-            --max-time 180 \
-            --retry 3 \
-            --retry-all-errors \
-            --output "$coscli" \
-            "https://github.com/tencentyun/coscli/releases/download/${COSCLI_VERSION}/coscli-${COSCLI_VERSION}-linux-amd64"
-          echo "${COSCLI_SHA256}  ${coscli}" | sha256sum --check --strict
-          chmod +x "$coscli"
-          "$coscli" --version
+      - name: Check S3-compatible client
+        run: aws --version
 
       - name: Upload release assets to Tencent COS
         env:
-          COS_SECRET_ID: ${{ secrets.COS_BUK_SEC_ID }}
-          COS_SECRET_KEY: ${{ secrets.COS_BUK_SEC_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.COS_BUK_SEC_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.COS_BUK_SEC_KEY }}
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: "3"
           COS_BUCKET_DOMAIN: ${{ vars.COS_BUK_DOMAIN }}
           REPOSITORY_NAME: ${{ github.event.repository.name }}
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          : "${COS_SECRET_ID:?COS_BUK_SEC_ID repository secret is required}"
-          : "${COS_SECRET_KEY:?COS_BUK_SEC_KEY repository secret is required}"
+          : "${AWS_ACCESS_KEY_ID:?COS_BUK_SEC_ID repository secret is required}"
+          : "${AWS_SECRET_ACCESS_KEY:?COS_BUK_SEC_KEY repository secret is required}"
           : "${COS_BUCKET_DOMAIN:?COS_BUK_DOMAIN repository variable is required}"
 
           domain="${COS_BUCKET_DOMAIN#https://}"
@@ -230,31 +218,24 @@ jobs:
 
           bucket="${domain%%.cos.*}"
           endpoint="${domain#${bucket}.}"
-          destination="cos://${bucket}/${REPOSITORY_NAME}/${RELEASE_TAG}"
-          coscli="$RUNNER_TEMP/coscli"
-          cos_config="$RUNNER_TEMP/cos.yaml"
-
-          # Keep credentials out of command arguments and remove the temporary
-          # configuration as soon as this step exits.
-          trap 'rm -f "$cos_config"' EXIT
-          umask 077
-          jq -n \
-            --arg secret_id "$COS_SECRET_ID" \
-            --arg secret_key "$COS_SECRET_KEY" \
-            '{cos: {base: {secretid: $secret_id, secretkey: $secret_key, sessiontoken: "", protocol: "https", disableEncryption: "true"}, buckets: []}}' \
-            > "$cos_config"
+          region="${endpoint#cos.}"
+          region="${region%.myqcloud.com}"
+          export AWS_DEFAULT_REGION="$region"
 
           while IFS= read -r -d '' file; do
             name="${file##*/}"
-            "$coscli" cp "$file" "${destination}/${name}" \
-              --config-path "$cos_config" \
-              --endpoint "$endpoint" \
-              --acl public-read \
-              --disable-log \
-              --process-log=false \
-              --fail-output=false \
-              --err-retry-num 5 \
-              --err-retry-interval 3
+            key="${REPOSITORY_NAME}/${RELEASE_TAG}/${name}"
+            timeout --signal=TERM --kill-after=15s 240s \
+              aws s3api put-object \
+                --bucket "$bucket" \
+                --key "$key" \
+                --body "$file" \
+                --acl public-read \
+                --endpoint-url "https://${endpoint}" \
+                --cli-connect-timeout 30 \
+                --cli-read-timeout 120 \
+                --no-cli-pager \
+                >/dev/null
             echo "Uploaded $name to ${REPOSITORY_NAME}/${RELEASE_TAG}/"
           done < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
 
