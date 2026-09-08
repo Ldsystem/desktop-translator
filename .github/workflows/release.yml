@@ -162,8 +162,8 @@ jobs:
           $exe = Get-Item "src-tauri/target/release/desktop-translator.exe"
           gh release upload "$env:RELEASE_TAG" $nsis.FullName $exe.FullName "windows-sha256.txt" --clobber
 
-  gitee:
-    name: Gitee release mirror
+  cos:
+    name: Tencent COS release mirror
     needs: [macos, windows]
     runs-on: ubuntu-latest
     permissions:
@@ -186,99 +186,97 @@ jobs:
             exit 1
           fi
 
-      - name: Create or reuse Gitee release
-        id: gitee-release
+      - name: Install COSCLI
         env:
-          GITEE_PRIVATE_SECRET: ${{ secrets.GITEE_PRIVATE_SECRET }}
-          GITEE_OWNER: shenglongliu
-          GITEE_REPO: desktop-translator
+          COSCLI_VERSION: v1.0.9
+          COSCLI_SHA256: a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
+        run: |
+          set -euo pipefail
+          coscli="$RUNNER_TEMP/coscli"
+          curl --fail --location --silent --show-error \
+            --connect-timeout 30 \
+            --max-time 180 \
+            --retry 3 \
+            --retry-all-errors \
+            --output "$coscli" \
+            "https://github.com/tencentyun/coscli/releases/download/${COSCLI_VERSION}/coscli-${COSCLI_VERSION}-linux-amd64"
+          echo "${COSCLI_SHA256}  ${coscli}" | sha256sum --check --strict
+          chmod +x "$coscli"
+          "$coscli" --version
+
+      - name: Upload release assets to Tencent COS
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_BUK_SEC_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_BUK_SEC_KEY }}
+          COS_BUCKET_DOMAIN: ${{ vars.COS_BUK_DOMAIN }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          : "${GITEE_PRIVATE_SECRET:?GITEE_PRIVATE_SECRET repository secret is required}"
+          : "${COS_SECRET_ID:?COS_BUK_SEC_ID repository secret is required}"
+          : "${COS_SECRET_KEY:?COS_BUK_SEC_KEY repository secret is required}"
+          : "${COS_BUCKET_DOMAIN:?COS_BUK_DOMAIN repository variable is required}"
 
-          api="https://gitee.com/api/v5"
-          release_url="$api/repos/$GITEE_OWNER/$GITEE_REPO/releases/tags/$RELEASE_TAG"
-          response_file="$RUNNER_TEMP/gitee-release.json"
-          status="$(curl --silent --show-error --max-time 30 \
-            --retry 3 --retry-delay 2 \
-            --header "Accept: application/json" \
-            --header "Authorization: Bearer ${GITEE_PRIVATE_SECRET}" \
-            --output "$response_file" \
-            --write-out "%{http_code}" \
-            "$release_url")"
+          domain="${COS_BUCKET_DOMAIN#https://}"
+          domain="${domain#http://}"
+          domain="${domain%%/*}"
+          case "$domain" in
+            *.cos.*.myqcloud.com) ;;
+            *)
+              echo "COS_BUK_DOMAIN must be a default COS domain such as bucket-appid.cos.region.myqcloud.com" >&2
+              exit 1
+              ;;
+          esac
 
-          if [ "$status" = "200" ] && jq -e 'type == "object" and (.id != null)' "$response_file" >/dev/null; then
-            echo "Gitee release $RELEASE_TAG already exists; reusing it"
-          elif [ "$status" = "404" ] || {
-            [ "$status" = "200" ] &&
-              jq -e 'type == "null" or (type == "object" and .id == null)' "$response_file" >/dev/null
-          }; then
-            release_body="Automated release for ${RELEASE_TAG}. GitHub source release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
-            curl --fail-with-body --silent --show-error --max-time 30 \
-              --request POST \
-              --header "Accept: application/json" \
-              --header "Authorization: Bearer ${GITEE_PRIVATE_SECRET}" \
-              --data-urlencode "tag_name=${RELEASE_TAG}" \
-              --data-urlencode "name=Desktop Translator ${RELEASE_TAG}" \
-              --data-urlencode "body=${release_body}" \
-              --data-urlencode "target_commitish=main" \
-              --output "$response_file" \
-              "$api/repos/$GITEE_OWNER/$GITEE_REPO/releases"
-            echo "Created Gitee release $RELEASE_TAG"
-          else
-            echo "Gitee release lookup failed (HTTP $status)" >&2
-            exit 1
-          fi
+          bucket="${domain%%.cos.*}"
+          endpoint="${domain#${bucket}.}"
+          destination="cos://${bucket}/${REPOSITORY_NAME}/${RELEASE_TAG}"
+          coscli="$RUNNER_TEMP/coscli"
+          cos_config="$RUNNER_TEMP/cos.yaml"
 
-          release_id="$(jq -er '.id' "$response_file")"
-          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
-
-      - name: Upload missing assets to Gitee
-        env:
-          GITEE_PRIVATE_SECRET: ${{ secrets.GITEE_PRIVATE_SECRET }}
-          GITEE_OWNER: shenglongliu
-          GITEE_REPO: desktop-translator
-          RELEASE_ID: ${{ steps.gitee-release.outputs.release_id }}
-        run: |
-          set -euo pipefail
-          : "${GITEE_PRIVATE_SECRET:?GITEE_PRIVATE_SECRET repository secret is required}"
-
-          api="https://gitee.com/api/v5"
-          attachments_url="$api/repos/$GITEE_OWNER/$GITEE_REPO/releases/$RELEASE_ID/attach_files"
-          attachments_file="$RUNNER_TEMP/gitee-attachments.json"
-          status="$(curl --silent --show-error --max-time 30 \
-            --retry 3 --retry-delay 2 \
-            --header "Accept: application/json" \
-            --header "Authorization: Bearer ${GITEE_PRIVATE_SECRET}" \
-            --output "$attachments_file" \
-            --write-out "%{http_code}" \
-            "${attachments_url}?per_page=100")"
-          if [ "$status" != "200" ]; then
-            echo "Gitee attachment lookup failed (HTTP $status)" >&2
-            exit 1
-          fi
-          jq -e 'type == "array"' "$attachments_file" >/dev/null
+          # Keep credentials out of command arguments and remove the temporary
+          # configuration as soon as this step exits.
+          trap 'rm -f "$cos_config"' EXIT
+          umask 077
+          jq -n \
+            --arg secret_id "$COS_SECRET_ID" \
+            --arg secret_key "$COS_SECRET_KEY" \
+            '{cos: {base: {secretid: $secret_id, secretkey: $secret_key, sessiontoken: "", protocol: "https", disableEncryption: "true"}, buckets: []}}' \
+            > "$cos_config"
 
           while IFS= read -r -d '' file; do
             name="${file##*/}"
-            if jq -e --arg name "$name" 'any(.[]; .name == $name)' "$attachments_file" >/dev/null; then
-              echo "Gitee already has $name; skipping"
-              continue
-            fi
+            "$coscli" cp "$file" "${destination}/${name}" \
+              --config-path "$cos_config" \
+              --endpoint "$endpoint" \
+              --acl public-read \
+              --disable-log \
+              --process-log=false \
+              --fail-output=false \
+              --err-retry-num 5 \
+              --err-retry-interval 3
+            echo "Uploaded $name to ${REPOSITORY_NAME}/${RELEASE_TAG}/"
+          done < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
 
-            # Gitee's v5 upload handler authenticates this multipart request
-            # reliably with access_token in the query string. Use HTTP/1.1 as
-            # well; some Gitee upload frontends leave HTTP/2 uploads hanging.
-            curl --fail-with-body --silent --show-error \
+          {
+            echo "## Tencent COS mirror"
+            echo
+            echo "Release assets:"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          while IFS= read -r -d '' file; do
+            name="${file##*/}"
+            encoded_name="$(jq -nr --arg value "$name" '$value | @uri')"
+            public_url="https://${domain}/${REPOSITORY_NAME}/${RELEASE_TAG}/${encoded_name}"
+            if ! curl --fail --silent --show-error --head \
               --connect-timeout 30 \
-              --max-time 600 \
-              --http1.1 \
-              --request POST \
-              --header "Accept: application/json" \
-              --header "Expect:" \
-              --form "file=@${file}" \
-              --output /dev/null \
-              "${attachments_url}?access_token=${GITEE_PRIVATE_SECRET}"
-            echo "Uploaded $name to Gitee"
+              --max-time 60 \
+              --retry 3 \
+              --retry-all-errors \
+              "$public_url" >/dev/null; then
+              echo "COS object is not publicly downloadable: $public_url" >&2
+              echo "Ensure the upload identity may set public-read object ACLs." >&2
+              exit 1
+            fi
+            echo "- [$name]($public_url)" >> "$GITHUB_STEP_SUMMARY"
           done < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
