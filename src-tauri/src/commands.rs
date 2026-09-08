@@ -608,9 +608,10 @@ pub async fn prompt_and_save_credential(
         (TranslationProviderId::Microsoft, _) => "Microsoft Translator Subscription Key",
         _ => "Google Cloud Translation API Key",
     };
-    // The Windows credential dialog must execute on the UI thread, while this
-    // command waits off that thread. A synchronous command could otherwise
-    // block the same event loop that `run_on_main_thread` needs to enter.
+    // Native credential dialogs must execute on the platform UI thread, while
+    // this command waits off that thread. A synchronous command could
+    // otherwise block the same event loop that `run_on_main_thread` needs to
+    // enter.
     let prompt_window = window.clone();
     let prompted = tauri::async_runtime::spawn_blocking(move || {
         prompt_credential_secret(&prompt_window, title)
@@ -630,11 +631,11 @@ fn prompt_credential_secret(
     title: &str,
 ) -> Result<Option<String>, AppError> {
     const MESSAGE: &str = "The key is stored directly in the operating-system credential vault.";
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         crate::credential_prompt::prompt_secure_text_for_window(window, title, MESSAGE)
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = window;
         crate::credential_prompt::prompt_secure_text(title, MESSAGE)

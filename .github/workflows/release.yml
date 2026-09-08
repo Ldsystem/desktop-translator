@@ -161,3 +161,106 @@ jobs:
           $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*_x64-setup.exe" | Select-Object -First 1
           $exe = Get-Item "src-tauri/target/release/desktop-translator.exe"
           gh release upload "$env:RELEASE_TAG" $nsis.FullName $exe.FullName "windows-sha256.txt" --clobber
+
+  cos:
+    name: Tencent COS release mirror
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download GitHub release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets
+
+          if ! find release-assets -maxdepth 1 -type f -print -quit | grep -q .; then
+            echo "GitHub release $RELEASE_TAG has no downloadable assets" >&2
+            exit 1
+          fi
+
+      - name: Check S3-compatible client
+        run: aws --version
+
+      - name: Upload release assets to Tencent COS
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.COS_BUK_SEC_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.COS_BUK_SEC_KEY }}
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: "3"
+          AWS_CONFIG_FILE: ${{ runner.temp }}/aws-config
+          COS_BUCKET_DOMAIN: ${{ vars.COS_BUK_DOMAIN }}
+          REPOSITORY_NAME: ${{ github.event.repository.name }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          : "${AWS_ACCESS_KEY_ID:?COS_BUK_SEC_ID repository secret is required}"
+          : "${AWS_SECRET_ACCESS_KEY:?COS_BUK_SEC_KEY repository secret is required}"
+          : "${COS_BUCKET_DOMAIN:?COS_BUK_DOMAIN repository variable is required}"
+
+          domain="${COS_BUCKET_DOMAIN#https://}"
+          domain="${domain#http://}"
+          domain="${domain%%/*}"
+          case "$domain" in
+            *.cos.*.myqcloud.com) ;;
+            *)
+              echo "COS_BUK_DOMAIN must be a default COS domain such as bucket-appid.cos.region.myqcloud.com" >&2
+              exit 1
+              ;;
+          esac
+
+          bucket="${domain%%.cos.*}"
+          endpoint="${domain#${bucket}.}"
+          region="${endpoint#cos.}"
+          region="${region%.myqcloud.com}"
+          export AWS_DEFAULT_REGION="$region"
+          printf '[default]\nregion = %s\ns3 =\n    addressing_style = virtual\n' "$region" \
+            > "$AWS_CONFIG_FILE"
+
+          while IFS= read -r -d '' file; do
+            name="${file##*/}"
+            key="${REPOSITORY_NAME}/${RELEASE_TAG}/${name}"
+            timeout --signal=TERM --kill-after=15s 240s \
+              aws s3api put-object \
+                --bucket "$bucket" \
+                --key "$key" \
+                --body "$file" \
+                --acl public-read \
+                --endpoint-url "https://${endpoint}" \
+                --cli-connect-timeout 30 \
+                --cli-read-timeout 120 \
+                --no-cli-pager \
+                >/dev/null
+            echo "Uploaded $name to ${REPOSITORY_NAME}/${RELEASE_TAG}/"
+          done < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
+
+          {
+            echo "## Tencent COS mirror"
+            echo
+            echo "Release assets:"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          while IFS= read -r -d '' file; do
+            name="${file##*/}"
+            encoded_name="$(jq -nr --arg value "$name" '$value | @uri')"
+            public_url="https://${domain}/${REPOSITORY_NAME}/${RELEASE_TAG}/${encoded_name}"
+            if ! curl --fail --silent --show-error --head \
+              --connect-timeout 30 \
+              --max-time 60 \
+              --retry 3 \
+              --retry-all-errors \
+              "$public_url" >/dev/null; then
+              echo "COS object is not publicly downloadable: $public_url" >&2
+              echo "Ensure the upload identity may set public-read object ACLs." >&2
+              exit 1
+            fi
+            echo "- [$name]($public_url)" >> "$GITHUB_STEP_SUMMARY"
+          done < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)

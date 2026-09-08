@@ -13,6 +13,25 @@ pub fn prompt_secure_text(title: &str, message: &str) -> Result<Option<String>, 
     macos::prompt(title, message)
 }
 
+/// Schedules AppKit credential UI on the main thread while the caller waits off it.
+#[cfg(target_os = "macos")]
+pub fn prompt_secure_text_for_window(
+    window: &tauri::WebviewWindow,
+    title: &str,
+    message: &str,
+) -> Result<Option<String>, AppError> {
+    let title = title.to_owned();
+    let message = message.to_owned();
+    run_prompt_on_main_thread(
+        |callback| {
+            window
+                .run_on_main_thread(callback)
+                .map_err(|_| prompt_error())
+        },
+        move || prompt_secure_text(&title, &message),
+    )
+}
+
 /// Prompts for an API key using Windows Credential UI without persistence.
 #[cfg(target_os = "windows")]
 pub fn prompt_secure_text(title: &str, message: &str) -> Result<Option<String>, AppError> {
@@ -26,8 +45,6 @@ pub fn prompt_secure_text_for_window(
     title: &str,
     message: &str,
 ) -> Result<Option<String>, AppError> {
-    use std::sync::mpsc;
-
     let parent = window
         .hwnd()
         .ok()
@@ -39,15 +56,17 @@ pub fn prompt_secure_text_for_window(
 
     let title = title.to_owned();
     let message = message.to_owned();
-    let (sender, receiver) = mpsc::sync_channel(1);
-    window
-        .run_on_main_thread(move || {
+    run_prompt_on_main_thread(
+        |callback| {
+            window
+                .run_on_main_thread(callback)
+                .map_err(|_| prompt_error())
+        },
+        move || {
             let parent = parent as *mut std::ffi::c_void;
-            let result = prompt_secure_text_with_parent(&title, &message, parent);
-            let _ = sender.send(result);
-        })
-        .map_err(|_| prompt_error())?;
-    receiver.recv().map_err(|_| prompt_error())?
+            prompt_secure_text_with_parent(&title, &message, parent)
+        },
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -66,6 +85,18 @@ fn prompt_error() -> AppError {
         "Secure credential entry is unavailable.",
         false,
     )
+}
+
+fn run_prompt_on_main_thread<S, P>(schedule: S, prompt: P) -> Result<Option<String>, AppError>
+where
+    S: FnOnce(Box<dyn FnOnce() + Send + 'static>) -> Result<(), AppError>,
+    P: FnOnce() -> Result<Option<String>, AppError> + Send + 'static,
+{
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    schedule(Box::new(move || {
+        let _ = sender.send(prompt());
+    }))?;
+    receiver.recv().map_err(|_| prompt_error())?
 }
 
 fn try_begin_prompt() -> bool {
@@ -120,7 +151,7 @@ mod macos {
 
     pub fn prompt(title: &str, message: &str) -> Result<Option<String>, AppError> {
         // SAFETY: all AppKit objects remain inside one balanced autorelease pool on
-        // the Tauri command's AppKit main thread; no Objective-C pointer escapes.
+        // the Tauri-dispatched AppKit main thread; no Objective-C pointer escapes.
         unsafe {
             let pool = objc_autoreleasePoolPush();
             let result = prompt_in_pool(title, message);
@@ -325,6 +356,41 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    };
+
+    #[test]
+    fn scheduled_prompt_runs_through_the_main_thread_handoff() {
+        let scheduled = Arc::new(AtomicBool::new(false));
+        let prompt_thread = Arc::new(Mutex::new(None));
+        let caller_thread = std::thread::current().id();
+        let schedule_flag = Arc::clone(&scheduled);
+        let prompt_thread_for_closure = Arc::clone(&prompt_thread);
+        let result = run_prompt_on_main_thread(
+            move |callback| {
+                schedule_flag.store(true, Ordering::Release);
+                let handle = std::thread::spawn(callback);
+                assert!(handle.join().is_ok());
+                Ok(())
+            },
+            move || {
+                *prompt_thread_for_closure
+                    .lock()
+                    .expect("prompt thread lock") = Some(std::thread::current().id());
+                Ok(Some("synthetic-credential-canary".to_owned()))
+            },
+        )
+        .expect("scheduled prompt should return its result");
+
+        assert!(scheduled.load(Ordering::Acquire));
+        assert_ne!(
+            *prompt_thread.lock().expect("prompt thread lock"),
+            Some(caller_thread)
+        );
+        assert_eq!(result.as_deref(), Some("synthetic-credential-canary"));
+    }
 
     #[cfg(target_os = "windows")]
     #[test]
