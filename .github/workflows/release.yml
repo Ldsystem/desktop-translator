@@ -161,3 +161,118 @@ jobs:
           $nsis = Get-ChildItem "src-tauri/target/release/bundle/nsis/*_x64-setup.exe" | Select-Object -First 1
           $exe = Get-Item "src-tauri/target/release/desktop-translator.exe"
           gh release upload "$env:RELEASE_TAG" $nsis.FullName $exe.FullName "windows-sha256.txt" --clobber
+
+  gitee:
+    name: Gitee release mirror
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download GitHub release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets
+
+          if ! find release-assets -maxdepth 1 -type f -print -quit | grep -q .; then
+            echo "GitHub release $RELEASE_TAG has no downloadable assets" >&2
+            exit 1
+          fi
+
+      - name: Create or reuse Gitee release
+        id: gitee-release
+        env:
+          GITEE_PRIVATE_SECRET: ${{ secrets.GITEE_PRIVATE_SECRET }}
+          GITEE_OWNER: shenglongliu
+          GITEE_REPO: desktop-translator
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          : "${GITEE_PRIVATE_SECRET:?GITEE_PRIVATE_SECRET repository secret is required}"
+
+          api="https://gitee.com/api/v5"
+          release_url="$api/repos/$GITEE_OWNER/$GITEE_REPO/releases/tags/$RELEASE_TAG"
+          response_file="$RUNNER_TEMP/gitee-release.json"
+          status="$(curl --silent --show-error --max-time 30 \
+            --retry 3 --retry-delay 2 \
+            --header "Accept: application/json" \
+            --header "Authorization: Bearer ${GITEE_PRIVATE_SECRET}" \
+            --output "$response_file" \
+            --write-out "%{http_code}" \
+            "$release_url")"
+
+          if [ "$status" = "200" ] && jq -e 'type == "object" and (.id != null)' "$response_file" >/dev/null; then
+            echo "Gitee release $RELEASE_TAG already exists; reusing it"
+          elif [ "$status" = "404" ] || {
+            [ "$status" = "200" ] &&
+              jq -e 'type == "null" or (type == "object" and .id == null)' "$response_file" >/dev/null
+          }; then
+            release_body="Automated release for ${RELEASE_TAG}. GitHub source release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+            curl --fail-with-body --silent --show-error --max-time 30 \
+              --request POST \
+              --header "Accept: application/json" \
+              --header "Authorization: Bearer ${GITEE_PRIVATE_SECRET}" \
+              --data-urlencode "tag_name=${RELEASE_TAG}" \
+              --data-urlencode "name=Desktop Translator ${RELEASE_TAG}" \
+              --data-urlencode "body=${release_body}" \
+              --data-urlencode "target_commitish=main" \
+              --output "$response_file" \
+              "$api/repos/$GITEE_OWNER/$GITEE_REPO/releases"
+            echo "Created Gitee release $RELEASE_TAG"
+          else
+            echo "Gitee release lookup failed (HTTP $status)" >&2
+            exit 1
+          fi
+
+          release_id="$(jq -er '.id' "$response_file")"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload missing assets to Gitee
+        env:
+          GITEE_PRIVATE_SECRET: ${{ secrets.GITEE_PRIVATE_SECRET }}
+          GITEE_OWNER: shenglongliu
+          GITEE_REPO: desktop-translator
+          RELEASE_ID: ${{ steps.gitee-release.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          : "${GITEE_PRIVATE_SECRET:?GITEE_PRIVATE_SECRET repository secret is required}"
+
+          api="https://gitee.com/api/v5"
+          attachments_url="$api/repos/$GITEE_OWNER/$GITEE_REPO/releases/$RELEASE_ID/attach_files"
+          attachments_file="$RUNNER_TEMP/gitee-attachments.json"
+          status="$(curl --silent --show-error --max-time 30 \
+            --retry 3 --retry-delay 2 \
+            --header "Accept: application/json" \
+            --header "Authorization: Bearer ${GITEE_PRIVATE_SECRET}" \
+            --output "$attachments_file" \
+            --write-out "%{http_code}" \
+            "${attachments_url}?per_page=100")"
+          if [ "$status" != "200" ]; then
+            echo "Gitee attachment lookup failed (HTTP $status)" >&2
+            exit 1
+          fi
+          jq -e 'type == "array"' "$attachments_file" >/dev/null
+
+          while IFS= read -r -d '' file; do
+            name="${file##*/}"
+            if jq -e --arg name "$name" 'any(.[]; .name == $name)' "$attachments_file" >/dev/null; then
+              echo "Gitee already has $name; skipping"
+              continue
+            fi
+
+            curl --fail-with-body --silent --show-error --max-time 120 \
+              --request POST \
+              --header "Accept: application/json" \
+              --header "Authorization: Bearer ${GITEE_PRIVATE_SECRET}" \
+              --form "file=@${file}" \
+              --output /dev/null \
+              "$attachments_url"
+            echo "Uploaded $name to Gitee"
+          done < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
