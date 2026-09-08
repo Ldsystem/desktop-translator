@@ -196,6 +196,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.COS_BUK_SEC_KEY }}
           AWS_RETRY_MODE: standard
           AWS_MAX_ATTEMPTS: "3"
+          AWS_CONFIG_FILE: ${{ runner.temp }}/aws-config
           COS_BUCKET_DOMAIN: ${{ vars.COS_BUK_DOMAIN }}
           REPOSITORY_NAME: ${{ github.event.repository.name }}
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -221,6 +222,8 @@ jobs:
           region="${endpoint#cos.}"
           region="${region%.myqcloud.com}"
           export AWS_DEFAULT_REGION="$region"
+          printf '[default]\nregion = %s\ns3 =\n    addressing_style = virtual\n' "$region" \
+            > "$AWS_CONFIG_FILE"
 
           while IFS= read -r -d '' file; do
             name="${file##*/}"
