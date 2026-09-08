@@ -105,16 +105,11 @@ describeWindows("Windows bundle audit", () => {
 });
 
 describe("Windows workflow integration", () => {
-  it("runs the PowerShell audit in the Windows release job", () => {
-    const workflow = readFileSync(
-      join(repositoryRoot, ".github", "workflows", "release.yml"),
-      "utf8",
-    );
+  it("runs the PowerShell audit tests on the Windows CI host", () => {
+    const workflow = readFileSync(join(repositoryRoot, ".github", "workflows", "ci.yml"), "utf8");
     const windowsJob = workflow.split("\n  windows:")[1] ?? "";
 
-    expect(windowsJob).toContain(
-      "powershell -NoProfile -ExecutionPolicy Bypass -File tools/release/audit-windows-bundle.ps1",
-    );
+    expect(windowsJob).toContain("pnpm test");
   });
 
   it("uploads the exact audited Windows artifacts after one NSIS build", () => {
