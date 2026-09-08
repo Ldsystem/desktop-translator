@@ -267,22 +267,18 @@ jobs:
               continue
             fi
 
-            # Gitee's upload handler accepts the multipart auth/identity fields
-            # used by its v5 examples. Keep the bearer header as well because
-            # the same token is used for the release API calls above.
+            # Gitee's v5 upload handler authenticates this multipart request
+            # reliably with access_token in the query string. Use HTTP/1.1 as
+            # well; some Gitee upload frontends leave HTTP/2 uploads hanging.
             curl --fail-with-body --silent --show-error \
               --connect-timeout 30 \
               --max-time 600 \
+              --http1.1 \
               --request POST \
               --header "Accept: application/json" \
-              --header "Authorization: Bearer ${GITEE_PRIVATE_SECRET}" \
               --header "Expect:" \
-              --form-string "access_token=${GITEE_PRIVATE_SECRET}" \
-              --form-string "owner=${GITEE_OWNER}" \
-              --form-string "repo=${GITEE_REPO}" \
-              --form-string "release_id=${RELEASE_ID}" \
               --form "file=@${file}" \
               --output /dev/null \
-              "$attachments_url"
+              "${attachments_url}?access_token=${GITEE_PRIVATE_SECRET}"
             echo "Uploaded $name to Gitee"
           done < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
